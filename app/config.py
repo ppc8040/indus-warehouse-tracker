@@ -1,28 +1,22 @@
 """
-All config from Heroku config vars. No secrets hardcoded.
+Application configuration — credentials hardcoded like Indus-Open-Order-Report-CUST.py
 """
-import os
 
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-change-me-in-production')
-    DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    SECRET_KEY = 'indus-warehouse-tracker-2026'
+    DEBUG = False
 
-    # Microsoft Entra App Registration
-    GRAPH_TENANT_ID = os.environ.get('GRAPH_TENANT_ID', '')
-    GRAPH_CLIENT_ID = os.environ.get('GRAPH_CLIENT_ID', '')
-    GRAPH_CLIENT_SECRET = os.environ.get('GRAPH_CLIENT_SECRET', '')
+    # Microsoft Entra App Registration (same as Open Order Report script)
+    GRAPH_TENANT_ID = 'ed97e9bb-e119-4bd4-ab00-307d64bdf908'
+    GRAPH_CLIENT_ID = 'a2239be7-12cd-442d-983f-ea7e316ef767'
+    GRAPH_CLIENT_SECRET = 'sho8Q~sanlYEX3SKXjYJb0NSXL.gPRpdi63-tcmp'
 
-    # SharePoint — composite "siteId,webId"
-    SHAREPOINT_SITE_ID = os.environ.get(
-        'SHAREPOINT_SITE_ID',
-        '201c767f-23cc-4eff-b76c-47a275706531,094b21f9-6ed4-47c3-a751-3b217a18b98e'
-    )
-    # Workbook filename relative to Shared Documents root
-    WORKBOOK_FILENAME = os.environ.get(
-        'WORKBOOK_FILENAME',
-        'Indus Warehouse Stock Movement.xlsx'
-    )
+    # SharePoint Indus_USA site ID
+    SHAREPOINT_SITE_ID = '201c767f-23cc-4eff-b76c-47a275706531,094b21f9-6ed4-47c3-a751-3b217a18b98e'
+
+    # Workbook filename in Shared Documents root
+    WORKBOOK_FILENAME = 'Indus Warehouse Stock Movement.xlsx'
 
     # Worksheet names (must match workbook exactly)
     SHEET_MASTER_PARTS = 'Master_Parts'
@@ -31,13 +25,13 @@ class Config:
     SHEET_ERROR_LOG = 'Error_Log'
 
     # Factory floor auth
-    SUPERVISOR_PIN = os.environ.get('SUPERVISOR_PIN', '9999')
-    ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
-    ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'change-me')
+    SUPERVISOR_PIN = '9999'
+    ADMIN_USERNAME = 'admin'
+    ADMIN_PASSWORD = 'indus2026'
 
     # Timeouts
-    GRAPH_REQUEST_TIMEOUT = int(os.environ.get('GRAPH_REQUEST_TIMEOUT', '30'))
-    GRAPH_MAX_RETRIES = int(os.environ.get('GRAPH_MAX_RETRIES', '3'))
+    GRAPH_REQUEST_TIMEOUT = 30
+    GRAPH_MAX_RETRIES = 3
 
     APP_NAME = 'Indus Warehouse Tracker'
     APP_VERSION = '1.0.0'
