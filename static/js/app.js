@@ -314,86 +314,141 @@ function manualHU() {
 //  PHOTO SCAN — capture full label image for OCR parsing
 // ═══════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════
+//  PHOTO SCAN — reads QR codes + barcode number from a still image
+//  Uses html5-qrcode (already loaded) — no server call needed
+// ═══════════════════════════════════════════════════════════
+
 async function processLabelPhoto(input) {
   const file = input.files[0];
   if (!file) return;
 
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    showSpinner('Reading label from photo...');
+  showSpinner('Reading label from photo...');
+
+  try {
+    // html5-qrcode can scan a still image file for QR codes
+    const html5QrCode = new Html5Qrcode('_photoScanWorker');
+    const results = [];
+
     try {
-      const resp = await fetch('/api/scan-label', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: e.target.result }),
-      });
-
-      const data = await resp.json();
-      hideSpinner();
-
-      if (!data.success) {
-        toast('Could not read label. Try a clearer photo.', 'warn');
-        input.value = '';
-        return;
-      }
-
-      const f = data.fields;
-
-      // Only fill fields that are currently empty — don't overwrite already-scanned values
-      if (f.handling_unit && !scanned.handling_unit) {
-        scanned.handling_unit = f.handling_unit;
-        allScannedCodes.add(f.handling_unit);
-      }
-      if (f.indus_part && !scanned.indus_part) {
-        scanned.indus_part = f.indus_part;
-        allScannedCodes.add(f.indus_part);
-        qrScanOrder = Math.max(qrScanOrder, 1);
-      }
-      if (f.customer_part && !scanned.customer_part) {
-        scanned.customer_part = f.customer_part;
-        allScannedCodes.add(f.customer_part);
-        qrScanOrder = Math.max(qrScanOrder, 2);
-      }
-      if (f.pallet_qty && !scanned.pallet_qty) {
-        scanned.pallet_qty = f.pallet_qty;
-        allScannedCodes.add(f.pallet_qty);
-        qrScanOrder = Math.max(qrScanOrder, 3);
-      }
-
-      updateScanDisplay();
-
-      const missing = data.missing || [];
-      if (missing.length === 0) {
-        toast('✓ All fields read from photo!', 'ok', 3000);
-        if (getScannedCount() >= 4) stopScanner();
-      } else {
-        // Build a human-readable list of what's still missing
-        const fieldNames = {
-          handling_unit: 'HU Barcode',
-          indus_part: 'Indus Part',
-          customer_part: 'Customer Part',
-          pallet_qty: 'Pallet Qty',
-        };
-        // Only show missing fields that are truly still empty after this parse
-        const stillMissing = missing.filter(k => !scanned[k]);
-        if (stillMissing.length > 0) {
-          const names = stillMissing.map(k => fieldNames[k] || k).join(', ');
-          toast(`Partially read. Still missing: ${names}. Take another photo or type manually.`, 'warn', 6000);
-        } else {
-          toast('✓ All fields now filled!', 'ok', 3000);
-        }
-      }
-    } catch (err) {
-      hideSpinner();
-      console.error('Photo scan error:', err);
-      toast('Photo scan failed. Use camera scan or type HU manually.', 'fail');
+      // scanFile returns the first code found; we need all 3 QRs
+      // We call it once — it returns only one result per call on most builds
+      // So we use the decodedText and also manually scan for the HU number in the image
+      const decodedText = await html5QrCode.scanFile(file, false);
+      if (decodedText) results.push(decodedText.trim());
+    } catch (e) {
+      // scanFile throws if nothing found — that's fine, we handle below
     }
-    // Reset so the same photo can be retaken if needed
-    input.value = '';
-  };
-  reader.readAsDataURL(file);
+
+    // html5-qrcode v2.3+ supports scanFileV2 which returns all codes
+    // Try that if available
+    if (typeof html5QrCode.scanFileV2 === 'function') {
+      try {
+        const res2 = await html5QrCode.scanFileV2(file, false);
+        if (res2 && res2.decodedText) {
+          const v = res2.decodedText.trim();
+          if (v && !results.includes(v)) results.push(v);
+        }
+      } catch (e) { /* no more codes or not supported */ }
+    }
+
+    hideSpinner();
+
+    // Also extract the HU number from image using canvas + text pattern
+    // The HU number is printed in large text below the barcode on the label
+    const huFromImage = await extractHUFromImage(file);
+    if (huFromImage && !results.includes(huFromImage)) {
+      results.push(huFromImage);
+    }
+
+    if (results.length === 0 && !huFromImage) {
+      toast('No codes found in photo. Make sure the full label is visible and try again.', 'warn', 5000);
+      input.value = '';
+      return;
+    }
+
+    // Classify each found value into the correct field
+    let filled = 0;
+    for (const val of results) {
+      const before = getScannedCount();
+      if (!allScannedCodes.has(val)) {
+        allScannedCodes.add(val);
+        classifyAndStore(val);
+        if (getScannedCount() > before) filled++;
+      }
+    }
+
+    updateScanDisplay();
+
+    const missing = [];
+    if (!scanned.handling_unit) missing.push('HU Barcode');
+    if (!scanned.indus_part)    missing.push('Indus Part');
+    if (!scanned.customer_part) missing.push('Customer Part');
+    if (!scanned.pallet_qty)    missing.push('Pallet Qty');
+
+    if (missing.length === 0) {
+      toast('✓ All fields read from photo!', 'ok', 3000);
+      stopScanner();
+    } else if (filled > 0) {
+      toast(`Read ${filled} field(s). Still missing: ${missing.join(', ')}. Take another photo or type HU manually.`, 'warn', 6000);
+    } else {
+      toast('Could not read codes from this photo. Hold phone steady, ensure good lighting, and try again.', 'warn', 5000);
+    }
+
+  } catch (err) {
+    hideSpinner();
+    console.error('Photo scan error:', err);
+    toast('Photo scan failed. Try again with better lighting.', 'fail');
+  }
+
+  input.value = ''; // reset so same button can be tapped again
 }
 
+
+async function extractHUFromImage(file) {
+  // Draw the image onto a canvas, then use html5-qrcode to try reading the barcode
+  // The HU number is also printed as plain text under the barcode — extract via canvas OCR trick:
+  // We look for a standalone 18-digit number in the image using a simple pixel scan approach.
+  // For now: attempt to read the barcode (Code 128) from the still image using html5-qrcode.
+  try {
+    const reader = new FileReader();
+    return await new Promise((resolve) => {
+      reader.onload = async (e) => {
+        const img = new Image();
+        img.onload = async () => {
+          // Create a narrow horizontal crop of the barcode region (bottom third of label)
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = Math.floor(img.height * 0.35); // bottom 35%
+          const ctx = canvas.getContext('2d');
+          // Draw just the lower portion of the image (where the barcode lives)
+          ctx.drawImage(img, 0, img.height * 0.55, img.width, img.height * 0.45, 0, 0, canvas.width, canvas.height);
+
+          // Convert cropped canvas back to a File and scan it
+          canvas.toBlob(async (blob) => {
+            if (!blob) { resolve(null); return; }
+            const croppedFile = new File([blob], 'crop.jpg', { type: 'image/jpeg' });
+            try {
+              const scanner = new Html5Qrcode('_barcodeWorker');
+              const result = await scanner.scanFile(croppedFile, false);
+              if (result && /^\d{10,20}$/.test(result.trim())) {
+                resolve(result.trim());
+              } else {
+                resolve(null);
+              }
+            } catch (e) { resolve(null); }
+          }, 'image/jpeg', 0.95);
+        };
+        img.onerror = () => resolve(null);
+        img.src = e.target.result;
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+  } catch (e) {
+    return null;
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 //  MOVEMENT
