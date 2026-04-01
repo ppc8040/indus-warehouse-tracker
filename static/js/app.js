@@ -204,25 +204,38 @@ function classifyAndStore(val) {
     This avoids misclassification when Customer Part is a plain number
     (e.g. "161878" — previously sent to Pallet Qty by the old heuristic).
   */
-  const isAllDigits = /^\d+$/.test(val);
-
-  // Priority 1: long all-numeric string → Handling Unit (barcode)
-  if (isAllDigits && val.length >= 10 && !scanned.handling_unit) {
-    scanned.handling_unit = val;
-    return;
-  }
-
-  // Priority 2: QR codes assigned by scan order (not by value format)
-  if (!scanned.indus_part) {
-    scanned.indus_part = val;
-    qrScanOrder++;
-  } else if (!scanned.customer_part) {
-    scanned.customer_part = val;
-    qrScanOrder++;
-  } else if (!scanned.pallet_qty) {
-    scanned.pallet_qty = val;
-    qrScanOrder++;
-  }
+// NEW — paste this in place of the above:
+   const isAllDigits = /^\d+$/.test(val);
+   
+   // HU: must be 16-20 digits AND start with 1000 (your label pattern)
+   if (isAllDigits && val.length >= 16 && val.length <= 20 && val.startsWith('1000') && !scanned.handling_unit) {
+       scanned.handling_unit = val;
+       return;
+   }
+   
+   // Reject long numeric strings that don't match HU pattern (garbage barcode reads)
+   if (isAllDigits && val.length >= 10 && !val.startsWith('1000')) {
+       allScannedCodes.delete(val); // allow retry
+       return; // silently ignore
+   }
+   
+   // Small integer (1-4 digits) = Pallet Qty
+   if (isAllDigits && val.length <= 4 && !scanned.pallet_qty) {
+       scanned.pallet_qty = val;
+       return;
+   }
+   
+   // Everything else: Indus Part first, then Customer Part
+   if (!scanned.indus_part) {
+       scanned.indus_part = val;
+       qrScanOrder++;
+   } else if (!scanned.customer_part) {
+       scanned.customer_part = val;
+       qrScanOrder++;
+   } else if (!scanned.pallet_qty) {
+       scanned.pallet_qty = val;
+       qrScanOrder++;
+   }
   // Extra/duplicate values beyond 4 are silently ignored
 }
 
