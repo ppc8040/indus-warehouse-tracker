@@ -111,13 +111,35 @@ function startScanner() {
     return;
   }
 
-  scanner = new Html5Qrcode("scannerContainer");
-  
+  // Explicitly enable QR + Code 128 + other barcode formats
+  // This is critical — without this, Code 128 (SAP HU barcode) won't be read
+  const formats = [
+    Html5QrcodeSupportedFormats.QR_CODE,
+    Html5QrcodeSupportedFormats.CODE_128,
+    Html5QrcodeSupportedFormats.CODE_39,
+    Html5QrcodeSupportedFormats.EAN_13,
+    Html5QrcodeSupportedFormats.EAN_8,
+    Html5QrcodeSupportedFormats.ITF,
+  ];
+
+  scanner = new Html5Qrcode("scannerContainer", {
+    formatsToSupport: formats,
+    verbose: false,
+  });
+
+  // Wide rectangular scan region — SAP HU barcode is wide and thin
+  const scanConfig = {
+    fps: 15,
+    qrbox: { width: 300, height: 120 },
+    aspectRatio: 1.0,
+    disableFlip: false,
+  };
+
   scanner.start(
-    { facingMode: "environment" },  // rear camera
-    { fps: 10, qrbox: { width: 250, height: 250 } },
+    { facingMode: "environment" },
+    scanConfig,
     onScanSuccess,
-    () => {} // ignore scan failures (normal during scanning)
+    () => {}
   ).then(() => {
     scannerRunning = true;
     btn.innerHTML = '<span class="btn-icon">⏹</span> STOP CAMERA';
@@ -244,6 +266,30 @@ function resetScans() {
   scanned = { handling_unit: '', indus_part: '', customer_part: '', pallet_qty: '' };
   allScannedCodes.clear();
   updateScanDisplay();
+  // Reset manual HU input
+  const row = document.getElementById('huManualRow');
+  const btn = document.getElementById('huManualBtn');
+  if (row) row.style.display = 'none';
+  if (btn) btn.style.display = 'block';
+  const inp = document.getElementById('huManualInput');
+  if (inp) inp.value = '';
+}
+
+function showManualHU() {
+  document.getElementById('huManualRow').style.display = 'block';
+  document.getElementById('huManualBtn').style.display = 'none';
+  document.getElementById('huManualInput').focus();
+}
+
+function manualHU() {
+  const val = document.getElementById('huManualInput').value.trim();
+  if (!val) { toast('Type the HU number from the label.', 'warn'); return; }
+  if (!/^\d{10,20}$/.test(val)) { toast('HU should be 10-20 digits. Check the number.', 'warn'); return; }
+  scanned.handling_unit = val;
+  allScannedCodes.add(val);
+  updateScanDisplay();
+  document.getElementById('huManualRow').style.display = 'none';
+  toast('Handling Unit set manually.', 'ok', 2000);
 }
 
 

@@ -54,6 +54,13 @@
           <span class="sf-status" id="st-hu">NOT SCANNED</span>
         </div>
         <div class="sf-value" id="val-hu">—</div>
+        <div id="huManualRow" style="margin-top:8px;display:none">
+          <div style="display:flex;gap:8px">
+            <input type="text" id="huManualInput" placeholder="Type HU number from label" inputmode="numeric" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
+            <button onclick="manualHU()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
+          </div>
+        </div>
+        <button onclick="showManualHU()" id="huManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">Barcode won't scan? Type it manually</button>
       </div>
 
       <div class="scan-field" id="sf-indus">
