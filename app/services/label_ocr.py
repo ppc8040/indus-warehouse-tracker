@@ -27,7 +27,20 @@ logger = logging.getLogger(__name__)
 
 # Heroku installs apt packages under /app/.apt/
 # Set this so pytesseract can find the binary at runtime.
-_HEROKU_TESSERACT_PATH = '/app/.apt/usr/bin/tesseract'
+# Heroku installs tesseract via heroku-buildpack-apt.
+# Try both the v4 and v5 paths — Heroku-22 uses 4.x, Heroku-24 uses 5.x
+_TESSERACT_PATHS = [
+    '/app/.apt/usr/bin/tesseract',       # primary Heroku apt path
+    '/usr/bin/tesseract',                 # fallback: system install (local dev)
+    '/usr/local/bin/tesseract',           # fallback: homebrew / manual install
+]
+
+_TESSDATA_PATHS = [
+    '/app/.apt/usr/share/tesseract-ocr/5/tessdata',     # Heroku-24 (Ubuntu 24, tesseract 5)
+    '/app/.apt/usr/share/tesseract-ocr/4.00/tessdata',  # Heroku-22 (Ubuntu 22, tesseract 4)
+    '/usr/share/tesseract-ocr/5/tessdata',               # system
+    '/usr/share/tesseract-ocr/4.00/tessdata',            # system fallback
+]
 
 # Field regex patterns matched against the OCR-extracted text.
 _PATTERNS = {
@@ -76,8 +89,23 @@ def parse_label_image(b64_image: str) -> dict:
 
     # Point pytesseract at the Heroku-installed binary if it exists there.
     # Falls back to system default (e.g. local dev) if not found.
-    if os.path.isfile(_HEROKU_TESSERACT_PATH):
-        pytesseract.pytesseract.tesseract_cmd = _HEROKU_TESSERACT_PATH
+    # Auto-detect tesseract binary and tessdata path
+    for tpath in _TESSERACT_PATHS:
+        if os.path.isfile(tpath):
+            pytesseract.pytesseract.tesseract_cmd = tpath
+            logger.info("Using tesseract at: %s", tpath)
+            break
+    else:
+        raise RuntimeError(
+            "Tesseract binary not found. Checked: " + ", ".join(_TESSERACT_PATHS) +
+            ". Add heroku-community/apt buildpack and Aptfile with tesseract-ocr, then redeploy."
+        )
+
+    for dpath in _TESSDATA_PATHS:
+        if os.path.isdir(dpath):
+            os.environ['TESSDATA_PREFIX'] = dpath
+            logger.info("Using tessdata at: %s", dpath)
+            break
 
     # Decode base64 — handle both data-URL format and raw base64
     raw_b64 = b64_image.split(',')[-1]
