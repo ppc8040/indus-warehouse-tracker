@@ -2,25 +2,30 @@
    INDUS WAREHOUSE TRACKER — Scan-to-Log Architecture
    
    Pallet label has 4 codes:
-     QR 1: Indus Part (e.g. "CCR2324")
-     QR 2: Customer Part (e.g. "ENG-1440")  
-     QR 3: Pallet Qty (e.g. "39")
+     QR 1 (top):    Indus Part   (e.g. "CCR2324")
+     QR 2 (middle): Customer Part (e.g. "161878" or "ENG-1440")
+     QR 3 (bottom): Pallet Qty   (e.g. "39")
      Barcode (Code 128): Handling Unit (e.g. "100000000000839157")
-   
+
+   QR codes are assigned by SCAN ORDER (1st→indus, 2nd→cust, 3rd→qty),
+   not by value format, to avoid misclassification when customer part
+   is a plain number.
+
    Worker scans all 4 → reviews → Stock IN or OUT → done.
    ═══════════════════════════════════════════════════════════ */
 'use strict';
 
 // ── State ──
 let scanned = {
-  handling_unit: '',   // from barcode (long numeric, 18 digits)
-  indus_part: '',      // from QR (alphanumeric part code)
-  customer_part: '',   // from QR (alphanumeric with dash)
-  pallet_qty: '',      // from QR (numeric, small number)
+  handling_unit: '',   // from barcode (long numeric, 10-18 digits)
+  indus_part: '',      // from QR 1 (alphanumeric part code)
+  customer_part: '',   // from QR 2 (alphanumeric, may be pure number)
+  pallet_qty: '',      // from QR 3 (numeric, small number)
 };
 let scanner = null;
 let scannerRunning = false;
 let allScannedCodes = new Set();  // track all raw scanned values to avoid re-processing
+let qrScanOrder = 0;              // counts non-HU QR scans: 1=indus, 2=cust, 3=qty
 
 let deviceId = localStorage.getItem('deviceId') || (() => {
   const id = 'DEV-' + Math.random().toString(36).substring(2, 10).toUpperCase();
@@ -112,7 +117,6 @@ function startScanner() {
   }
 
   // Explicitly enable QR + Code 128 + other barcode formats
-  // This is critical — without this, Code 128 (SAP HU barcode) won't be read
   const formats = [
     Html5QrcodeSupportedFormats.QR_CODE,
     Html5QrcodeSupportedFormats.CODE_128,
@@ -127,11 +131,12 @@ function startScanner() {
     verbose: false,
   });
 
-  // Wide rectangular scan region — SAP HU barcode is wide and thin
+  // 16:9 aspect ratio gives the camera maximum horizontal width — essential for
+  // wide Code 128 barcodes. Wider qrbox also improves barcode read reliability.
   const scanConfig = {
     fps: 15,
-    qrbox: { width: 300, height: 120 },
-    aspectRatio: 1.0,
+    qrbox: { width: 340, height: 160 },
+    aspectRatio: 1.7777,
     disableFlip: false,
   };
 
@@ -186,41 +191,39 @@ function onScanSuccess(decodedText) {
 
 function classifyAndStore(val) {
   /*
-    Classification logic based on pallet label format:
-    - Handling Unit: long numeric string, 18 digits (Code 128 barcode)
-    - Pallet Qty: short purely numeric (1-5 digits)
-    - Indus Part: alphanumeric, typically 3 letters + digits (e.g. CCR2324, CEN1600)
-    - Customer Part: alphanumeric with dashes (e.g. ENG-1440)
+    Classification logic — ORDER-BASED for QR codes:
     
-    Priority: 
-    1. If 10+ digits and all numeric → Handling Unit
-    2. If purely numeric and < 6 digits → Pallet Qty 
-    3. If contains a dash → Customer Part
-    4. Otherwise → Indus Part
+    HU barcode detection (only reliable format-based rule):
+      - 10+ digits, all numeric → Handling Unit (Code 128 barcode)
+    
+    QR codes are assigned by order scanned (qrScanOrder counter):
+      - 1st QR scanned → Indus Part
+      - 2nd QR scanned → Customer Part
+      - 3rd QR scanned → Pallet Qty
+    
+    This avoids misclassification when Customer Part is a plain number
+    (e.g. "161878" — previously sent to Pallet Qty by the old heuristic).
   */
   const isAllDigits = /^\d+$/.test(val);
-  
+
+  // Priority 1: long all-numeric string → Handling Unit (barcode)
   if (isAllDigits && val.length >= 10 && !scanned.handling_unit) {
     scanned.handling_unit = val;
-  } else if (isAllDigits && val.length < 6 && !scanned.pallet_qty) {
-    scanned.pallet_qty = val;
-  } else if (val.includes('-') && !scanned.customer_part) {
-    scanned.customer_part = val;
-  } else if (!scanned.indus_part) {
-    scanned.indus_part = val;
-  } else {
-    // All slots filled for that type — try to fill remaining empty slots
-    if (!scanned.handling_unit && isAllDigits && val.length >= 10) {
-      scanned.handling_unit = val;
-    } else if (!scanned.pallet_qty && isAllDigits) {
-      scanned.pallet_qty = val;
-    } else if (!scanned.customer_part) {
-      scanned.customer_part = val;
-    } else if (!scanned.indus_part) {
-      scanned.indus_part = val;
-    }
-    // else: truly duplicate/extra, ignore
+    return;
   }
+
+  // Priority 2: QR codes assigned by scan order (not by value format)
+  if (!scanned.indus_part) {
+    scanned.indus_part = val;
+    qrScanOrder++;
+  } else if (!scanned.customer_part) {
+    scanned.customer_part = val;
+    qrScanOrder++;
+  } else if (!scanned.pallet_qty) {
+    scanned.pallet_qty = val;
+    qrScanOrder++;
+  }
+  // Extra/duplicate values beyond 4 are silently ignored
 }
 
 function getScannedCount() {
@@ -265,6 +268,7 @@ function _updateField(key, val) {
 function resetScans() {
   scanned = { handling_unit: '', indus_part: '', customer_part: '', pallet_qty: '' };
   allScannedCodes.clear();
+  qrScanOrder = 0;
   updateScanDisplay();
   // Reset manual HU input
   const row = document.getElementById('huManualRow');
@@ -290,6 +294,91 @@ function manualHU() {
   updateScanDisplay();
   document.getElementById('huManualRow').style.display = 'none';
   toast('Handling Unit set manually.', 'ok', 2000);
+}
+
+
+// ═══════════════════════════════════════════════════════════
+//  PHOTO SCAN — capture full label image for OCR parsing
+// ═══════════════════════════════════════════════════════════
+
+async function processLabelPhoto(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    showSpinner('Reading label from photo...');
+    try {
+      const resp = await fetch('/api/scan-label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: e.target.result }),
+      });
+
+      const data = await resp.json();
+      hideSpinner();
+
+      if (!data.success) {
+        toast('Could not read label. Try a clearer photo.', 'warn');
+        input.value = '';
+        return;
+      }
+
+      const f = data.fields;
+
+      // Only fill fields that are currently empty — don't overwrite already-scanned values
+      if (f.handling_unit && !scanned.handling_unit) {
+        scanned.handling_unit = f.handling_unit;
+        allScannedCodes.add(f.handling_unit);
+      }
+      if (f.indus_part && !scanned.indus_part) {
+        scanned.indus_part = f.indus_part;
+        allScannedCodes.add(f.indus_part);
+        qrScanOrder = Math.max(qrScanOrder, 1);
+      }
+      if (f.customer_part && !scanned.customer_part) {
+        scanned.customer_part = f.customer_part;
+        allScannedCodes.add(f.customer_part);
+        qrScanOrder = Math.max(qrScanOrder, 2);
+      }
+      if (f.pallet_qty && !scanned.pallet_qty) {
+        scanned.pallet_qty = f.pallet_qty;
+        allScannedCodes.add(f.pallet_qty);
+        qrScanOrder = Math.max(qrScanOrder, 3);
+      }
+
+      updateScanDisplay();
+
+      const missing = data.missing || [];
+      if (missing.length === 0) {
+        toast('✓ All fields read from photo!', 'ok', 3000);
+        if (getScannedCount() >= 4) stopScanner();
+      } else {
+        // Build a human-readable list of what's still missing
+        const fieldNames = {
+          handling_unit: 'HU Barcode',
+          indus_part: 'Indus Part',
+          customer_part: 'Customer Part',
+          pallet_qty: 'Pallet Qty',
+        };
+        // Only show missing fields that are truly still empty after this parse
+        const stillMissing = missing.filter(k => !scanned[k]);
+        if (stillMissing.length > 0) {
+          const names = stillMissing.map(k => fieldNames[k] || k).join(', ');
+          toast(`Partially read. Still missing: ${names}. Take another photo or type manually.`, 'warn', 6000);
+        } else {
+          toast('✓ All fields now filled!', 'ok', 3000);
+        }
+      }
+    } catch (err) {
+      hideSpinner();
+      console.error('Photo scan error:', err);
+      toast('Photo scan failed. Use camera scan or type HU manually.', 'fail');
+    }
+    // Reset so the same photo can be retaken if needed
+    input.value = '';
+  };
+  reader.readAsDataURL(file);
 }
 
 
