@@ -191,52 +191,47 @@ function onScanSuccess(decodedText) {
 
 function classifyAndStore(val) {
   /*
-    Classification logic — ORDER-BASED for QR codes:
-    
-    HU barcode detection (only reliable format-based rule):
-      - 10+ digits, all numeric → Handling Unit (Code 128 barcode)
-    
-    QR codes are assigned by order scanned (qrScanOrder counter):
-      - 1st QR scanned → Indus Part
-      - 2nd QR scanned → Customer Part
-      - 3rd QR scanned → Pallet Qty
-    
-    This avoids misclassification when Customer Part is a plain number
-    (e.g. "161878" — previously sent to Pallet Qty by the old heuristic).
+    Classification — ORDER-BASED for QR codes.
+
+    HU barcode: 16–20 digits starting with 1000.
+    Everything else is assigned by scan ORDER:
+      1st non-HU scan  → indus_part
+      2nd non-HU scan  → customer_part  (can be ANY format — alpha, numeric, mixed)
+      3rd non-HU scan  → pallet_qty
+
+    We do NOT use value format to assign customer_part or pallet_qty,
+    because customer part can be a long number (e.g. 8750722840) which
+    would be incorrectly rejected or misrouted by digit-length rules.
+
+    The only format-based rule is HU detection (must start with 1000, 16-20 digits)
+    which is unambiguous on these labels.
   */
-// NEW — paste this in place of the above:
-   const isAllDigits = /^\d+$/.test(val);
-   
-  // Priority 1: HU barcode — must be 16-20 digits starting with 1000
+  const isAllDigits = /^\d+$/.test(val);
+
+  // ── HU barcode: 16–20 digits, starts with 1000 ──
   if (isAllDigits && val.length >= 16 && val.length <= 20 && val.startsWith('1000') && !scanned.handling_unit) {
     scanned.handling_unit = val;
     return;
   }
 
-  // Reject other long digit strings (garbage partial barcode reads)
-  if (isAllDigits && val.length >= 10) {
-    allScannedCodes.delete(val); // allow a clean retry
-    return;
-  }
-
-  // Priority 2: small number (1–4 digits) = Pallet Qty
-  if (isAllDigits && val.length <= 4 && !scanned.pallet_qty) {
-    scanned.pallet_qty = val;
-    return;
-  }
-
-  // Priority 3: everything else → Indus Part, then Customer Part
+  // ── Order-based QR assignment ──
+  // First available slot wins regardless of value format
   if (!scanned.indus_part) {
     scanned.indus_part = val;
     qrScanOrder++;
-  } else if (!scanned.customer_part) {
+    return;
+  }
+  if (!scanned.customer_part) {
     scanned.customer_part = val;
     qrScanOrder++;
-  } else if (!scanned.pallet_qty) {
+    return;
+  }
+  if (!scanned.pallet_qty) {
     scanned.pallet_qty = val;
     qrScanOrder++;
+    return;
   }
-  // Extra/duplicate values beyond 4 are silently ignored
+  // All slots full — ignore duplicates / extra codes silently
 }
 
 function getScannedCount() {
@@ -326,52 +321,27 @@ async function processLabelPhoto(input) {
   showSpinner('Reading label from photo...');
 
   try {
-    // html5-qrcode can scan a still image file for QR codes
-    const html5QrCode = new Html5Qrcode('_photoScanWorker');
-    const results = [];
+    const results = await scanAllCodesFromImage(file);
 
-    try {
-      // scanFile returns the first code found; we need all 3 QRs
-      // We call it once — it returns only one result per call on most builds
-      // So we use the decodedText and also manually scan for the HU number in the image
-      const decodedText = await html5QrCode.scanFile(file, false);
-      if (decodedText) results.push(decodedText.trim());
-    } catch (e) {
-      // scanFile throws if nothing found — that's fine, we handle below
-    }
-
-    // html5-qrcode v2.3+ supports scanFileV2 which returns all codes
-    // Try that if available
-    if (typeof html5QrCode.scanFileV2 === 'function') {
-      try {
-        const res2 = await html5QrCode.scanFileV2(file, false);
-        if (res2 && res2.decodedText) {
-          const v = res2.decodedText.trim();
-          if (v && !results.includes(v)) results.push(v);
-        }
-      } catch (e) { /* no more codes or not supported */ }
+    // Also try the barcode crop for HU
+    const huFromBarcode = await extractHUFromImage(file);
+    if (huFromBarcode && !results.includes(huFromBarcode)) {
+      results.push(huFromBarcode);
     }
 
     hideSpinner();
 
-    // Also extract the HU number from image using canvas + text pattern
-    // The HU number is printed in large text below the barcode on the label
-    const huFromImage = await extractHUFromImage(file);
-    if (huFromImage && !results.includes(huFromImage)) {
-      results.push(huFromImage);
-    }
-
-    if (results.length === 0 && !huFromImage) {
-      toast('No codes found in photo. Make sure the full label is visible and try again.', 'warn', 5000);
+    if (results.length === 0) {
+      toast('No codes found. Hold the phone steady over the full label and try again.', 'warn', 5000);
       input.value = '';
       return;
     }
 
-    // Classify each found value into the correct field
+    // Classify each found value
     let filled = 0;
     for (const val of results) {
-      const before = getScannedCount();
       if (!allScannedCodes.has(val)) {
+        const before = getScannedCount();
         allScannedCodes.add(val);
         classifyAndStore(val);
         if (getScannedCount() > before) filled++;
@@ -390,64 +360,134 @@ async function processLabelPhoto(input) {
       toast('✓ All fields read from photo!', 'ok', 3000);
       stopScanner();
     } else if (filled > 0) {
-      toast(`Read ${filled} field(s). Still missing: ${missing.join(', ')}. Take another photo or type HU manually.`, 'warn', 6000);
+      toast(`Read ${filled} field(s) from photo. Still missing: ${missing.join(', ')}. Take another photo or type HU manually.`, 'warn', 7000);
     } else {
-      toast('Could not read codes from this photo. Hold phone steady, ensure good lighting, and try again.', 'warn', 5000);
+      toast('Codes were found but could not be matched to fields. Try again.', 'warn', 5000);
     }
 
   } catch (err) {
     hideSpinner();
     console.error('Photo scan error:', err);
-    toast('Photo scan failed. Try again with better lighting.', 'fail');
+    toast('Photo scan failed. Ensure good lighting and a flat, clear view of the label.', 'fail');
   }
 
-  input.value = ''; // reset so same button can be tapped again
+  input.value = '';
 }
 
 
-async function extractHUFromImage(file) {
-  // Draw the image onto a canvas, then use html5-qrcode to try reading the barcode
-  // The HU number is also printed as plain text under the barcode — extract via canvas OCR trick:
-  // We look for a standalone 18-digit number in the image using a simple pixel scan approach.
-  // For now: attempt to read the barcode (Code 128) from the still image using html5-qrcode.
-  try {
-    const reader = new FileReader();
-    return await new Promise((resolve) => {
-      reader.onload = async (e) => {
-        const img = new Image();
-        img.onload = async () => {
-          // Create a narrow horizontal crop of the barcode region (bottom third of label)
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = Math.floor(img.height * 0.35); // bottom 35%
-          const ctx = canvas.getContext('2d');
-          // Draw just the lower portion of the image (where the barcode lives)
-          ctx.drawImage(img, 0, img.height * 0.55, img.width, img.height * 0.45, 0, 0, canvas.width, canvas.height);
+// Scan a full image for ALL QR codes by scanning multiple crops of the image.
+// html5-qrcode's scanFile only returns ONE code per call, so we crop the image
+// into regions targeting each QR position on the label and scan each crop.
+async function scanAllCodesFromImage(file) {
+  const found = [];
 
-          // Convert cropped canvas back to a File and scan it
-          canvas.toBlob(async (blob) => {
-            if (!blob) { resolve(null); return; }
-            const croppedFile = new File([blob], 'crop.jpg', { type: 'image/jpeg' });
-            try {
-              const scanner = new Html5Qrcode('_barcodeWorker');
-              const result = await scanner.scanFile(croppedFile, false);
-              if (result && /^\d{10,20}$/.test(result.trim())) {
-                resolve(result.trim());
-              } else {
-                resolve(null);
-              }
-            } catch (e) { resolve(null); }
-          }, 'image/jpeg', 0.95);
-        };
-        img.onerror = () => resolve(null);
-        img.src = e.target.result;
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(file);
+  // Helper: scan a canvas crop and collect the result
+  async function scanCrop(canvas) {
+    return new Promise((resolve) => {
+      canvas.toBlob(async (blob) => {
+        if (!blob) { resolve(null); return; }
+        const f = new File([blob], 'crop.jpg', { type: 'image/jpeg' });
+        try {
+          const qr = new Html5Qrcode('_photoScanWorker');
+          const result = await qr.scanFile(f, false);
+          resolve(result ? result.trim() : null);
+        } catch (e) { resolve(null); }
+      }, 'image/jpeg', 0.95);
     });
-  } catch (e) {
-    return null;
   }
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const img = new Image();
+      img.onload = async () => {
+        const W = img.width;
+        const H = img.height;
+
+        // Scan the full image first (catches any QR in one pass)
+        const fullCanvas = document.createElement('canvas');
+        fullCanvas.width = W; fullCanvas.height = H;
+        fullCanvas.getContext('2d').drawImage(img, 0, 0);
+        const fullResult = await scanCrop(fullCanvas);
+        if (fullResult && !found.includes(fullResult)) found.push(fullResult);
+
+        // Crop regions targeting the 3 QR code positions on the right side of the label
+        // Label layout: QR1 at ~15-35% height, QR2 at ~35-55%, QR3 at ~55-72%
+        // Each QR is in the right ~30% of the label width
+        const qrRegions = [
+          { x: W * 0.60, y: H * 0.08, w: W * 0.40, h: H * 0.25 },  // QR 1 — Indus Part
+          { x: W * 0.60, y: H * 0.28, w: W * 0.40, h: H * 0.25 },  // QR 2 — Customer Part
+          { x: W * 0.60, y: H * 0.48, w: W * 0.40, h: H * 0.25 },  // QR 3 — Pallet Qty
+        ];
+
+        for (const r of qrRegions) {
+          const c = document.createElement('canvas');
+          c.width = Math.floor(r.w); c.height = Math.floor(r.h);
+          c.getContext('2d').drawImage(img, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
+          // Scale up small crops for better QR detection
+          const scaled = document.createElement('canvas');
+          scaled.width = Math.max(c.width, 400); scaled.height = Math.max(c.height, 400);
+          scaled.getContext('2d').drawImage(c, 0, 0, scaled.width, scaled.height);
+          const result = await scanCrop(scaled);
+          if (result && !found.includes(result)) found.push(result);
+        }
+
+        resolve(found);
+      };
+      img.onerror = () => resolve(found);
+      img.src = e.target.result;
+    };
+    reader.onerror = () => resolve(found);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function extractHUFromImage(file) {
+  // Crop the barcode strip (middle-lower area of label) and try to read Code 128
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const img = new Image();
+      img.onload = async () => {
+        const W = img.width;
+        const H = img.height;
+
+        // Barcode sits roughly between 52%–72% of label height, full width
+        const cropY = H * 0.50;
+        const cropH = H * 0.25;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = Math.floor(cropH);
+        canvas.getContext('2d').drawImage(img, 0, cropY, W, cropH, 0, 0, W, Math.floor(cropH));
+
+        // Scale up 2x — wider barcodes decode better at higher resolution
+        const scaled = document.createElement('canvas');
+        scaled.width = W * 2;
+        scaled.height = Math.floor(cropH) * 2;
+        scaled.getContext('2d').drawImage(canvas, 0, 0, scaled.width, scaled.height);
+
+        scaled.toBlob(async (blob) => {
+          if (!blob) { resolve(null); return; }
+          const f = new File([blob], 'barcode.jpg', { type: 'image/jpeg' });
+          try {
+            const qr = new Html5Qrcode('_barcodeWorker');
+            const result = await qr.scanFile(f, false);
+            const v = result ? result.trim() : null;
+            if (v && /^\d{16,20}$/.test(v) && v.startsWith('1000')) {
+              resolve(v);
+            } else {
+              resolve(null);
+            }
+          } catch (e) { resolve(null); }
+        }, 'image/jpeg', 0.97);
+      };
+      img.onerror = () => resolve(null);
+      img.src = e.target.result;
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
