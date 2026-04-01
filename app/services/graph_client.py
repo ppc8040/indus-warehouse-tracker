@@ -37,6 +37,25 @@ def _normalise_cell(val):
 _token_cache = {'access_token': None, 'expires_at': 0}
 _http = requests.Session()
 
+def _safe_row(values_list):
+    """
+    Convert any value in a row that looks like a large integer (>15 digits)
+    to a string prefixed with a single quote so Excel stores it as TEXT,
+    not a float. This prevents Excel from corrupting long HU numbers
+    (IEEE 754 doubles only have 15 significant digits).
+    """
+    safe = []
+    for v in values_list:
+        if v is not None:
+            s = str(v).strip()
+            # If it's a pure digit string longer than 15 digits, force text storage
+            if s.isdigit() and len(s) > 15:
+                safe.append("'" + s)   # leading apostrophe = Excel text prefix
+            else:
+                safe.append(v)
+        else:
+            safe.append(v)
+    return safe
 
 class GraphAPIError(Exception):
     def __init__(self, message, status_code=500, details=""):
@@ -295,7 +314,7 @@ def append_row(sheet_name, values_list, num_cols):
         # Write the row
         addr = f"A{next_row}:{_col_letter(num_cols)}{next_row}"
         write_url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
-        _req('PATCH', write_url, h, json_data={"values": [values_list]})
+        _req('PATCH', write_url, h, json_data={"values": [_safe_row(values_list)]})
         logger.info(f"Appended row {next_row} to '{sheet_name}'")
         return next_row
     finally:
@@ -311,7 +330,7 @@ def update_row(sheet_name, row_number, values_list, num_cols):
     try:
         addr = f"A{row_number}:{_col_letter(num_cols)}{row_number}"
         url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
-        _req('PATCH', url, h, json_data={"values": [values_list]})
+        _req('PATCH', url, h, json_data={"values": [_safe_row(values_list)]})
         logger.info(f"Updated row {row_number} in '{sheet_name}'")
     finally:
         _close_session(sid)
@@ -342,14 +361,14 @@ def upsert_row(sheet_name, key_col_index, key_value, values_list, num_cols):
         if target_row:
             addr = f"A{target_row}:{_col_letter(num_cols)}{target_row}"
             write_url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
-            _req('PATCH', write_url, h, json_data={"values": [values_list]})
+            _req('PATCH', write_url, h, json_data={"values": [_safe_row(values_list)]})
             logger.info(f"Upsert: updated row {target_row} in '{sheet_name}'")
             return 'updated'
         else:
             next_row = len(all_values) + 1
             addr = f"A{next_row}:{_col_letter(num_cols)}{next_row}"
             write_url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
-            _req('PATCH', write_url, h, json_data={"values": [values_list]})
+            _req('PATCH', write_url, h, json_data={"values": [_safe_row(values_list)]})
             logger.info(f"Upsert: appended row {next_row} to '{sheet_name}'")
             return 'appended'
     finally:
