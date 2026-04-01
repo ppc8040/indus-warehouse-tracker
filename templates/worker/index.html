@@ -42,6 +42,25 @@
       <button class="btn btn-pri" id="btnToggleScan" onclick="toggleScanner()">
         <span class="btn-icon">📷</span> START CAMERA
       </button>
+
+      <!-- Photo scan: hidden file input triggered by button below -->
+      <input
+        type="file"
+        id="labelPhotoInput"
+        accept="image/*"
+        capture="environment"
+        style="display:none"
+        onchange="processLabelPhoto(this)">
+
+      <button
+        class="btn btn-outline"
+        style="margin-top:10px;font-size:.9rem"
+        onclick="document.getElementById('labelPhotoInput').click()">
+        📸 PHOTO SCAN &mdash; Photograph entire label
+      </button>
+      <p style="font-size:.75rem;color:#9E9E9E;margin-top:6px;text-align:center">
+        Use if camera won’t scan a code &mdash; takes a photo and reads all fields at once
+      </p>
     </div>
 
     <!-- Scanned values display -->
@@ -60,7 +79,7 @@
             <button onclick="manualHU()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
           </div>
         </div>
-        <button onclick="showManualHU()" id="huManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">Barcode won't scan? Type it manually</button>
+        <button onclick="showManualHU()" id="huManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">Barcode won’t scan? Type it manually</button>
       </div>
 
       <div class="scan-field" id="sf-indus">
@@ -97,7 +116,7 @@
 
     <div class="btn-group">
       <button class="btn btn-ok" id="btnProceed" onclick="goAction()" disabled>
-        PROCEED TO MOVEMENT →
+        PROCEED TO MOVEMENT &rarr;
       </button>
       <button class="btn btn-outline" onclick="resetScans()">
         RESET ALL SCANS
@@ -129,7 +148,7 @@
         🔑 SUPERVISOR OVERRIDE
       </button>
       <button class="btn btn-outline" onclick="goScan()">
-        ← BACK TO SCAN
+        &larr; BACK TO SCAN
       </button>
     </div>
   </div>
