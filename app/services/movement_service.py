@@ -136,7 +136,7 @@ def process_movement(
         log_sheet = current_app.config['SHEET_MOVEMENT_LOG']
         log_row = [
             event_id,                           # A: Event_ID
-            timestamp,                          # B: Timestamp_UTC
+            _fmt_timestamp(timestamp),          # B: Timestamp_UTC
             hu,                                 # C: Handling_Unit
             _s(indus_part).strip(),             # D: Indus_Part
             _s(customer_part).strip(),          # E: Customer_Part
@@ -152,7 +152,7 @@ def process_movement(
 
         # ── Upsert Pallet_Status (5 columns A-E) ──
         location = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
-        status_row = [hu, location, event_id, movement, timestamp,
+        status_row = [hu, location, event_id, movement, _fmt_timestamp(timestamp),
                       _s(indus_part).strip(), _s(pallet_qty).strip()]
         upsert_row(status_sheet, 0, hu, status_row, PALLET_STATUS_COLS)
 
@@ -297,6 +297,23 @@ def _check_transition(hu, movement, cur_state, is_override,
 
     return None
 
+def _fmt_timestamp(iso_str):
+    """
+    Convert an ISO 8601 UTC timestamp string to DD/MM/YYYY HH:MM:SS AM/PM
+    for display in the Excel sheet.
+    Input:  '2026-04-01T12:48:17.802Z'  or  '2026-04-01T12:48:17+00:00'
+    Output: '01/04/2026 12:48:17 PM'
+    Falls back to the original string if parsing fails.
+    """
+    if not iso_str:
+        return iso_str
+    try:
+        # Strip trailing Z and parse
+        clean = iso_str.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(clean)
+        return dt.strftime('%d/%m/%Y %I:%M:%S %p')
+    except Exception:
+        return iso_str
 
 def _normalise_str(val):
     """Strip, uppercase, remove trailing .0 from numeric strings."""
@@ -306,14 +323,13 @@ def _normalise_str(val):
         s = s[:-2]
     return s
 
-
 def _log_error(stage, error_code, handling_unit, message):
     """Best-effort write to Error_Log. Never raises."""
     try:
         sheet = current_app.config.get('SHEET_ERROR_LOG', 'Error_Log')
         eid = str(uuid.uuid4())[:12].upper()
         now = datetime.now(timezone.utc).isoformat()
-        row = [eid, now, str(handling_unit), stage, error_code, str(message)[:500], 'NO']
+        row = [eid, _fmt_timestamp(now), str(handling_unit), stage, error_code, str(message)[:500], 'NO']
         append_row(sheet, row, ERROR_LOG_COLS)
     except Exception as e:
         logger.error(f"Error_Log write failed: {e}. Original: {stage}/{error_code}/{handling_unit}/{message}")
