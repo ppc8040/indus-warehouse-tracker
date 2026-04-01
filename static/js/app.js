@@ -191,47 +191,48 @@ function onScanSuccess(decodedText) {
 
 function classifyAndStore(val) {
   /*
-    Classification — ORDER-BASED for QR codes.
+    SMART CLASSIFICATION — value format rules based on label spec:
 
-    HU barcode: 16–20 digits starting with 1000.
-    Everything else is assigned by scan ORDER:
-      1st non-HU scan  → indus_part
-      2nd non-HU scan  → customer_part  (can be ANY format — alpha, numeric, mixed)
-      3rd non-HU scan  → pallet_qty
+    HANDLING UNIT:  16–18 digits, starts with 1000
+    INDUS PART:     3 uppercase letters followed by 4 digits  (e.g. CCR2324, CEJ1982)
+    PALLET QTY:     1–3 digit integer (1–999)
+    CUSTOMER PART:  anything else that doesn't match the above
+                    (alphanumeric, mixed, long numbers like 8750722840, ENG-1440, etc.)
 
-    We do NOT use value format to assign customer_part or pallet_qty,
-    because customer part can be a long number (e.g. 8750722840) which
-    would be incorrectly rejected or misrouted by digit-length rules.
-
-    The only format-based rule is HU detection (must start with 1000, 16-20 digits)
-    which is unambiguous on these labels.
+    Rules are checked in priority order. The FIRST matching rule wins.
+    Customer Part is the catch-all — it gets whatever doesn't match the others.
   */
-  const isAllDigits = /^\d+$/.test(val);
 
-  // ── HU barcode: 16–20 digits, starts with 1000 ──
-  if (isAllDigits && val.length >= 16 && val.length <= 20 && val.startsWith('1000') && !scanned.handling_unit) {
-    scanned.handling_unit = val;
+  const v = val.trim();
+  if (!v) return;
+
+  // ── 1. Handling Unit: 16–18 digits starting with 1000 ──
+  if (/^\d{16,18}$/.test(v) && v.startsWith('1000')) {
+    if (!scanned.handling_unit) scanned.handling_unit = v;
     return;
   }
 
-  // ── Order-based QR assignment ──
-  // First available slot wins regardless of value format
-  if (!scanned.indus_part) {
-    scanned.indus_part = val;
-    qrScanOrder++;
+  // ── 2. Indus Part: exactly 3 uppercase letters + 4 digits ──
+  //    e.g. CCR2324, CEJ1982, CCG1900
+  if (/^[A-Z]{3}\d{4}$/.test(v)) {
+    if (!scanned.indus_part) scanned.indus_part = v;
     return;
   }
+
+  // ── 3. Pallet Qty: small integer 1–999 (no letters, no dashes) ──
+  if (/^\d{1,3}$/.test(v) && parseInt(v, 10) >= 1) {
+    if (!scanned.pallet_qty) scanned.pallet_qty = v;
+    return;
+  }
+
+  // ── 4. Customer Part: everything else ──
+  //    covers: ENG-1440, 161878, 8750722840, mixed alphanumeric, etc.
   if (!scanned.customer_part) {
-    scanned.customer_part = val;
-    qrScanOrder++;
+    scanned.customer_part = v;
     return;
   }
-  if (!scanned.pallet_qty) {
-    scanned.pallet_qty = val;
-    qrScanOrder++;
-    return;
-  }
-  // All slots full — ignore duplicates / extra codes silently
+
+  // All slots full — silently ignore
 }
 
 function getScannedCount() {
@@ -379,20 +380,52 @@ async function processLabelPhoto(input) {
 // html5-qrcode's scanFile only returns ONE code per call, so we crop the image
 // into regions targeting each QR position on the label and scan each crop.
 async function scanAllCodesFromImage(file) {
-  const found = [];
+  /*
+    Scans a still label photo for all 4 codes.
 
-  // Helper: scan a canvas crop and collect the result
-  async function scanCrop(canvas) {
+    Strategy:
+      1. Full image scan first (catches whatever is most prominent)
+      2. Targeted crops for each QR position (right side of label)
+         — each crop is scaled up 2.5x before scanning for better decode accuracy
+      3. Barcode crop is handled separately by extractHUFromImage()
+
+    QR positions are based on the fixed Indus label layout:
+      QR1 (Indus Part):    top-right,  ~8%–32% of height,  right 38% of width
+      QR2 (Customer Part): middle-right, ~30%–54% of height, right 38% of width
+      QR3 (Pallet Qty):    lower-right,  ~50%–70% of height, right 38% of width
+  */
+
+  async function cropAndScan(img, xRatio, yRatio, wRatio, hRatio, workerId) {
+    const W = img.width, H = img.height;
+    const sx = Math.floor(W * xRatio);
+    const sy = Math.floor(H * yRatio);
+    const sw = Math.floor(W * wRatio);
+    const sh = Math.floor(H * hRatio);
+
+    // Minimum crop size guard
+    if (sw < 40 || sh < 40) return null;
+
+    // Draw crop
+    const crop = document.createElement('canvas');
+    crop.width = sw; crop.height = sh;
+    crop.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    // Scale up 2.5x — small QR codes decode much better at higher resolution
+    const scale = document.createElement('canvas');
+    scale.width = Math.round(sw * 2.5);
+    scale.height = Math.round(sh * 2.5);
+    scale.getContext('2d').drawImage(crop, 0, 0, scale.width, scale.height);
+
     return new Promise((resolve) => {
-      canvas.toBlob(async (blob) => {
+      scale.toBlob(async (blob) => {
         if (!blob) { resolve(null); return; }
         const f = new File([blob], 'crop.jpg', { type: 'image/jpeg' });
         try {
-          const qr = new Html5Qrcode('_photoScanWorker');
+          const qr = new Html5Qrcode(workerId);
           const result = await qr.scanFile(f, false);
           resolve(result ? result.trim() : null);
         } catch (e) { resolve(null); }
-      }, 'image/jpeg', 0.95);
+      }, 'image/jpeg', 0.96);
     });
   }
 
@@ -401,43 +434,52 @@ async function scanAllCodesFromImage(file) {
     reader.onload = async (e) => {
       const img = new Image();
       img.onload = async () => {
-        const W = img.width;
-        const H = img.height;
+        const found = [];
 
-        // Scan the full image first (catches any QR in one pass)
+        const add = (v) => {
+          if (v && v.trim() && !found.includes(v.trim())) found.push(v.trim());
+        };
+
+        // Pass 1: full image
         const fullCanvas = document.createElement('canvas');
-        fullCanvas.width = W; fullCanvas.height = H;
+        fullCanvas.width = img.width; fullCanvas.height = img.height;
         fullCanvas.getContext('2d').drawImage(img, 0, 0);
-        const fullResult = await scanCrop(fullCanvas);
-        if (fullResult && !found.includes(fullResult)) found.push(fullResult);
+        await new Promise((res) => {
+          fullCanvas.toBlob(async (blob) => {
+            if (!blob) { res(); return; }
+            const f = new File([blob], 'full.jpg', { type: 'image/jpeg' });
+            try {
+              const qr = new Html5Qrcode('_photoScanWorker');
+              const result = await qr.scanFile(f, false);
+              add(result);
+            } catch (e) {}
+            res();
+          }, 'image/jpeg', 0.95);
+        });
 
-        // Crop regions targeting the 3 QR code positions on the right side of the label
-        // Label layout: QR1 at ~15-35% height, QR2 at ~35-55%, QR3 at ~55-72%
-        // Each QR is in the right ~30% of the label width
-        const qrRegions = [
-          { x: W * 0.60, y: H * 0.08, w: W * 0.40, h: H * 0.25 },  // QR 1 — Indus Part
-          { x: W * 0.60, y: H * 0.28, w: W * 0.40, h: H * 0.25 },  // QR 2 — Customer Part
-          { x: W * 0.60, y: H * 0.48, w: W * 0.40, h: H * 0.25 },  // QR 3 — Pallet Qty
+        // Pass 2: targeted crops for each QR position
+        // xRatio, yRatio, wRatio, hRatio
+        const regions = [
+          [0.58, 0.07, 0.42, 0.26, '_qrCrop1'],   // QR1: Indus Part
+          [0.58, 0.28, 0.42, 0.26, '_qrCrop2'],   // QR2: Customer Part
+          [0.58, 0.48, 0.42, 0.24, '_qrCrop3'],   // QR3: Pallet Qty
+          // Also try slightly wider crops in case photo is angled
+          [0.50, 0.05, 0.50, 0.30, '_qrCrop4'],   // QR1 wide
+          [0.50, 0.26, 0.50, 0.30, '_qrCrop5'],   // QR2 wide
+          [0.50, 0.46, 0.50, 0.28, '_qrCrop6'],   // QR3 wide
         ];
 
-        for (const r of qrRegions) {
-          const c = document.createElement('canvas');
-          c.width = Math.floor(r.w); c.height = Math.floor(r.h);
-          c.getContext('2d').drawImage(img, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
-          // Scale up small crops for better QR detection
-          const scaled = document.createElement('canvas');
-          scaled.width = Math.max(c.width, 400); scaled.height = Math.max(c.height, 400);
-          scaled.getContext('2d').drawImage(c, 0, 0, scaled.width, scaled.height);
-          const result = await scanCrop(scaled);
-          if (result && !found.includes(result)) found.push(result);
+        for (const [x, y, w, h, id] of regions) {
+          const result = await cropAndScan(img, x, y, w, h, id);
+          add(result);
         }
 
         resolve(found);
       };
-      img.onerror = () => resolve(found);
+      img.onerror = () => resolve([]);
       img.src = e.target.result;
     };
-    reader.onerror = () => resolve(found);
+    reader.onerror = () => resolve([]);
     reader.readAsDataURL(file);
   });
 }
