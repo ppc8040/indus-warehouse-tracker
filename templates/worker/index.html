@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="theme-color" content="#1565C0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Indus WH">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <title>Indus Warehouse Tracker</title>
+  <link rel="stylesheet" href="/static/css/worker.css">
+</head>
+<body>
+
+<!-- ═══ Header ═══ -->
+<header class="hdr">
+  <h1>INDUS WAREHOUSE</h1>
+  <div class="hdr-right">
+    <span class="badge" id="pendingBadge">0 pending</span>
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">Online</span>
+  </div>
+</header>
+
+<!-- ═══ Toast Container ═══ -->
+<div class="toast-box" id="toastBox"></div>
+
+<div class="wrap">
+
+  <!-- ═══ SCREEN 1: SCAN ═══ -->
+  <div class="scr on" id="scrScan">
+    <div class="cam-box">
+      <div class="vid-wrap">
+        <video id="camVideo" autoplay playsinline muted></video>
+        <div class="reticle"><div class="reticle-box"></div></div>
+      </div>
+      <div class="cam-hint" id="camHint">Point camera at pallet barcode</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-pri" id="btnStartScan" onclick="startScanner()">
+        <span class="btn-icon">📷</span> TAP TO SCAN
+      </button>
+      <button class="btn btn-outline" onclick="showManualEntry()">
+        TYPE BARCODE MANUALLY
+      </button>
+    </div>
+
+    <!-- Manual entry (hidden by default) -->
+    <div class="card mt16 hide" id="manualBox">
+      <div class="fg">
+        <label for="manualHU">Handling Unit Barcode</label>
+        <input type="text" id="manualHU" placeholder="Type or paste barcode" autocomplete="off" inputmode="text">
+      </div>
+      <button class="btn btn-pri" onclick="manualLookup()">LOOK UP</button>
+    </div>
+  </div>
+
+  <!-- ═══ SCREEN 2: PALLET DETAILS + ACTION ═══ -->
+  <div class="scr" id="scrAction">
+    <div class="card" id="palletCard">
+      <div>
+        <span class="hu-tag" id="huDisplay">—</span>
+        <span class="st-tag unk" id="statusTag">—</span>
+      </div>
+      <div class="details mt16">
+        <div class="det"><span class="det-lbl">Indus Part</span><span class="det-val" id="dIndus">—</span></div>
+        <div class="det"><span class="det-lbl">Customer Part</span><span class="det-val" id="dCust">—</span></div>
+        <div class="det"><span class="det-lbl">Pallet Qty</span><span class="det-val" id="dQty">—</span></div>
+        <div class="det"><span class="det-lbl">Job No</span><span class="det-val" id="dJob">—</span></div>
+        <div class="det full"><span class="det-lbl">Description</span><span class="det-val" id="dDesc">—</span></div>
+      </div>
+    </div>
+
+    <div class="notes-area">
+      <textarea id="notesInput" placeholder="Notes (optional)" rows="2"></textarea>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-ok" id="btnStockIn" onclick="doMovement('STOCK_IN')">
+        <span class="btn-icon">📥</span> STOCK IN
+      </button>
+      <button class="btn btn-err" id="btnStockOut" onclick="doMovement('STOCK_OUT')">
+        <span class="btn-icon">📤</span> STOCK OUT
+      </button>
+      <button class="btn btn-warn" id="btnOverride" onclick="showOverrideModal()">
+        🔑 SUPERVISOR OVERRIDE
+      </button>
+      <button class="btn btn-outline" onclick="goScan()">
+        ← SCAN ANOTHER
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══ SCREEN 3: RESULT ═══ -->
+  <div class="scr" id="scrResult">
+    <div class="banner" id="resultBanner">
+      <div class="banner-icon" id="resultIcon">✓</div>
+      <div class="banner-title" id="resultTitle">—</div>
+      <div class="banner-msg" id="resultMsg">—</div>
+    </div>
+    <div class="result-info" id="resultInfo"></div>
+    <div class="btn-group">
+      <button class="btn btn-pri" onclick="goScan()" style="min-height:72px;font-size:1.3rem">
+        SCAN NEXT PALLET
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══ SPINNER ═══ -->
+  <div class="spin" id="spinner">
+    <div class="spin-txt">Connecting to system...</div>
+  </div>
+</div>
+
+<!-- ═══ Override Modal ═══ -->
+<div class="modal-bg" id="overrideModal">
+  <div class="modal">
+    <h2>🔑 Supervisor Override</h2>
+    <div class="fg">
+      <label for="pinInput">Supervisor PIN</label>
+      <input type="password" id="pinInput" maxlength="10" inputmode="numeric" placeholder="••••">
+    </div>
+    <div class="fg">
+      <label for="overrideMovement">Movement Type</label>
+      <select id="overrideMovement">
+        <option value="STOCK_IN">STOCK IN</option>
+        <option value="STOCK_OUT">STOCK OUT</option>
+      </select>
+    </div>
+    <div class="fg">
+      <label for="overrideReason">Reason (required)</label>
+      <textarea id="overrideReason" placeholder="Why is this override needed?" rows="3"></textarea>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-outline" onclick="closeOverride()">Cancel</button>
+      <button class="btn btn-err" onclick="submitOverride()">CONFIRM OVERRIDE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ZXing barcode library (CDN) -->
+<script src="https://unpkg.com/@AlinaShablinskaya/zxing-js-library@latest/umd/index.min.js"></script>
+
+<script src="/static/js/offline.js"></script>
+<script src="/static/js/app.js"></script>
+
+<script>
+  // Register service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js', {scope: '/'})
+      .then(r => console.log('SW registered:', r.scope))
+      .catch(e => console.warn('SW failed:', e));
+  }
+</script>
+</body>
+</html>

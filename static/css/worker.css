@@ -1,0 +1,135 @@
+/* ═══════════════════════════════════════════════════════════
+   INDUS WAREHOUSE TRACKER — Mobile-First Worker UI
+   For: factory workers, gloves, bright sun, no typing
+   ═══════════════════════════════════════════════════════════ */
+:root {
+  --pri: #1565C0; --pri-dk: #0D47A1;
+  --ok: #2E7D32; --ok-bg: #E8F5E9;
+  --err: #C62828; --err-bg: #FFEBEE;
+  --warn: #F57F17; --warn-bg: #FFF8E1;
+  --txt: #212121; --txt2: #757575;
+  --bg: #F5F5F5; --white: #FFF; --bdr: #E0E0E0;
+  --sh: 0 2px 8px rgba(0,0,0,.15);
+  --sh2: 0 4px 16px rgba(0,0,0,.2);
+  --rad: 12px; --rad2: 16px;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{font-size:18px;-webkit-text-size-adjust:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+  background:var(--bg);color:var(--txt);min-height:100dvh;overflow-x:hidden;
+  padding-bottom:env(safe-area-inset-bottom,0)}
+
+/* ─── Header ─────────────────────────────── */
+.hdr{background:var(--pri);color:var(--white);padding:12px 16px;display:flex;
+  align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:var(--sh)}
+.hdr h1{font-size:1.05rem;font-weight:700;letter-spacing:.5px}
+.hdr-right{display:flex;align-items:center;gap:8px;font-size:.72rem}
+.dot{width:10px;height:10px;border-radius:50%;background:#4CAF50;flex-shrink:0}
+.dot.off{background:#FF9800;animation:pulse 1.5s infinite}
+.dot.err{background:#F44336}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.badge{background:var(--warn);color:#000;padding:2px 8px;border-radius:12px;font-size:.68rem;font-weight:700;display:none}
+.badge.show{display:inline-block}
+
+/* ─── Container ──────────────────────────── */
+.wrap{max-width:480px;margin:0 auto;padding:16px}
+
+/* ─── Screens ────────────────────────────── */
+.scr{display:none;animation:fadeIn .2s ease}
+.scr.on{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* ─── Camera / Scan Area ─────────────────── */
+.cam-box{background:var(--white);border-radius:var(--rad2);box-shadow:var(--sh);overflow:hidden;margin-bottom:16px}
+.vid-wrap{position:relative;width:100%;aspect-ratio:4/3;background:#000;display:flex;align-items:center;justify-content:center}
+.vid-wrap video{width:100%;height:100%;object-fit:cover}
+.reticle{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.reticle-box{width:70%;height:50%;border:3px solid rgba(255,255,255,.8);border-radius:12px;position:relative}
+.reticle-box::before{content:'';position:absolute;top:50%;left:5%;right:5%;height:2px;background:#F00;animation:scanln 2s ease-in-out infinite}
+@keyframes scanln{0%,100%{opacity:.3}50%{opacity:1}}
+.cam-hint{padding:12px 16px;text-align:center;font-size:.88rem;color:var(--txt2);background:var(--white)}
+
+/* ─── Buttons ────────────────────────────── */
+.btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:56px;
+  padding:16px 24px;border:none;border-radius:var(--rad);font-size:1.1rem;font-weight:700;
+  cursor:pointer;transition:all .15s;text-transform:uppercase;letter-spacing:1px;gap:10px;user-select:none}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn-pri{background:var(--pri);color:var(--white);box-shadow:var(--sh)}
+.btn-ok{background:var(--ok);color:var(--white);min-height:72px;font-size:1.3rem;box-shadow:var(--sh2)}
+.btn-err{background:var(--err);color:var(--white);min-height:72px;font-size:1.3rem;box-shadow:var(--sh2)}
+.btn-warn{background:var(--warn);color:#000;font-size:.9rem;min-height:48px}
+.btn-outline{background:var(--white);color:var(--txt);border:2px solid var(--bdr)}
+.btn-group{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+
+/* ─── Pallet Card ────────────────────────── */
+.card{background:var(--white);border-radius:var(--rad2);box-shadow:var(--sh);padding:20px;margin-bottom:16px}
+.hu-tag{display:inline-block;background:var(--pri);color:var(--white);padding:6px 16px;border-radius:20px;
+  font-size:1rem;font-weight:700;margin-bottom:16px;letter-spacing:1px}
+.st-tag{display:inline-block;padding:4px 12px;border-radius:20px;font-size:.8rem;font-weight:700;margin-left:8px}
+.st-tag.in{background:var(--ok-bg);color:var(--ok)}
+.st-tag.out{background:var(--err-bg);color:var(--err)}
+.st-tag.unk{background:var(--warn-bg);color:var(--warn)}
+.details{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.det{display:flex;flex-direction:column}
+.det.full{grid-column:1/-1}
+.det-lbl{font-size:.7rem;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
+.det-val{font-size:1rem;font-weight:600;word-break:break-word}
+
+/* ─── Result Banner ──────────────────────── */
+.banner{border-radius:var(--rad2);padding:32px 20px;text-align:center;margin-bottom:16px;box-shadow:var(--sh)}
+.banner.ok{background:var(--ok);color:var(--white)}
+.banner.fail{background:var(--err);color:var(--white)}
+.banner.pend{background:var(--warn);color:#000}
+.banner-icon{font-size:4rem;margin-bottom:12px;line-height:1}
+.banner-title{font-size:1.4rem;font-weight:800;margin-bottom:8px}
+.banner-msg{font-size:1rem;line-height:1.4;opacity:.9}
+.result-info{background:var(--white);border-radius:var(--rad);padding:16px;margin-bottom:16px;box-shadow:var(--sh)}
+.result-info .row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bdr)}
+.result-info .row:last-child{border-bottom:none}
+.result-info .row .lbl{color:var(--txt2);font-size:.85rem}
+.result-info .row .val{font-weight:600;font-size:.95rem;text-align:right}
+
+/* ─── Modal ──────────────────────────────── */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;
+  justify-content:center;z-index:200;padding:16px}
+.modal-bg.on{display:flex}
+.modal{background:var(--white);border-radius:var(--rad2);padding:24px;width:100%;max-width:400px;box-shadow:var(--sh2)}
+.modal h2{font-size:1.2rem;margin-bottom:16px;color:var(--err)}
+.fg{margin-bottom:16px}
+.fg label{display:block;font-size:.8rem;font-weight:600;color:var(--txt2);text-transform:uppercase;margin-bottom:6px}
+.fg input,.fg textarea,.fg select{width:100%;padding:14px 16px;border:2px solid var(--bdr);border-radius:var(--rad);
+  font-size:1.1rem;font-family:inherit;background:var(--white);color:var(--txt);-webkit-appearance:none}
+.fg input:focus,.fg textarea:focus{border-color:var(--pri);outline:none}
+.fg input[type="password"]{letter-spacing:4px;font-size:1.3rem;text-align:center}
+.fg textarea{min-height:80px;resize:vertical}
+.modal-btns{display:flex;gap:12px;margin-top:20px}
+.modal-btns .btn{flex:1;min-height:48px;font-size:.95rem}
+.notes-area{margin-top:12px}
+.notes-area textarea{width:100%;padding:12px;border:2px solid var(--bdr);border-radius:var(--rad);
+  font-size:.95rem;font-family:inherit;min-height:60px;resize:vertical}
+
+/* ─── Spinner ────────────────────────────── */
+.spin{display:none;text-align:center;padding:32px}
+.spin.on{display:block}
+.spin::after{content:'';display:inline-block;width:40px;height:40px;border:4px solid var(--bdr);
+  border-top-color:var(--pri);border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.spin-txt{margin-top:12px;font-size:.9rem;color:var(--txt2)}
+
+/* ─── Toast ──────────────────────────────── */
+.toast-box{position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:300;width:calc(100% - 32px);max-width:400px}
+.toast{padding:14px 16px;border-radius:var(--rad);margin-bottom:8px;font-weight:600;font-size:.9rem;
+  box-shadow:var(--sh2);animation:slideD .3s ease;display:flex;align-items:center;gap:8px}
+.toast.info{background:#0277BD;color:var(--white)}
+.toast.ok{background:var(--ok);color:var(--white)}
+.toast.fail{background:var(--err);color:var(--white)}
+.toast.warn{background:var(--warn);color:#000}
+@keyframes slideD{from{opacity:0;transform:translateY(-20px)}to{opacity:1;transform:translateY(0)}}
+
+/* ─── Misc ───────────────────────────────── */
+.tc{text-align:center}
+.mt8{margin-top:8px} .mt16{margin-top:16px} .mb16{margin-bottom:16px}
+.hide{display:none!important}
+input,textarea,select{font-size:16px}
+@supports(padding-top:env(safe-area-inset-top)){.hdr{padding-top:calc(12px + env(safe-area-inset-top))}}

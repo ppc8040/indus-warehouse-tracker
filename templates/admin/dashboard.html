@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Indus Warehouse — Admin</title>
+  <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+<header class="admin-hdr">
+  <h1>Indus Warehouse — Admin Dashboard</h1>
+  <div>
+    <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
+    <span class="conn-status" id="connStatus">checking...</span>
+  </div>
+</header>
+
+<div class="admin-wrap">
+  <!-- Stats Cards -->
+  <div class="stats-grid" id="statsGrid">
+    <div class="stat-card"><div class="stat-num" id="sMov">—</div><div class="stat-lbl">Movements</div></div>
+    <div class="stat-card"><div class="stat-num ok" id="sIn">—</div><div class="stat-lbl">Pallets IN</div></div>
+    <div class="stat-card"><div class="stat-num err" id="sOut">—</div><div class="stat-lbl">Pallets OUT</div></div>
+    <div class="stat-card"><div class="stat-num warn" id="sOver">—</div><div class="stat-lbl">Overrides</div></div>
+    <div class="stat-card"><div class="stat-num err" id="sErr">—</div><div class="stat-lbl">Errors</div></div>
+    <div class="stat-card"><div class="stat-num warn" id="sPend">—</div><div class="stat-lbl">Pending Keys</div></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab on" onclick="switchTab('movements',this)">Movements</button>
+    <button class="tab" onclick="switchTab('statuses',this)">Pallet Status</button>
+    <button class="tab" onclick="switchTab('errors',this)">Error Log</button>
+  </div>
+
+  <div class="tab-content on" id="tab-movements"><div class="empty">Loading...</div></div>
+  <div class="tab-content" id="tab-statuses"><div class="empty">Loading...</div></div>
+  <div class="tab-content" id="tab-errors"><div class="empty">Loading...</div></div>
+</div>
+
+<script>
+function switchTab(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('on'));
+  el.classList.add('on');
+  document.getElementById('tab-' + name).classList.add('on');
+}
+
+function tag(text, cls) {
+  return `<span class="tag ${cls}">${text}</span>`;
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch('/admin/api/stats');
+    const d = await r.json();
+    document.getElementById('sMov').textContent = d.total_movements || 0;
+    document.getElementById('sIn').textContent = d.pallets_in || 0;
+    document.getElementById('sOut').textContent = d.pallets_out || 0;
+    document.getElementById('sOver').textContent = d.override_count || 0;
+    document.getElementById('sErr').textContent = d.total_errors || 0;
+    document.getElementById('sPend').textContent = d.pending_keys || 0;
+  } catch(e) { console.error('Stats failed:', e); }
+}
+
+async function loadMovements() {
+  try {
+    const r = await fetch('/admin/api/movements?limit=100');
+    const d = await r.json();
+    const rows = d.movements || [];
+    if (!rows.length) { document.getElementById('tab-movements').innerHTML = '<div class="empty">No movements yet.</div>'; return; }
+    let html = '<table><thead><tr><th>Event ID</th><th>Time (UTC)</th><th>HU</th><th>Indus Part</th><th>Type</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>';
+    for (const m of rows) {
+      const typeTag = m.Movement_Type === 'STOCK_IN' ? tag('IN','tag-ok') : tag('OUT','tag-err');
+      const syncTag = m.Sync_Status === 'SYNCED' ? tag('SYNCED','tag-ok') : tag(m.Sync_Status,'tag-warn');
+      let valTag = tag(m.Validation_Status || '—','tag-info');
+      if (m.Validation_Status === 'OVERRIDE') valTag = tag('OVERRIDE','tag-warn');
+      if (m.Validation_Status === 'REJECTED') valTag = tag('REJECTED','tag-err');
+      html += `<tr><td>${m.Event_ID||''}</td><td>${m.Timestamp_UTC||''}</td><td><strong>${m.Handling_Unit||''}</strong></td><td>${m.Indus_Part||''}</td><td>${typeTag}</td><td>${m.Operator_ID||''}</td><td>${syncTag}</td><td>${valTag}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    document.getElementById('tab-movements').innerHTML = html;
+  } catch(e) { document.getElementById('tab-movements').innerHTML = '<div class="empty">Failed to load.</div>'; }
+}
+
+async function loadStatuses() {
+  try {
+    const r = await fetch('/admin/api/pallet-statuses');
+    const d = await r.json();
+    const rows = d.statuses || [];
+    if (!rows.length) { document.getElementById('tab-statuses').innerHTML = '<div class="empty">No pallet statuses.</div>'; return; }
+    let html = '<table><thead><tr><th>HU</th><th>Status</th><th>Last Event</th><th>Last Movement</th><th>Last Time</th></tr></thead><tbody>';
+    for (const s of rows) {
+      const stTag = s.Current_Status === 'IN_WAREHOUSE' ? tag('IN','tag-ok') : s.Current_Status === 'OUT_OF_WAREHOUSE' ? tag('OUT','tag-err') : tag(s.Current_Status||'—','tag-info');
+      html += `<tr><td><strong>${s.Handling_Unit||''}</strong></td><td>${stTag}</td><td>${s.Last_Event_ID||''}</td><td>${s.Last_Movement_Type||''}</td><td>${s.Last_Movement_Time||''}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    document.getElementById('tab-statuses').innerHTML = html;
+  } catch(e) { document.getElementById('tab-statuses').innerHTML = '<div class="empty">Failed to load.</div>'; }
+}
+
+async function loadErrors() {
+  try {
+    const r = await fetch('/admin/api/errors');
+    const d = await r.json();
+    const rows = d.errors || [];
+    if (!rows.length) { document.getElementById('tab-errors').innerHTML = '<div class="empty">No errors logged.</div>'; return; }
+    let html = '<table><thead><tr><th>Error ID</th><th>Time (UTC)</th><th>HU</th><th>Stage</th><th>Code</th><th>Message</th><th>Resolved</th></tr></thead><tbody>';
+    for (const e of rows) {
+      const resTag = e.Resolved_Flag === 'YES' ? tag('YES','tag-ok') : tag('NO','tag-err');
+      html += `<tr><td>${e.Error_ID||''}</td><td>${e.Timestamp_UTC||''}</td><td>${e.Handling_Unit||''}</td><td>${e.Stage||''}</td><td>${e.Error_Code||''}</td><td title="${e.Error_Message||''}">${(e.Error_Message||'').substring(0,80)}</td><td>${resTag}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    document.getElementById('tab-errors').innerHTML = html;
+  } catch(e) { document.getElementById('tab-errors').innerHTML = '<div class="empty">Failed to load.</div>'; }
+}
+
+async function checkConn() {
+  try {
+    const r = await fetch('/admin/api/connection-test');
+    const d = await r.json();
+    const el = document.getElementById('connStatus');
+    if (d.status === 'connected') {
+      el.textContent = '● Connected';
+      el.className = 'conn-status ok';
+    } else {
+      el.textContent = '● ' + (d.message || 'Error');
+      el.className = 'conn-status err';
+    }
+  } catch(e) {
+    const el = document.getElementById('connStatus');
+    el.textContent = '● Offline';
+    el.className = 'conn-status err';
+  }
+}
+
+function loadAll() {
+  checkConn();
+  loadStats();
+  loadMovements();
+  loadStatuses();
+  loadErrors();
+}
+
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>
