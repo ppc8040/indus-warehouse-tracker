@@ -136,11 +136,18 @@ def scan_label():
             "success": False,
             "message": str(e),
         }), 503
+    except RuntimeError as e:
+        # Tesseract not installed/found — give a clear message
+        logger.error("Tesseract not available: %s", e)
+        return jsonify({
+            "success": False,
+            "message": "OCR not ready on server: " + str(e),
+        }), 503
     except Exception as e:
         logger.error("Label OCR failed: %s", e, exc_info=True)
         return jsonify({
             "success": False,
-            "message": "Could not read the label image. Try a clearer photo.",
+            "message": "OCR failed: " + str(e),
         }), 422
 
     missing = [k for k, v in fields.items() if not v]
