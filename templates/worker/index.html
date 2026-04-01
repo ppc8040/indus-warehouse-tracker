@@ -14,7 +14,7 @@
 </head>
 <body>
 
-<!-- ═══ Header ═══ -->
+<!-- Header -->
 <header class="hdr">
   <h1>INDUS WAREHOUSE</h1>
   <div class="hdr-right">
@@ -24,71 +24,105 @@
   </div>
 </header>
 
-<!-- ═══ Toast Container ═══ -->
+<!-- Toast -->
 <div class="toast-box" id="toastBox"></div>
 
 <div class="wrap">
 
-  <!-- ═══ SCREEN 1: SCAN ═══ -->
+  <!-- ═══ SCREEN 1: SCAN ALL CODES ═══ -->
   <div class="scr on" id="scrScan">
-    <div class="cam-box">
-      <div class="vid-wrap">
-        <video id="camVideo" autoplay playsinline muted></video>
-        <div class="reticle"><div class="reticle-box"></div></div>
-      </div>
-      <div class="cam-hint" id="camHint">Point camera at pallet barcode</div>
-    </div>
-    <div class="btn-group">
-      <button class="btn btn-pri" id="btnStartScan" onclick="startScanner()">
-        <span class="btn-icon">📷</span> TAP TO SCAN
-      </button>
-      <button class="btn btn-outline" onclick="showManualEntry()">
-        TYPE BARCODE MANUALLY
+
+    <div class="card">
+      <h2 style="font-size:1.1rem;margin-bottom:12px;color:#1565C0">Scan Pallet Label</h2>
+      <p style="font-size:.85rem;color:#757575;margin-bottom:16px">Scan all 4 codes from the pallet label. The camera reads QR codes and barcodes automatically.</p>
+
+      <!-- Scanner area -->
+      <div id="scannerContainer" style="width:100%;margin-bottom:16px"></div>
+
+      <button class="btn btn-pri" id="btnToggleScan" onclick="toggleScanner()">
+        <span class="btn-icon">📷</span> START CAMERA
       </button>
     </div>
 
-    <!-- Manual entry (hidden by default) -->
-    <div class="card mt16 hide" id="manualBox">
-      <div class="fg">
-        <label for="manualHU">Handling Unit Barcode</label>
-        <input type="text" id="manualHU" placeholder="Type or paste barcode" autocomplete="off" inputmode="text">
+    <!-- Scanned values display -->
+    <div class="card mt16" id="scannedCard">
+      <h3 style="font-size:.95rem;margin-bottom:12px;color:#212121">Scanned Values</h3>
+
+      <div class="scan-field" id="sf-hu">
+        <div class="sf-row">
+          <span class="sf-label">Handling Unit (Barcode)</span>
+          <span class="sf-status" id="st-hu">NOT SCANNED</span>
+        </div>
+        <div class="sf-value" id="val-hu">—</div>
       </div>
-      <button class="btn btn-pri" onclick="manualLookup()">LOOK UP</button>
+
+      <div class="scan-field" id="sf-indus">
+        <div class="sf-row">
+          <span class="sf-label">Indus Part (QR 1)</span>
+          <span class="sf-status" id="st-indus">NOT SCANNED</span>
+        </div>
+        <div class="sf-value" id="val-indus">—</div>
+      </div>
+
+      <div class="scan-field" id="sf-cust">
+        <div class="sf-row">
+          <span class="sf-label">Customer Part (QR 2)</span>
+          <span class="sf-status" id="st-cust">NOT SCANNED</span>
+        </div>
+        <div class="sf-value" id="val-cust">—</div>
+      </div>
+
+      <div class="scan-field" id="sf-qty">
+        <div class="sf-row">
+          <span class="sf-label">Pallet Qty (QR 3)</span>
+          <span class="sf-status" id="st-qty">NOT SCANNED</span>
+        </div>
+        <div class="sf-value" id="val-qty">—</div>
+      </div>
+
+      <div style="margin-top:12px;padding:8px 0;border-top:1px solid #E0E0E0">
+        <div class="sf-row">
+          <span class="sf-label" style="font-size:.75rem">Scan Progress</span>
+          <span style="font-weight:700;font-size:.9rem" id="scanProgress">0 / 4</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-ok" id="btnProceed" onclick="goAction()" disabled>
+        PROCEED TO MOVEMENT →
+      </button>
+      <button class="btn btn-outline" onclick="resetScans()">
+        RESET ALL SCANS
+      </button>
     </div>
   </div>
 
-  <!-- ═══ SCREEN 2: PALLET DETAILS + ACTION ═══ -->
+  <!-- ═══ SCREEN 2: CONFIRM & CHOOSE MOVEMENT ═══ -->
   <div class="scr" id="scrAction">
     <div class="card" id="palletCard">
       <div>
         <span class="hu-tag" id="huDisplay">—</span>
-        <span class="st-tag unk" id="statusTag">—</span>
       </div>
       <div class="details mt16">
         <div class="det"><span class="det-lbl">Indus Part</span><span class="det-val" id="dIndus">—</span></div>
         <div class="det"><span class="det-lbl">Customer Part</span><span class="det-val" id="dCust">—</span></div>
         <div class="det"><span class="det-lbl">Pallet Qty</span><span class="det-val" id="dQty">—</span></div>
-        <div class="det"><span class="det-lbl">Job No</span><span class="det-val" id="dJob">—</span></div>
-        <div class="det full"><span class="det-lbl">Description</span><span class="det-val" id="dDesc">—</span></div>
       </div>
     </div>
 
-    <div class="notes-area">
-      <textarea id="notesInput" placeholder="Notes (optional)" rows="2"></textarea>
-    </div>
-
     <div class="btn-group">
-      <button class="btn btn-ok" id="btnStockIn" onclick="doMovement('STOCK_IN')">
+      <button class="btn btn-ok" onclick="doMovement('STOCK_IN')">
         <span class="btn-icon">📥</span> STOCK IN
       </button>
-      <button class="btn btn-err" id="btnStockOut" onclick="doMovement('STOCK_OUT')">
+      <button class="btn btn-err" onclick="doMovement('STOCK_OUT')">
         <span class="btn-icon">📤</span> STOCK OUT
       </button>
-      <button class="btn btn-warn" id="btnOverride" onclick="showOverrideModal()">
+      <button class="btn btn-warn" onclick="showOverrideModal()">
         🔑 SUPERVISOR OVERRIDE
       </button>
       <button class="btn btn-outline" onclick="goScan()">
-        ← SCAN ANOTHER
+        ← BACK TO SCAN
       </button>
     </div>
   </div>
@@ -108,13 +142,13 @@
     </div>
   </div>
 
-  <!-- ═══ SPINNER ═══ -->
+  <!-- Spinner -->
   <div class="spin" id="spinner">
     <div class="spin-txt">Connecting to system...</div>
   </div>
 </div>
 
-<!-- ═══ Override Modal ═══ -->
+<!-- Override Modal -->
 <div class="modal-bg" id="overrideModal">
   <div class="modal">
     <h2>🔑 Supervisor Override</h2>
@@ -140,14 +174,12 @@
   </div>
 </div>
 
-<!-- ZXing barcode library (CDN) -->
-<script src="https://unpkg.com/@AlinaShablinskaya/zxing-js-library@latest/umd/index.min.js"></script>
-
+<!-- html5-qrcode library — reliable, well-maintained, works on mobile -->
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="/static/js/offline.js"></script>
 <script src="/static/js/app.js"></script>
 
 <script>
-  // Register service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js', {scope: '/'})
       .then(r => console.log('SW registered:', r.scope))

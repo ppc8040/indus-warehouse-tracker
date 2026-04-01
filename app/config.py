@@ -19,10 +19,10 @@ class Config:
     WORKBOOK_FILENAME = 'Indus Warehouse Stock Movement.xlsx'
 
     # Worksheet names (must match workbook exactly)
-    SHEET_MASTER_PARTS = 'Master_Parts'
     SHEET_MOVEMENT_LOG = 'Movement_Log'
     SHEET_PALLET_STATUS = 'Pallet_Status'
     SHEET_ERROR_LOG = 'Error_Log'
+    # Master_Parts sheet exists but is NOT used — all data comes from scanning the label
 
     # Factory floor auth
     SUPERVISOR_PIN = '9999'
@@ -34,4 +34,4 @@ class Config:
     GRAPH_MAX_RETRIES = 3
 
     APP_NAME = 'Indus Warehouse Tracker'
-    APP_VERSION = '1.0.0'
+    APP_VERSION = '2.0.0'

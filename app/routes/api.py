@@ -3,32 +3,34 @@ JSON API routes.
 """
 import logging
 from flask import Blueprint, request, jsonify, current_app
-from app.services.movement_service import (
-    lookup_pallet, process_movement, sync_offline_event,
-)
+from app.services.movement_service import process_movement, sync_offline_event
 from app.utils.validators import validate_supervisor_pin
 
 logger = logging.getLogger(__name__)
 api_bp = Blueprint('api', __name__)
 
 
-@api_bp.route('/lookup', methods=['POST'])
-def pallet_lookup():
-    data = request.get_json(silent=True) or {}
-    hu = data.get('handling_unit', '')
-    if not hu:
-        return jsonify({"success": False, "status": "rejected_validation",
-                        "message": "Scan a barcode first."}), 400
-    result = lookup_pallet(hu)
-    code = 200 if result.success else (400 if result.status == 'rejected_validation' else 502)
-    return jsonify(result.to_dict()), code
-
-
 @api_bp.route('/movement', methods=['POST'])
 def record_movement():
+    """
+    Record a Stock IN or Stock OUT movement.
+    All pallet data comes from the scanned label — no master lookup.
+    POST body: {
+        "handling_unit": "100000000000839157",
+        "movement_type": "STOCK_IN",
+        "indus_part": "CCR2324",
+        "customer_part": "ENG-1440",
+        "pallet_qty": "39",
+        "job_no": "",
+        "operator_id": "WORKER",
+        "device_id": "DEV-ABC123",
+        ...
+    }
+    """
     data = request.get_json(silent=True) or {}
     hu = data.get('handling_unit', '')
     mt = data.get('movement_type', '')
+
     if not hu or not mt:
         return jsonify({"success": False, "status": "rejected_validation",
                         "message": "Handling Unit and movement type are required."}), 400
@@ -44,9 +46,12 @@ def record_movement():
     result = process_movement(
         handling_unit=hu,
         movement_type=mt,
+        indus_part=data.get('indus_part', ''),
+        customer_part=data.get('customer_part', ''),
+        pallet_qty=data.get('pallet_qty', ''),
+        job_no=data.get('job_no', ''),
         operator_id=data.get('operator_id', 'WORKER'),
         device_id=data.get('device_id', ''),
-        notes=data.get('notes', ''),
         is_override=is_override,
         override_reason=data.get('override_reason', ''),
         client_timestamp=data.get('timestamp', ''),

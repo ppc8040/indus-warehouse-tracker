@@ -8,7 +8,6 @@ from flask import Flask
 
 
 def create_app():
-    """Application factory."""
     app = Flask(
         __name__,
         static_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static'),
@@ -38,7 +37,7 @@ def create_app():
         app.logger.error(f"Internal server error: {e}")
         return {"error": "Something went wrong. Please try again."}, 500
 
-    app.logger.info("Indus Warehouse Tracker started.")
+    app.logger.info("Indus Warehouse Tracker v2 started.")
     return app
 
 
