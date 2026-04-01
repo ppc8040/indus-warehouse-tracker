@@ -20,6 +20,20 @@ from flask import current_app
 
 logger = logging.getLogger(__name__)
 
+def _normalise_cell(val):
+    """
+    Normalise a cell value for comparison.
+    Excel/Graph API returns large integers as floats (e.g. 1.0000000000083916e+17).
+    This converts them back to clean integer strings so HU lookups work correctly.
+    """
+    if val is None:
+        return ''
+    if isinstance(val, float):
+        # If it's a whole number (no fractional part), convert to int string
+        if val == int(val):
+            return str(int(val)).strip().upper()
+    return str(val).strip().upper()
+
 _token_cache = {'access_token': None, 'expires_at': 0}
 _http = requests.Session()
 
@@ -224,7 +238,7 @@ def find_row(sheet_name, col_index, search_value):
         for i in range(1, len(values)):  # skip header row
             row = values[i]
             if col_index < len(row):
-                cell = str(row[col_index]).strip().upper() if row[col_index] is not None else ''
+                cell = _normalise_cell(row[col_index])
                 if cell == needle:
                     return i + 1, row  # 1-based Excel row number
         return None, None
@@ -253,7 +267,7 @@ def find_row_as_dict(sheet_name, col_name, search_value):
         for i in range(1, len(values)):
             row = values[i]
             if col_idx < len(row):
-                cell = str(row[col_idx]).strip().upper() if row[col_idx] is not None else ''
+                cell = _normalise_cell(row[col_idx])
                 if cell == needle:
                     d = {}
                     for j, hdr in enumerate(headers):
@@ -320,7 +334,7 @@ def upsert_row(sheet_name, key_col_index, key_value, values_list, num_cols):
         for i in range(1, len(all_values)):  # skip header
             row = all_values[i]
             if key_col_index < len(row):
-                cell = str(row[key_col_index]).strip().upper() if row[key_col_index] is not None else ''
+                cell = _normalise_cell(row[key_col_index])
                 if cell == needle:
                     target_row = i + 1  # 1-based
                     break
