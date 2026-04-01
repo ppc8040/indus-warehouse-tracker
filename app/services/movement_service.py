@@ -44,7 +44,7 @@ from app.utils.idempotency import make_key, reserve, release
 logger = logging.getLogger(__name__)
 
 MOVEMENT_LOG_COLS = 12
-PALLET_STATUS_COLS = 5
+PALLET_STATUS_COLS = 7
 ERROR_LOG_COLS = 7
 
 
@@ -118,7 +118,10 @@ def process_movement(
         current = find_row_as_dict(status_sheet, 'Handling_Unit', hu)
         cur_state = _s(current.get('Last_Movement_Type', 'NONE')).upper() if current else 'NONE'
 
-        err = _check_transition(hu, movement, cur_state, is_override)
+        err = _check_transition(hu, movement, cur_state, is_override,
+                                indus_part=indus_part,
+                                pallet_qty=pallet_qty,
+                                current_row=current)
         if err:
             release(idem)
             _log_error('MOVEMENT', 'INVALID_TRANSITION', hu,
@@ -149,7 +152,8 @@ def process_movement(
 
         # ── Upsert Pallet_Status (5 columns A-E) ──
         location = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
-        status_row = [hu, location, event_id, movement, timestamp]
+        status_row = [hu, location, event_id, movement, timestamp,
+                      _s(indus_part).strip(), _s(pallet_qty).strip()]
         upsert_row(status_sheet, 0, hu, status_row, PALLET_STATUS_COLS)
 
         logger.info(f"Movement OK: {movement} HU={hu} part={indus_part} event={event_id}")
@@ -248,24 +252,59 @@ def _s(val):
     return str(val)
 
 
-def _check_transition(hu, movement, cur_state, is_override):
-    """Returns error message or None if valid."""
+def _check_transition(hu, movement, cur_state, is_override,
+                      indus_part='', pallet_qty='', current_row=None):
+    """
+    Validate the movement transition.
+
+    For STOCK_IN: blocked if the same HU + Indus Part + Pallet Qty combo
+    is already IN. Different Indus Part or Qty = treated as a new pallet run.
+
+    For STOCK_OUT: blocked if already OUT or never seen.
+    """
     if movement == 'STOCK_IN' and cur_state == 'STOCK_IN':
         if is_override:
             return None
-        return f"Pallet {hu} is already IN the warehouse. Use supervisor override if needed."
+        # Check if it's the SAME combination of HU + Indus Part + Pallet Qty
+        if current_row:
+            stored_part = _normalise_str(current_row.get('Indus_Part', ''))
+            stored_qty  = _normalise_str(current_row.get('Pallet_Qty', ''))
+            incoming_part = _normalise_str(indus_part)
+            incoming_qty  = _normalise_str(pallet_qty)
+            # Only block if ALL three match (HU already matched via cur_state lookup)
+            if stored_part == incoming_part and stored_qty == incoming_qty:
+                return (
+                    f"Pallet {hu} ({indus_part}, qty {pallet_qty}) is already "
+                    f"IN the warehouse. Do Stock OUT first, or use supervisor override."
+                )
+            # Different part or qty on same HU = allow (different run)
+            return None
+        # No stored row data available — block on HU alone to be safe
+        return (
+            f"Pallet {hu} is already IN the warehouse. "
+            f"Do Stock OUT first, or use supervisor override."
+        )
 
     if movement == 'STOCK_OUT':
         if cur_state == 'STOCK_OUT':
             if is_override:
                 return None
-            return f"Pallet {hu} is already OUT. Use supervisor override if needed."
+            return f"Pallet {hu} is already OUT of the warehouse. Use supervisor override if needed."
         if cur_state in ('NONE', '', 'NOT IN SYSTEM', 'UNKNOWN'):
             if is_override:
                 return None
             return f"Pallet {hu} was never stocked IN. Do Stock IN first."
 
     return None
+
+
+def _normalise_str(val):
+    """Strip, uppercase, remove trailing .0 from numeric strings."""
+    s = str(val).strip().upper() if val is not None else ''
+    # Handle '39.0' → '39' (Excel float leakage)
+    if s.endswith('.0') and s[:-2].isdigit():
+        s = s[:-2]
+    return s
 
 
 def _log_error(stage, error_code, handling_unit, message):
