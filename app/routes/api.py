@@ -101,3 +101,52 @@ def validate_pin():
     if validate_supervisor_pin(pin, correct):
         return jsonify({"valid": True}), 200
     return jsonify({"valid": False, "message": "Invalid PIN."}), 403
+
+
+@api_bp.route('/scan-label', methods=['POST'])
+def scan_label():
+    """
+    OCR a photo of a pallet label and return extracted field values.
+
+    POST body: { "image": "<base64 data-URL or raw base64>" }
+
+    Response: {
+        "success": true,
+        "fields": {
+            "handling_unit": "1000000000000621219",
+            "indus_part": "CCG1900",
+            "customer_part": "161878",
+            "pallet_qty": "8"
+        },
+        "missing": ["handling_unit"]   // list of field keys that could not be read
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    b64 = data.get('image', '').strip()
+
+    if not b64:
+        return jsonify({"success": False, "message": "No image provided."}), 400
+
+    try:
+        from app.services.label_ocr import parse_label_image
+        fields = parse_label_image(b64)
+    except ImportError as e:
+        logger.warning("OCR dependencies missing: %s", e)
+        return jsonify({
+            "success": False,
+            "message": str(e),
+        }), 503
+    except Exception as e:
+        logger.error("Label OCR failed: %s", e, exc_info=True)
+        return jsonify({
+            "success": False,
+            "message": "Could not read the label image. Try a clearer photo.",
+        }), 422
+
+    missing = [k for k, v in fields.items() if not v]
+
+    return jsonify({
+        "success": True,
+        "fields": fields,
+        "missing": missing,
+    }), 200
