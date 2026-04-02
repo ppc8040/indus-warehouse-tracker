@@ -299,21 +299,45 @@ def _check_transition(hu, movement, cur_state, is_override,
 
 def _fmt_timestamp(iso_str):
     """
-    Convert an ISO 8601 UTC timestamp string to DD/MM/YYYY HH:MM:SS AM/PM
-    for display in the Excel sheet.
-    Input:  '2026-04-01T12:48:17.802Z'  or  '2026-04-01T12:48:17+00:00'
-    Output: '01/04/2026 12:48:17 PM'
-    Falls back to the original string if parsing fails.
+    Convert an incoming timestamp to Dubai time (Asia/Dubai) and store it as:
+    DD/MM/YYYY HH:MM:SS AM/PM
+
+    Accepted inputs:
+    - 2026-04-01T12:48:17.802Z
+    - 2026-04-01T12:48:17+00:00
+    - 2026-04-01 12:48:17
+    - already-naive timestamps (assumed UTC)
+
+    Output example:
+    - 01/04/2026 04:48:17 PM
     """
     if not iso_str:
         return iso_str
+
     try:
-        # Strip trailing Z and parse
-        clean = iso_str.replace('Z', '+00:00')
-        dt = datetime.fromisoformat(clean)
-        return dt.strftime('%d/%m/%Y %I:%M:%S %p')
+        from zoneinfo import ZoneInfo
+
+        s = str(iso_str).strip()
+
+        # Normalize common UTC forms
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+
+        # Parse the timestamp
+        dt = datetime.fromisoformat(s)
+
+        # If no timezone info exists, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        # Convert to Dubai time
+        dubai_tz = ZoneInfo("Asia/Dubai")
+        dt_dubai = dt.astimezone(dubai_tz)
+
+        return dt_dubai.strftime('%d/%m/%Y %I:%M:%S %p')
+
     except Exception:
-        return iso_str
+        return str(iso_str)
 
 def _normalise_str(val):
     """Strip, uppercase, remove trailing .0 from numeric strings."""
