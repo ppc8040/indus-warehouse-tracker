@@ -299,26 +299,43 @@ def find_row_as_dict(sheet_name, col_name, search_value):
 
 def append_row(sheet_name, values_list, num_cols):
     """
-    Append a single data row after the last used row.
-    Reads usedRange to find next row, then writes to that row.
-    Session-wrapped.
+    Append a single data row after the last REAL data row.
+
+    Fix:
+    - Do NOT scan every cell in usedRange, because Excel/SharePoint can keep
+      phantom used rows due to formulas, formatting, or broken summary sheets.
+    - Determine the next row from column A only, because all log/status sheets
+      have a mandatory key in column A:
+        Movement_Log -> Event_ID
+        Error_Log    -> Error_ID
+        Pallet_Status-> Handling_Unit
     """
     sid, h = _open_session()
     try:
-        # Find next empty row
         url = f"{_ws_url(sheet_name)}/usedRange"
         data = _req('GET', url, h)
         all_values = data.get('values', [])
-        last_data_row = 0
-        for i, row in enumerate(all_values):
-            if any(v is not None and str(v).strip() != '' for v in row):
-                last_data_row = i + 1  # 1-based
-        next_row = last_data_row + 1
 
-        # Write the row
+        # If the sheet is completely empty, start with row 1.
+        if not all_values:
+            next_row = 1
+        else:
+            # Find the last non-empty row based ONLY on column A.
+            # Row 1 is assumed to be the header row when present.
+            last_data_row = 0
+            for i, row in enumerate(all_values, start=1):  # Excel-style row numbering
+                first_cell = row[0] if len(row) > 0 else None
+                if first_cell is not None and str(first_cell).strip() != '':
+                    last_data_row = i
+
+            # If only header exists, append to row 2.
+            # If header + data exist, append after the last real key row.
+            next_row = last_data_row + 1 if last_data_row > 0 else 1
+
         addr = f"A{next_row}:{_col_letter(num_cols)}{next_row}"
         write_url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
         _req('PATCH', write_url, h, json_data={"values": [_safe_row(values_list)]})
+
         logger.info(f"Appended row {next_row} to '{sheet_name}'")
         return next_row
     finally:
