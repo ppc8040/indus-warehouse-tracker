@@ -309,7 +309,11 @@ def append_row(sheet_name, values_list, num_cols):
         url = f"{_ws_url(sheet_name)}/usedRange"
         data = _req('GET', url, h)
         all_values = data.get('values', [])
-        next_row = len(all_values) + 1  # 1-based
+        last_data_row = 0
+        for i, row in enumerate(all_values):
+            if any(v is not None and str(v).strip() != '' for v in row):
+                last_data_row = i + 1  # 1-based
+        next_row = last_data_row + 1
 
         # Write the row
         addr = f"A{next_row}:{_col_letter(num_cols)}{next_row}"
