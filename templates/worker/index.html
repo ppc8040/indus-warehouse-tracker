@@ -67,7 +67,7 @@
         📸 PHOTO SCAN &mdash; Photograph entire label
       </button>
       <p style="font-size:.75rem;color:#9E9E9E;margin-top:6px;text-align:center">
-        Use if camera won’t scan a code &mdash; takes a photo and reads all fields at once
+        Use if camera won't scan a code &mdash; takes a photo and reads all fields at once
       </p>
     </div>
 
@@ -87,7 +87,7 @@
             <button onclick="manualHU()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
           </div>
         </div>
-        <button onclick="showManualHU()" id="huManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">Barcode won’t scan? Type it manually</button>
+        <button onclick="showManualHU()" id="huManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">Barcode won't scan? Type it manually</button>
       </div>
 
       <div class="scan-field" id="sf-indus">
@@ -96,6 +96,13 @@
           <span class="sf-status" id="st-indus">NOT SCANNED</span>
         </div>
         <div class="sf-value" id="val-indus">—</div>
+        <div id="indusManualRow" style="margin-top:8px;display:none">
+          <div style="display:flex;gap:8px">
+            <input type="text" id="indusManualInput" placeholder="e.g. CCR2324" autocapitalize="characters" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
+            <button onclick="manualIndus()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
+          </div>
+        </div>
+        <button onclick="showManualIndus()" id="indusManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">QR won't scan? Type it manually</button>
       </div>
 
       <div class="scan-field" id="sf-cust">
@@ -104,6 +111,13 @@
           <span class="sf-status" id="st-cust">NOT SCANNED</span>
         </div>
         <div class="sf-value" id="val-cust">—</div>
+        <div id="custManualRow" style="margin-top:8px;display:none">
+          <div style="display:flex;gap:8px">
+            <input type="text" id="custManualInput" placeholder="e.g. 161878 or ENG-1440" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
+            <button onclick="manualCust()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
+          </div>
+        </div>
+        <button onclick="showManualCust()" id="custManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">QR won't scan? Type it manually</button>
       </div>
 
       <div class="scan-field" id="sf-qty">
@@ -112,6 +126,13 @@
           <span class="sf-status" id="st-qty">NOT SCANNED</span>
         </div>
         <div class="sf-value" id="val-qty">—</div>
+        <div id="qtyManualRow" style="margin-top:8px;display:none">
+          <div style="display:flex;gap:8px">
+            <input type="text" id="qtyManualInput" placeholder="e.g. 39" inputmode="numeric" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
+            <button onclick="manualQty()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
+          </div>
+        </div>
+        <button onclick="showManualQty()" id="qtyManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">QR won't scan? Type it manually</button>
       </div>
 
       <div style="margin-top:12px;padding:8px 0;border-top:1px solid #E0E0E0">
