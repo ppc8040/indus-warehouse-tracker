@@ -274,20 +274,27 @@ function _updateField(key, val) {
   }
 }
 
+function _resetManualField(rowId, btnId, inputId) {
+  const row = document.getElementById(rowId);
+  const btn = document.getElementById(btnId);
+  const inp = document.getElementById(inputId);
+  if (row) row.style.display = 'none';
+  if (btn) btn.style.display = 'block';
+  if (inp) inp.value = '';
+}
+
 function resetScans() {
   scanned = { handling_unit: '', indus_part: '', customer_part: '', pallet_qty: '' };
   allScannedCodes.clear();
   qrScanOrder = 0;
   updateScanDisplay();
-  // Reset manual HU input
-  const row = document.getElementById('huManualRow');
-  const btn = document.getElementById('huManualBtn');
-  if (row) row.style.display = 'none';
-  if (btn) btn.style.display = 'block';
-  const inp = document.getElementById('huManualInput');
-  if (inp) inp.value = '';
+  _resetManualField('huManualRow',    'huManualBtn',    'huManualInput');
+  _resetManualField('indusManualRow', 'indusManualBtn', 'indusManualInput');
+  _resetManualField('custManualRow',  'custManualBtn',  'custManualInput');
+  _resetManualField('qtyManualRow',   'qtyManualBtn',   'qtyManualInput');
 }
 
+// ── Manual entry: Handling Unit ──
 function showManualHU() {
   document.getElementById('huManualRow').style.display = 'block';
   document.getElementById('huManualBtn').style.display = 'none';
@@ -303,6 +310,58 @@ function manualHU() {
   updateScanDisplay();
   document.getElementById('huManualRow').style.display = 'none';
   toast('Handling Unit set manually.', 'ok', 2000);
+}
+
+// ── Manual entry: Indus Part ──
+function showManualIndus() {
+  document.getElementById('indusManualRow').style.display = 'block';
+  document.getElementById('indusManualBtn').style.display = 'none';
+  document.getElementById('indusManualInput').focus();
+}
+
+function manualIndus() {
+  const val = document.getElementById('indusManualInput').value.trim().toUpperCase();
+  if (!val) { toast('Type the Indus Part code from the label.', 'warn'); return; }
+  scanned.indus_part = val;
+  allScannedCodes.add(val);
+  updateScanDisplay();
+  document.getElementById('indusManualRow').style.display = 'none';
+  toast('Indus Part set manually.', 'ok', 2000);
+}
+
+// ── Manual entry: Customer Part ──
+function showManualCust() {
+  document.getElementById('custManualRow').style.display = 'block';
+  document.getElementById('custManualBtn').style.display = 'none';
+  document.getElementById('custManualInput').focus();
+}
+
+function manualCust() {
+  const val = document.getElementById('custManualInput').value.trim();
+  if (!val) { toast('Type the Customer Part from the label.', 'warn'); return; }
+  scanned.customer_part = val;
+  allScannedCodes.add(val);
+  updateScanDisplay();
+  document.getElementById('custManualRow').style.display = 'none';
+  toast('Customer Part set manually.', 'ok', 2000);
+}
+
+// ── Manual entry: Pallet Qty ──
+function showManualQty() {
+  document.getElementById('qtyManualRow').style.display = 'block';
+  document.getElementById('qtyManualBtn').style.display = 'none';
+  document.getElementById('qtyManualInput').focus();
+}
+
+function manualQty() {
+  const val = document.getElementById('qtyManualInput').value.trim();
+  if (!val) { toast('Type the pallet quantity from the label.', 'warn'); return; }
+  if (!/^\d{1,4}$/.test(val) || parseInt(val, 10) < 1) { toast('Qty should be a positive number (e.g. 39).', 'warn'); return; }
+  scanned.pallet_qty = val;
+  allScannedCodes.add(val);
+  updateScanDisplay();
+  document.getElementById('qtyManualRow').style.display = 'none';
+  toast('Pallet Qty set manually.', 'ok', 2000);
 }
 
 
@@ -361,7 +420,7 @@ async function processLabelPhoto(input) {
       toast('✓ All fields read from photo!', 'ok', 3000);
       stopScanner();
     } else if (filled > 0) {
-      toast(`Read ${filled} field(s) from photo. Still missing: ${missing.join(', ')}. Take another photo or type HU manually.`, 'warn', 7000);
+      toast(`Read ${filled} field(s) from photo. Still missing: ${missing.join(', ')}. Take another photo or type manually.`, 'warn', 7000);
     } else {
       toast('Codes were found but could not be matched to fields. Try again.', 'warn', 5000);
     }
