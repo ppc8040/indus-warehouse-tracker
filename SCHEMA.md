@@ -4,52 +4,49 @@ Located at SharePoint: `indusair.sharepoint.com/sites/Indus_USA/Shared Documents
 
 **No named tables** — use worksheet range operations (same pattern as Indus-Open-Order-Report-CUST.py).
 
-## Sheet: Master_Parts (7 columns)
-| Col | Header         | Notes                                     |
-|-----|---------------|-------------------------------------------|
-| A   | Handling_Unit  | Primary key. Scanned barcode value.       |
-| B   | Indus_Part     | Indus part number                         |
-| C   | Customer_Part  | Customer part number                      |
-| D   | Pallet_Qty     | Quantity on pallet                        |
-| E   | Job_No         | Job/production order number               |
-| F   | Description    | Part description                          |
-| G   | Active_Flag    | "YES" or "NO" — inactive pallets blocked  |
-
 ## Sheet: Movement_Log (12 columns)
 | Col | Header             | Notes                                        |
 |-----|--------------------|----------------------------------------------|
 | A   | Event_ID           | UUID generated per event                     |
-| B   | Timestamp_UTC      | ISO 8601 UTC timestamp                       |
+| B   | Timestamp_UTC      | Stored in Dubai display time format          |
 | C   | Handling_Unit      | The scanned HU                               |
-| D   | Indus_Part         | Copied from Master_Parts at scan time        |
-| E   | Customer_Part      | Copied from Master_Parts at scan time        |
-| F   | Pallet_Qty         | Copied from Master_Parts at scan time        |
-| G   | Job_No             | Copied from Master_Parts at scan time        |
+| D   | Indus_Part         | Captured from the scanned label              |
+| E   | Customer_Part      | Captured from the scanned label              |
+| F   | Pallet_Qty         | Captured from the scanned label              |
+| G   | Job_No             | Captured from the scanned label if supplied  |
 | H   | Movement_Type      | STOCK_IN or STOCK_OUT                        |
 | I   | Operator_ID        | Worker identifier                            |
 | J   | Device_ID          | Browser/device fingerprint                   |
 | K   | Sync_Status        | SYNCED or PENDING                            |
-| L   | Validation_Status  | VALID, OVERRIDE, REJECTED                    |
+| L   | Validation_Status  | VALID or OVERRIDE                            |
 
-## Sheet: Pallet_Status (5 columns)
-| Col | Header              | Notes                                    |
-|-----|---------------------|------------------------------------------|
-| A   | Handling_Unit       | Primary key. Links to Master_Parts.      |
-| B   | Current_Status      | IN_WAREHOUSE or OUT_OF_WAREHOUSE         |
-| C   | Last_Event_ID       | Links to Movement_Log.Event_ID           |
-| D   | Last_Movement_Type  | STOCK_IN or STOCK_OUT                    |
-| E   | Last_Movement_Time  | ISO 8601 UTC timestamp                   |
+## Sheet: Pallet_Status (7 columns)
+| Col | Header              | Notes                                                     |
+|-----|---------------------|-----------------------------------------------------------|
+| A   | Handling_Unit       | Primary key                                               |
+| B   | Current_Status      | IN_WAREHOUSE or OUT_OF_WAREHOUSE                          |
+| C   | Last_Event_ID       | Links to Movement_Log.Event_ID                            |
+| D   | Last_Movement_Type  | STOCK_IN or STOCK_OUT                                     |
+| E   | Last_Movement_Time  | Stored in Dubai display time format                       |
+| F   | Indus_Part          | Last scanned Indus Part, used in repeat STOCK_IN checks   |
+| G   | Pallet_Qty          | Last scanned pallet qty, used in repeat STOCK_IN checks   |
 
 ## Sheet: Error_Log (7 columns)
 | Col | Header          | Notes                                        |
 |-----|-----------------|----------------------------------------------|
 | A   | Error_ID        | UUID                                         |
-| B   | Timestamp_UTC   | ISO 8601 UTC                                 |
+| B   | Timestamp_UTC   | Stored in Dubai display time format          |
 | C   | Handling_Unit   | The HU involved (or empty)                   |
 | D   | Stage           | LOOKUP, MOVEMENT, SYNC, OVERRIDE, SYSTEM     |
 | E   | Error_Code      | Machine-readable code                        |
 | F   | Error_Message   | Human-readable detail (max 500 chars)        |
 | G   | Resolved_Flag   | NO or YES                                    |
+
+## Validation Rules Backed by Schema
+- Repeated `STOCK_IN` is blocked only when the same `Handling_Unit`, `Indus_Part`, and `Pallet_Qty` are already in the last pallet state.
+- Same `Handling_Unit` with a different `Indus_Part` or `Pallet_Qty` is treated as a new pallet run and allowed.
+- `STOCK_OUT` is blocked when the last state is already `STOCK_OUT`.
+- `STOCK_OUT` is blocked when the handling unit has never been stocked in, unless supervisor override is used.
 
 ## Graph API URL Pattern (from reference code)
 ```

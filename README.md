@@ -11,12 +11,11 @@ Data storage: Microsoft Excel Online on SharePoint via Graph API.
 ```
 Phone Browser (PWA)          Heroku (Flask + Gunicorn)         SharePoint Excel Online
 ┌──────────────────┐        ┌─────────────────────────┐       ┌──────────────────────┐
-│  ZXing Barcode   │──API──▶│  /api/lookup             │──────▶│  Master_Parts sheet   │
-│  Scanner         │        │  /api/movement           │──────▶│  Movement_Log sheet   │
-│  IndexedDB Queue │        │  /api/sync               │──────▶│  Pallet_Status sheet  │
-│  Service Worker  │        │  /admin (dashboard)      │──────▶│  Error_Log sheet      │
-└──────────────────┘        │  /health                 │       └──────────────────────┘
-                            │                          │
+│  ZXing Barcode   │──API──▶│  /api/movement           │──────▶│  Movement_Log sheet   │
+│  Scanner         │        │  /api/sync               │──────▶│  Pallet_Status sheet  │
+│  IndexedDB Queue │        │  /admin (dashboard)      │──────▶│  Error_Log sheet      │
+│  Service Worker  │        │  /health                 │       └──────────────────────┘
+└──────────────────┘        │                          │
                             │  Graph Client (MSAL)     │──────▶ Microsoft Entra (Auth)
                             └─────────────────────────┘
 ```
@@ -90,16 +89,7 @@ The response `id` field contains the site ID.
 
 ### Required Worksheet Structure
 
-The workbook must have exactly these 4 worksheets with these exact headers in Row 1:
-
-#### Master_Parts (7 columns A-G)
-| A | B | C | D | E | F | G |
-|---|---|---|---|---|---|---|
-| Handling_Unit | Indus_Part | Customer_Part | Pallet_Qty | Job_No | Description | Active_Flag |
-
-- `Handling_Unit`: The barcode value on pallet labels (primary key)
-- `Active_Flag`: Must be `YES` for pallets to be scanned. Set `NO` to deactivate.
-- Populate this sheet with your pallet master data before using the app.
+The workbook must have exactly these 3 worksheets with these exact headers in Row 1:
 
 #### Movement_Log (12 columns A-L)
 | A | B | C | D | E | F | G | H | I | J | K | L |
@@ -109,20 +99,21 @@ The workbook must have exactly these 4 worksheets with these exact headers in Ro
 - Append-only. Workers cannot edit historical rows.
 - The app writes here automatically on every movement.
 
-#### Pallet_Status (5 columns A-E)
-| A | B | C | D | E |
-|---|---|---|---|---|
-| Handling_Unit | Current_Status | Last_Event_ID | Last_Movement_Type | Last_Movement_Time |
+#### Pallet_Status (7 columns A-G)
+| A | B | C | D | E | F | G |
+|---|---|---|---|---|---|---|
+| Handling_Unit | Current_Status | Last_Event_ID | Last_Movement_Type | Last_Movement_Time | Indus_Part | Pallet_Qty |
 
-- One row per pallet. Auto-created/updated on movement.
+- One row per handling unit. Auto-created/updated on movement.
 - `Current_Status`: `IN_WAREHOUSE` or `OUT_OF_WAREHOUSE`
+- `Indus_Part` and `Pallet_Qty` are required because repeated `STOCK_IN` validation compares the current scan against the last pallet state.
 
 #### Error_Log (7 columns A-G)
 | A | B | C | D | E | F | G |
 |---|---|---|---|---|---|---|
 | Error_ID | Timestamp_UTC | Handling_Unit | Stage | Error_Code | Error_Message | Resolved_Flag |
 
-- Auto-populated on any failed lookup, invalid transition, duplicate attempt, or sync failure.
+- Auto-populated on any failed validation, invalid transition, duplicate attempt, or sync failure.
 
 ---
 
@@ -168,14 +159,8 @@ heroku logs --tail
 ## Worker Flow
 
 ```
-Scan Pallet Barcode
-       │
-       ▼
-  Lookup Master_Parts ──── Unknown? ──► "Unknown pallet" error
-       │
-       ▼
-  Show pallet details
-  (Indus Part, Customer Part, Qty, Job No, Description)
+Scan all label fields
+(Handling Unit + Indus Part + Customer Part + Pallet Qty [+ Job No if used])
        │
        ▼
   Tap STOCK IN or STOCK OUT
@@ -212,9 +197,9 @@ Scan Pallet Barcode
 
 | Rule | Behavior |
 |------|----------|
-| Unknown HU | Rejected. Error logged. |
-| Inactive pallet (Active_Flag ≠ YES) | Rejected. Error logged. |
-| Stock IN when already IN | Blocked (override available) |
+| Missing Indus Part | Rejected. Error logged. |
+| Stock IN when same HU + same part + same qty already IN | Blocked (override available) |
+| Stock IN when same HU but different part or qty | Allowed as a new pallet run |
 | Stock OUT when already OUT | Blocked (override available) |
 | Stock OUT when never stocked IN | Blocked (override available) |
 | Duplicate event (same HU + type + timestamp) | Blocked by idempotency. |
@@ -273,38 +258,31 @@ indus-warehouse-tracker/
 - [ ] All Heroku config vars set
 - [ ] Graph API app registration has `Sites.ReadWrite.All` + `Files.ReadWrite.All`
 - [ ] Admin consent granted in Azure
-- [ ] Excel workbook has all 4 sheets with correct headers in Row 1
-- [ ] At least 1 row of test data in Master_Parts (Active_Flag = YES)
+- [ ] Excel workbook has all 3 sheets with correct headers in Row 1
 
 ### Functional Tests
 - [ ] `/health` returns 200 with `graph_api: connected`
-- [ ] Scan a known HU → details load correctly
-- [ ] Scan an unknown HU → "Unknown pallet" error
-- [ ] Scan an inactive pallet (Active_Flag = NO) → "INACTIVE" error
 - [ ] Stock IN on fresh pallet → success, Pallet_Status shows IN_WAREHOUSE
 - [ ] Stock OUT after Stock IN → success, Pallet_Status shows OUT_OF_WAREHOUSE
-- [ ] Stock IN again when already IN → blocked with error message
+- [ ] Stock IN again when same HU + part + qty already IN → blocked with error message
+- [ ] Stock IN with same HU but different part or qty → allowed
 - [ ] Stock OUT when already OUT → blocked with error message
 - [ ] Stock OUT when never IN → blocked with error message
 - [ ] Supervisor override with correct PIN → movement succeeds
 - [ ] Supervisor override with wrong PIN → "Invalid PIN" error
-- [ ] Override reason captured in Movement_Log
 - [ ] Double-tap same button quickly → only one event recorded (idempotency)
 - [ ] Turn off WiFi → event saved offline → turn WiFi on → auto-syncs
 - [ ] Pending badge shows count while offline
 - [ ] Admin dashboard loads with movement history
 - [ ] Admin dashboard shows pallet statuses
 - [ ] Admin dashboard shows error log
-- [ ] Admin dashboard stats are accurate
-- [ ] PWA installs to home screen
-- [ ] App works after home-screen install
 
 ### Excel Verification
 - [ ] Movement_Log gets new rows on each successful movement
 - [ ] Pallet_Status row updates (not duplicates) per HU
 - [ ] Error_Log gets rows on validation failures
 - [ ] Event_ID is unique per movement
-- [ ] Timestamps are UTC ISO 8601
+- [ ] Timestamps are stored in Dubai display time format
 
 ---
 
