@@ -27,6 +27,10 @@ let scannerRunning = false;
 let allScannedCodes = new Set();  // track all raw scanned values to avoid re-processing
 let qrScanOrder = 0;              // counts non-HU QR scans: 1=indus, 2=cust, 3=qty
 
+// ── Submit lock: prevents double-tap duplicates on STOCK IN / STOCK OUT ──
+// Set to true while a movement request is in-flight; all extra taps are ignored.
+let movementInFlight = false;
+
 let deviceId = localStorage.getItem('deviceId') || (() => {
   const id = 'DEV-' + Math.random().toString(36).substring(2, 10).toUpperCase();
   localStorage.setItem('deviceId', id);
@@ -595,61 +599,89 @@ async function extractHUFromImage(file) {
 //  MOVEMENT
 // ═══════════════════════════════════════════════════════════
 
+// ── Button lock helpers ──
+// Disables both movement buttons and dims them during a submission to prevent
+// double-tap duplicates. Re-enabled in the finally block of doMovement().
+function _lockMovementButtons() {
+  const btnIn  = document.querySelector('.btn-ok[onclick*="STOCK_IN"]');
+  const btnOut = document.querySelector('.btn-err[onclick*="STOCK_OUT"]');
+  if (btnIn)  { btnIn.disabled  = true; btnIn.style.opacity  = '0.5'; }
+  if (btnOut) { btnOut.disabled = true; btnOut.style.opacity = '0.5'; }
+}
+
+function _unlockMovementButtons() {
+  const btnIn  = document.querySelector('.btn-ok[onclick*="STOCK_IN"]');
+  const btnOut = document.querySelector('.btn-err[onclick*="STOCK_OUT"]');
+  if (btnIn)  { btnIn.disabled  = false; btnIn.style.opacity  = ''; }
+  if (btnOut) { btnOut.disabled = false; btnOut.style.opacity = ''; }
+}
+
 async function doMovement(movementType, isOverride = false, pin = '', reason = '') {
-  if (!scanned.handling_unit) { toast('Scan the barcode first.', 'warn'); return; }
-  if (!scanned.indus_part) { toast('Scan the Indus Part QR code.', 'warn'); return; }
-
-  const timestamp = new Date().toISOString();
-  const idemKey = _makeIdemKey(scanned.handling_unit, movementType, timestamp);
-
-  const payload = {
-    handling_unit: scanned.handling_unit,
-    movement_type: movementType,
-    indus_part: scanned.indus_part,
-    customer_part: scanned.customer_part,
-    pallet_qty: scanned.pallet_qty,
-    job_no: '',
-    operator_id: 'WORKER',
-    device_id: deviceId,
-    is_override: isOverride,
-    supervisor_pin: pin,
-    override_reason: reason,
-    timestamp: timestamp,
-    idempotency_key: idemKey,
-  };
-
-  if (!navigator.onLine) {
-    await OfflineQueue.add(payload);
-    updatePendingBadge();
-    showResult('pending', movementType, 'Saved offline. Will sync when internet returns.');
-    return;
-  }
-
-  showSpinner('Recording movement...');
+  // ── Submit lock: block any second call while one is already in-flight ──
+  if (movementInFlight) return;
+  movementInFlight = true;
+  _lockMovementButtons();
 
   try {
-    const resp = await fetch('/api/movement', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
-    });
-    const data = await resp.json();
-    hideSpinner();
+    if (!scanned.handling_unit) { toast('Scan the barcode first.', 'warn'); return; }
+    if (!scanned.indus_part) { toast('Scan the Indus Part QR code.', 'warn'); return; }
 
-    if (data.success) {
-      showResult('ok', movementType, data.message, data.data);
-    } else if (data.data && data.data.needs_sync) {
+    const timestamp = new Date().toISOString();
+    const idemKey = _makeIdemKey(scanned.handling_unit, movementType, timestamp);
+
+    const payload = {
+      handling_unit: scanned.handling_unit,
+      movement_type: movementType,
+      indus_part: scanned.indus_part,
+      customer_part: scanned.customer_part,
+      pallet_qty: scanned.pallet_qty,
+      job_no: '',
+      operator_id: 'WORKER',
+      device_id: deviceId,
+      is_override: isOverride,
+      supervisor_pin: pin,
+      override_reason: reason,
+      timestamp: timestamp,
+      idempotency_key: idemKey,
+    };
+
+    if (!navigator.onLine) {
       await OfflineQueue.add(payload);
       updatePendingBadge();
-      showResult('pending', movementType, data.message);
-    } else {
-      showResult('fail', movementType, data.message);
+      showResult('pending', movementType, 'Saved offline. Will sync when internet returns.');
+      return;
     }
-  } catch (e) {
-    hideSpinner();
-    await OfflineQueue.add(payload);
-    updatePendingBadge();
-    showResult('pending', movementType, 'Network error. Saved locally.');
+
+    showSpinner('Recording movement...');
+
+    try {
+      const resp = await fetch('/api/movement', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      hideSpinner();
+
+      if (data.success) {
+        showResult('ok', movementType, data.message, data.data);
+      } else if (data.data && data.data.needs_sync) {
+        await OfflineQueue.add(payload);
+        updatePendingBadge();
+        showResult('pending', movementType, data.message);
+      } else {
+        showResult('fail', movementType, data.message);
+      }
+    } catch (e) {
+      hideSpinner();
+      await OfflineQueue.add(payload);
+      updatePendingBadge();
+      showResult('pending', movementType, 'Network error. Saved locally.');
+    }
+  } finally {
+    // Always release the lock so the worker can submit another movement
+    movementInFlight = false;
+    _unlockMovementButtons();
   }
 }
 
