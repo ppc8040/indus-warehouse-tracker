@@ -18,9 +18,9 @@ Movement_Log (12 cols A-L):
   E=Customer_Part  F=Pallet_Qty  G=Job_No  H=Movement_Type
   I=Operator_ID  J=Device_ID  K=Sync_Status  L=Validation_Status
 
-Pallet_Status (5 cols A-E):
+Pallet_Status (7 cols A-G):
   A=Handling_Unit  B=Current_Status  C=Last_Event_ID
-  D=Last_Movement_Type  E=Last_Movement_Time
+  D=Last_Movement_Type  E=Last_Movement_Time  F=Indus_Part  G=Pallet_Qty
 
 Error_Log (7 cols A-G):
   A=Error_ID  B=Timestamp_UTC  C=Handling_Unit  D=Stage
@@ -150,7 +150,7 @@ def process_movement(
         ]
         append_row(log_sheet, log_row, MOVEMENT_LOG_COLS)
 
-        # ── Upsert Pallet_Status (5 columns A-E) ──
+        # ── Upsert Pallet_Status (7 columns A-G) ──
         location = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
         status_row = [hu, location, event_id, movement, _fmt_timestamp(timestamp),
                       _s(indus_part).strip(), _s(pallet_qty).strip()]
