@@ -11,6 +11,52 @@
   <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
   <title>Indus Warehouse Tracker</title>
   <link rel="stylesheet" href="/static/css/worker.css">
+  <style>
+    /* ── Location Modal ── */
+    .loc-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .loc-btn {
+      padding: 18px 10px;
+      border: 2px solid var(--bdr);
+      border-radius: var(--rad);
+      background: var(--white);
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: center;
+      transition: all .15s;
+      color: var(--txt);
+      letter-spacing: .5px;
+    }
+    .loc-btn:active { transform: scale(.96); }
+    .loc-btn.selected {
+      border-color: var(--pri);
+      background: #E3F2FD;
+      color: var(--pri);
+    }
+    .loc-btn.full-width {
+      grid-column: 1 / -1;
+    }
+    .loc-modal-title {
+      font-size: 1.15rem;
+      font-weight: 800;
+      margin-bottom: 6px;
+      color: var(--txt);
+    }
+    .loc-modal-sub {
+      font-size: .8rem;
+      color: var(--txt2);
+      margin-bottom: 16px;
+    }
+    #locPostBtn:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+  </style>
 </head>
 <body>
 
@@ -48,7 +94,7 @@
       <div id="_qrCrop6" style="display:none"></div>
 
       <button class="btn btn-pri" id="btnToggleScan" onclick="toggleScanner()">
-        <span class="btn-icon">📷</span> START CAMERA
+        <span class="btn-icon">&#128247;</span> START CAMERA
       </button>
 
       <!-- Photo scan: hidden file input triggered by button below -->
@@ -64,7 +110,7 @@
         class="btn btn-outline"
         style="margin-top:10px;font-size:.9rem"
         onclick="document.getElementById('labelPhotoInput').click()">
-        📸 PHOTO SCAN &mdash; Photograph entire label
+        &#128248; PHOTO SCAN &mdash; Photograph entire label
       </button>
       <p style="font-size:.75rem;color:#9E9E9E;margin-top:6px;text-align:center">
         Use if camera won't scan a code &mdash; takes a photo and reads all fields at once
@@ -80,7 +126,7 @@
           <span class="sf-label">Handling Unit (Barcode)</span>
           <span class="sf-status" id="st-hu">NOT SCANNED</span>
         </div>
-        <div class="sf-value" id="val-hu">—</div>
+        <div class="sf-value" id="val-hu">&mdash;</div>
         <div id="huManualRow" style="margin-top:8px;display:none">
           <div style="display:flex;gap:8px">
             <input type="text" id="huManualInput" placeholder="Type HU number from label" inputmode="numeric" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
@@ -95,7 +141,7 @@
           <span class="sf-label">Indus Part (QR 1)</span>
           <span class="sf-status" id="st-indus">NOT SCANNED</span>
         </div>
-        <div class="sf-value" id="val-indus">—</div>
+        <div class="sf-value" id="val-indus">&mdash;</div>
         <div id="indusManualRow" style="margin-top:8px;display:none">
           <div style="display:flex;gap:8px">
             <input type="text" id="indusManualInput" placeholder="e.g. CCR2324" autocapitalize="characters" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
@@ -110,7 +156,7 @@
           <span class="sf-label">Customer Part (QR 2)</span>
           <span class="sf-status" id="st-cust">NOT SCANNED</span>
         </div>
-        <div class="sf-value" id="val-cust">—</div>
+        <div class="sf-value" id="val-cust">&mdash;</div>
         <div id="custManualRow" style="margin-top:8px;display:none">
           <div style="display:flex;gap:8px">
             <input type="text" id="custManualInput" placeholder="e.g. 161878 or ENG-1440" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
@@ -125,7 +171,7 @@
           <span class="sf-label">Pallet Qty (QR 3)</span>
           <span class="sf-status" id="st-qty">NOT SCANNED</span>
         </div>
-        <div class="sf-value" id="val-qty">—</div>
+        <div class="sf-value" id="val-qty">&mdash;</div>
         <div id="qtyManualRow" style="margin-top:8px;display:none">
           <div style="display:flex;gap:8px">
             <input type="text" id="qtyManualInput" placeholder="e.g. 39" inputmode="numeric" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
@@ -157,24 +203,24 @@
   <div class="scr" id="scrAction">
     <div class="card" id="palletCard">
       <div>
-        <span class="hu-tag" id="huDisplay">—</span>
+        <span class="hu-tag" id="huDisplay">&mdash;</span>
       </div>
       <div class="details mt16">
-        <div class="det"><span class="det-lbl">Indus Part</span><span class="det-val" id="dIndus">—</span></div>
-        <div class="det"><span class="det-lbl">Customer Part</span><span class="det-val" id="dCust">—</span></div>
-        <div class="det"><span class="det-lbl">Pallet Qty</span><span class="det-val" id="dQty">—</span></div>
+        <div class="det"><span class="det-lbl">Indus Part</span><span class="det-val" id="dIndus">&mdash;</span></div>
+        <div class="det"><span class="det-lbl">Customer Part</span><span class="det-val" id="dCust">&mdash;</span></div>
+        <div class="det"><span class="det-lbl">Pallet Qty</span><span class="det-val" id="dQty">&mdash;</span></div>
       </div>
     </div>
 
     <div class="btn-group">
-      <button class="btn btn-ok" onclick="doMovement('STOCK_IN')">
-        <span class="btn-icon">📥</span> STOCK IN
+      <button class="btn btn-ok" onclick="openLocationModal('STOCK_IN')">
+        <span class="btn-icon">&#128229;</span> STOCK IN
       </button>
-      <button class="btn btn-err" onclick="doMovement('STOCK_OUT')">
-        <span class="btn-icon">📤</span> STOCK OUT
+      <button class="btn btn-err" onclick="openLocationModal('STOCK_OUT')">
+        <span class="btn-icon">&#128228;</span> STOCK OUT
       </button>
       <button class="btn btn-warn" onclick="showOverrideModal()">
-        🔑 SUPERVISOR OVERRIDE
+        &#128273; SUPERVISOR OVERRIDE
       </button>
       <button class="btn btn-outline" onclick="goScan()">
         &larr; BACK TO SCAN
@@ -185,9 +231,9 @@
   <!-- ═══ SCREEN 3: RESULT ═══ -->
   <div class="scr" id="scrResult">
     <div class="banner" id="resultBanner">
-      <div class="banner-icon" id="resultIcon">✓</div>
-      <div class="banner-title" id="resultTitle">—</div>
-      <div class="banner-msg" id="resultMsg">—</div>
+      <div class="banner-icon" id="resultIcon">&#10003;</div>
+      <div class="banner-title" id="resultTitle">&mdash;</div>
+      <div class="banner-msg" id="resultMsg">&mdash;</div>
     </div>
     <div class="result-info" id="resultInfo"></div>
     <div class="btn-group">
@@ -203,19 +249,49 @@
   </div>
 </div>
 
+<!-- ═══ Location Modal ═══ -->
+<div class="modal-bg" id="locationModal">
+  <div class="modal">
+    <p class="loc-modal-title" id="locModalTitle">Select Location</p>
+    <p class="loc-modal-sub">Choose where this movement is happening. Required before posting.</p>
+    <div class="loc-grid">
+      <button class="loc-btn" onclick="selectLocation('M4')">M4</button>
+      <button class="loc-btn" onclick="selectLocation('M5')">M5</button>
+      <button class="loc-btn" onclick="selectLocation('M6')">M6</button>
+      <button class="loc-btn" onclick="selectLocation('M4_STORE')">M4_STORE</button>
+      <button class="loc-btn full-width" onclick="selectLocation('M16_STORE')">M16_STORE</button>
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-outline" onclick="closeLocationModal()">Cancel</button>
+      <button class="btn btn-ok" id="locPostBtn" onclick="confirmLocation()" disabled>POST</button>
+    </div>
+  </div>
+</div>
+
 <!-- Override Modal -->
 <div class="modal-bg" id="overrideModal">
   <div class="modal">
-    <h2>🔑 Supervisor Override</h2>
+    <h2>&#128273; Supervisor Override</h2>
     <div class="fg">
       <label for="pinInput">Supervisor PIN</label>
-      <input type="password" id="pinInput" maxlength="10" inputmode="numeric" placeholder="••••">
+      <input type="password" id="pinInput" maxlength="10" inputmode="numeric" placeholder="&bull;&bull;&bull;&bull;">
     </div>
     <div class="fg">
       <label for="overrideMovement">Movement Type</label>
       <select id="overrideMovement">
         <option value="STOCK_IN">STOCK IN</option>
         <option value="STOCK_OUT">STOCK OUT</option>
+      </select>
+    </div>
+    <div class="fg">
+      <label for="overrideLocation">Location</label>
+      <select id="overrideLocation">
+        <option value="" disabled selected>Select location&hellip;</option>
+        <option value="M4">M4</option>
+        <option value="M5">M5</option>
+        <option value="M6">M6</option>
+        <option value="M4_STORE">M4_STORE</option>
+        <option value="M16_STORE">M16_STORE</option>
       </select>
     </div>
     <div class="fg">
@@ -229,7 +305,7 @@
   </div>
 </div>
 
-<!-- html5-qrcode library — reliable, well-maintained, works on mobile -->
+<!-- html5-qrcode library -->
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="/static/js/offline.js"></script>
 <script src="/static/js/app.js"></script>
