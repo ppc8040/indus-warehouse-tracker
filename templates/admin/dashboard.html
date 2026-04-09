@@ -69,14 +69,14 @@ async function loadMovements() {
     const d = await r.json();
     const rows = d.movements || [];
     if (!rows.length) { document.getElementById('tab-movements').innerHTML = '<div class="empty">No movements yet.</div>'; return; }
-    let html = '<table><thead><tr><th>Event ID</th><th>Time (UTC)</th><th>HU</th><th>Indus Part</th><th>Type</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>Event ID</th><th>Time (UTC)</th><th>HU</th><th>Indus Part</th><th>Type</th><th>Location</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>';
     for (const m of rows) {
       const typeTag = m.Movement_Type === 'STOCK_IN' ? tag('IN','tag-ok') : tag('OUT','tag-err');
       const syncTag = m.Sync_Status === 'SYNCED' ? tag('SYNCED','tag-ok') : tag(m.Sync_Status,'tag-warn');
       let valTag = tag(m.Validation_Status || '—','tag-info');
       if (m.Validation_Status === 'OVERRIDE') valTag = tag('OVERRIDE','tag-warn');
       if (m.Validation_Status === 'REJECTED') valTag = tag('REJECTED','tag-err');
-      html += `<tr><td>${m.Event_ID||''}</td><td>${m.Timestamp_UTC||''}</td><td><strong>${m.Handling_Unit||''}</strong></td><td>${m.Indus_Part||''}</td><td>${typeTag}</td><td>${m.Operator_ID||''}</td><td>${syncTag}</td><td>${valTag}</td></tr>`;
+      html += `<tr><td>${m.Event_ID||''}</td><td>${m.Timestamp_UTC||''}</td><td><strong>${m.Handling_Unit||''}</strong></td><td>${m.Indus_Part||''}</td><td>${typeTag}</td><td>${m.Location||'—'}</td><td>${m.Operator_ID||''}</td><td>${syncTag}</td><td>${valTag}</td></tr>`;
     }
     html += '</tbody></table>';
     document.getElementById('tab-movements').innerHTML = html;
@@ -89,10 +89,10 @@ async function loadStatuses() {
     const d = await r.json();
     const rows = d.statuses || [];
     if (!rows.length) { document.getElementById('tab-statuses').innerHTML = '<div class="empty">No pallet statuses.</div>'; return; }
-    let html = '<table><thead><tr><th>HU</th><th>Status</th><th>Last Event</th><th>Last Movement</th><th>Last Time</th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>HU</th><th>Status</th><th>Last Event</th><th>Last Movement</th><th>Last Time</th><th>Last Location</th></tr></thead><tbody>';
     for (const s of rows) {
       const stTag = s.Current_Status === 'IN_WAREHOUSE' ? tag('IN','tag-ok') : s.Current_Status === 'OUT_OF_WAREHOUSE' ? tag('OUT','tag-err') : tag(s.Current_Status||'—','tag-info');
-      html += `<tr><td><strong>${s.Handling_Unit||''}</strong></td><td>${stTag}</td><td>${s.Last_Event_ID||''}</td><td>${s.Last_Movement_Type||''}</td><td>${s.Last_Movement_Time||''}</td></tr>`;
+      html += `<tr><td><strong>${s.Handling_Unit||''}</strong></td><td>${stTag}</td><td>${s.Last_Event_ID||''}</td><td>${s.Last_Movement_Type||''}</td><td>${s.Last_Movement_Time||''}</td><td>${s.Last_Location||'—'}</td></tr>`;
     }
     html += '</tbody></table>';
     document.getElementById('tab-statuses').innerHTML = html;
