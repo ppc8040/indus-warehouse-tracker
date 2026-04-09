@@ -13,14 +13,16 @@ Pallet_Status still tracks current state for transition validation.
 Movement_Log is append-only.
 Error_Log captures all failures.
 
-Movement_Log (12 cols A-L):
+Movement_Log (13 cols A-M):
   A=Event_ID  B=Timestamp_UTC  C=Handling_Unit  D=Indus_Part
   E=Customer_Part  F=Pallet_Qty  G=Job_No  H=Movement_Type
   I=Operator_ID  J=Device_ID  K=Sync_Status  L=Validation_Status
+  M=Location
 
-Pallet_Status (7 cols A-G):
+Pallet_Status (8 cols A-H):
   A=Handling_Unit  B=Current_Status  C=Last_Event_ID
-  D=Last_Movement_Type  E=Last_Movement_Time  F=Indus_Part  G=Pallet_Qty
+  D=Last_Movement_Type  E=Last_Movement_Time  F=Indus_Part
+  G=Pallet_Qty  H=Last_Location
 
 Error_Log (7 cols A-G):
   A=Error_ID  B=Timestamp_UTC  C=Handling_Unit  D=Stage
@@ -34,6 +36,17 @@ Duplicate detection strategy:
   the same (Handling_Unit, Indus_Part, Customer_Part, Pallet_Qty,
   Movement_Type) AND Validation_Status != OVERRIDE.
   Supervisor overrides are always allowed through regardless.
+
+Location rules:
+  - Every STOCK_IN or STOCK_OUT must include a location (M4, M5, M6,
+    M4_STORE, M16_STORE).
+  - When a pallet is STOCK_OUT, the selected location must match the
+    Last_Location stored in Pallet_Status (i.e. the location it was
+    last STOCK_IN at). Override bypasses this check.
+  - After any STOCK_OUT, the pallet is free and may be STOCK_IN at
+    any location on the next movement.
+  - Last_Location in Pallet_Status always reflects the location of
+    the most recent movement (IN or OUT).
 
 Handling_Unit apostrophe note:
   In the workbook, HU values are stored with a leading apostrophe (e.g.
@@ -59,9 +72,11 @@ from app.utils.validators import validate_handling_unit, validate_movement_type
 
 logger = logging.getLogger(__name__)
 
-MOVEMENT_LOG_COLS = 12
-PALLET_STATUS_COLS = 7
+MOVEMENT_LOG_COLS = 13
+PALLET_STATUS_COLS = 8
 ERROR_LOG_COLS = 7
+
+VALID_LOCATIONS = {'M4', 'M5', 'M6', 'M4_STORE', 'M16_STORE'}
 
 # Movement_Log column positions (0-based) used for duplicate detection
 _ML_COL_HU         = 2   # C: Handling_Unit
@@ -101,11 +116,13 @@ def process_movement(
     override_reason="",
     client_timestamp="",
     idempotency_key="",
+    location="",
 ):
     """
     Record a Stock IN / Stock OUT movement.
     All pallet data (indus_part, customer_part, pallet_qty) comes from the scanned label.
     No master data lookup needed.
+    location must be one of: M4, M5, M6, M4_STORE, M16_STORE.
     """
 
     # ── Validate HU and movement type ──
@@ -122,6 +139,13 @@ def process_movement(
     if not indus_part or not str(indus_part).strip():
         _log_error('MOVEMENT', 'MISSING_INDUS_PART', hu, 'Indus Part not scanned')
         return Result(False, 'rejected_validation', 'Indus Part is missing. Scan the Indus Part QR code.')
+
+    # ── Validate location ──
+    loc = _s(location).strip().upper()
+    if loc not in VALID_LOCATIONS:
+        _log_error('MOVEMENT', 'MISSING_LOCATION', hu, f'Invalid or missing location: {location}')
+        return Result(False, 'rejected_validation',
+                      'Location is required. Select a valid location (M4, M5, M6, M4_STORE, M16_STORE).')
 
     now_utc = datetime.now(timezone.utc)
     timestamp = client_timestamp or now_utc.isoformat()
@@ -156,7 +180,8 @@ def process_movement(
         err = _check_transition(hu, movement, cur_state, is_override,
                                 indus_part=indus_part,
                                 pallet_qty=pallet_qty,
-                                current_row=current)
+                                current_row=current,
+                                incoming_location=loc)
         if err:
             _log_error('MOVEMENT', 'INVALID_TRANSITION', hu,
                        f"{movement} blocked. state={cur_state} override={is_override}")
@@ -166,7 +191,7 @@ def process_movement(
         # ── Determine validation status ──
         validation_status = "OVERRIDE" if is_override else "VALID"
 
-        # ── Write Movement_Log (append-only, 12 columns A-L) ──
+        # ── Write Movement_Log (append-only, 13 columns A-M) ──
         log_row = [
             event_id,                           # A: Event_ID
             _fmt_timestamp(timestamp),          # B: Timestamp_UTC
@@ -180,16 +205,25 @@ def process_movement(
             device_id,                          # J: Device_ID
             'SYNCED',                           # K: Sync_Status
             validation_status,                  # L: Validation_Status
+            loc,                                # M: Location
         ]
         append_row(log_sheet, log_row, MOVEMENT_LOG_COLS)
 
-        # ── Upsert Pallet_Status (7 columns A-G) ──
-        location = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
-        status_row = [hu, location, event_id, movement, _fmt_timestamp(timestamp),
-                      _s(indus_part).strip(), _s(pallet_qty).strip()]
+        # ── Upsert Pallet_Status (8 columns A-H) ──
+        current_status = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
+        status_row = [
+            hu,                                 # A: Handling_Unit
+            current_status,                     # B: Current_Status
+            event_id,                           # C: Last_Event_ID
+            movement,                           # D: Last_Movement_Type
+            _fmt_timestamp(timestamp),          # E: Last_Movement_Time
+            _s(indus_part).strip(),             # F: Indus_Part
+            _s(pallet_qty).strip(),             # G: Pallet_Qty
+            loc,                                # H: Last_Location
+        ]
         upsert_row(status_sheet, 0, hu, status_row, PALLET_STATUS_COLS)
 
-        logger.info(f"Movement OK: {movement} HU={hu} part={indus_part} event={event_id}")
+        logger.info(f"Movement OK: {movement} HU={hu} part={indus_part} location={loc} event={event_id}")
 
         display_type = 'Stock IN' if movement == 'STOCK_IN' else 'Stock OUT'
         return Result(True, 'success_synced', f"{display_type} recorded.",
@@ -198,7 +232,8 @@ def process_movement(
                           'movement_type': movement,
                           'event_id': event_id,
                           'timestamp': timestamp,
-                          'location': location,
+                          'current_status': current_status,
+                          'location': loc,
                           'indus_part': _s(indus_part),
                           'customer_part': _s(customer_part),
                           'pallet_qty': _s(pallet_qty),
@@ -237,6 +272,7 @@ def sync_offline_event(event):
         override_reason=event.get('override_reason', ''),
         client_timestamp=event.get('timestamp', ''),
         idempotency_key=event.get('idempotency_key', ''),
+        location=event.get('location', ''),
     )
 
 
@@ -315,6 +351,10 @@ def _check_duplicate_in_log(log_sheet, hu, indus_part, customer_part, pallet_qty
     The caller already gates this function with is_override=False, so
     the current incoming scan is never an override when we reach here.
 
+    Location is intentionally NOT part of the duplicate fingerprint:
+    the state transition check already prevents double STOCK_INs, so
+    adding location here would be redundant and overly restrictive.
+
     Returns an error message string if duplicate found, or None if clean.
     """
     try:
@@ -362,19 +402,23 @@ def _check_duplicate_in_log(log_sheet, hu, indus_part, customer_part, pallet_qty
 
 
 def _check_transition(hu, movement, cur_state, is_override,
-                      indus_part='', pallet_qty='', current_row=None):
+                      indus_part='', pallet_qty='', current_row=None,
+                      incoming_location=''):
     """
     Validate the movement transition using Pallet_Status.
 
     STOCK_IN:
       - Blocked if the same HU + Indus_Part + Pallet_Qty combo is already IN.
       - Different Indus_Part or Qty on the same HU = new pallet run, allowed.
+      - No location restriction at STOCK_IN time.
 
     STOCK_OUT:
       - Blocked if already OUT or never seen.
       - If the HU is currently IN, the outgoing Indus_Part and Pallet_Qty are
         compared against the stored values. A mismatch means the worker may be
         scanning the wrong label — blocked unless supervisor override.
+      - Location lock: the selected location must match Last_Location in
+        Pallet_Status (where it was last stocked IN). Override bypasses this.
     """
     if movement == 'STOCK_IN' and cur_state == 'STOCK_IN':
         if is_override:
@@ -426,6 +470,16 @@ def _check_transition(hu, movement, cur_state, is_override,
                     f"Pallet {hu} was stocked IN with qty {current_row.get('Pallet_Qty')} "
                     f"but the scanned label shows qty {pallet_qty}. "
                     f"Check the label, or use supervisor override."
+                )
+
+            # Location lock: STOCK_OUT must come from the same location as the last STOCK_IN.
+            # cur_state is 'STOCK_IN' here (passed all earlier guards).
+            stored_location = _normalise_str(current_row.get('Last_Location', ''))
+            if stored_location and stored_location != _normalise_str(incoming_location):
+                return (
+                    f"Pallet {hu} was stocked IN at {stored_location}. "
+                    f"You must do Stock OUT from {stored_location}, not {incoming_location}. "
+                    f"Use supervisor override if this is intentional."
                 )
 
     return None

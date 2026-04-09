@@ -24,6 +24,7 @@ def record_movement():
         "job_no": "",
         "operator_id": "WORKER",
         "device_id": "DEV-ABC123",
+        "location": "M4",
         ...
     }
     """
@@ -56,6 +57,7 @@ def record_movement():
         override_reason=data.get('override_reason', ''),
         client_timestamp=data.get('timestamp', ''),
         idempotency_key=data.get('idempotency_key', ''),
+        location=data.get('location', ''),
     )
 
     if result.success:
