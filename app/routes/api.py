@@ -4,7 +4,7 @@ JSON API routes.
 import logging
 from flask import Blueprint, request, jsonify, current_app
 from app.services.movement_service import process_movement, sync_offline_event
-from app.utils.validators import validate_supervisor_pin
+from app.utils.validators import validate_supervisor_pin, validate_handling_unit
 
 logger = logging.getLogger(__name__)
 api_bp = Blueprint('api', __name__)
@@ -14,12 +14,13 @@ api_bp = Blueprint('api', __name__)
 def record_movement():
     """
     Record a Stock IN or Stock OUT movement.
-    All pallet data comes from the scanned label — no master lookup.
+    indus_part and pallet_qty now come from the SAP HU lookup (done on the frontend
+    before this call). customer_part is intentionally left blank.
     POST body: {
         "handling_unit": "100000000000839157",
         "movement_type": "STOCK_IN",
         "indus_part": "CCR2324",
-        "customer_part": "ENG-1440",
+        "customer_part": "",
         "pallet_qty": "39",
         "job_no": "",
         "operator_id": "WORKER",
@@ -68,6 +69,51 @@ def record_movement():
         return jsonify(result.to_dict()), 502
 
 
+@api_bp.route('/lookup-hu', methods=['POST'])
+def lookup_hu():
+    """
+    Look up a Handling Unit in SAP S/4HANA and return its material and quantity.
+
+    POST body: { "handling_unit": "100000000000839157" }
+
+    Response (success):
+    {
+        "success": true,
+        "handling_unit": "100000000000839157",
+        "indus_part": "AJM0488",
+        "pallet_qty": "36"
+    }
+
+    Response (failure):
+    {
+        "success": false,
+        "message": "Handling Unit not found in SAP."
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    hu_raw = data.get('handling_unit', '')
+
+    # Validate HU format before hitting SAP
+    ok, hu = validate_handling_unit(hu_raw)
+    if not ok:
+        return jsonify({"success": False, "message": hu}), 400
+
+    try:
+        from app.services.sap_client import lookup_hu as sap_lookup, SAPLookupError
+        result = sap_lookup(hu)
+        return jsonify({
+            "success": True,
+            "handling_unit": result["handling_unit"],
+            "indus_part": result["indus_part"],
+            "pallet_qty": result["pallet_qty"],
+        }), 200
+    except Exception as e:
+        # SAPLookupError and any unexpected exception both surface here
+        msg = str(e)
+        logger.error("HU lookup failed for %s: %s", hu, msg)
+        return jsonify({"success": False, "message": msg}), 502
+
+
 @api_bp.route('/sync', methods=['POST'])
 def sync_offline():
     data = request.get_json(silent=True) or {}
@@ -103,59 +149,3 @@ def validate_pin():
     if validate_supervisor_pin(pin, correct):
         return jsonify({"valid": True}), 200
     return jsonify({"valid": False, "message": "Invalid PIN."}), 403
-
-
-@api_bp.route('/scan-label', methods=['POST'])
-def scan_label():
-    """
-    OCR a photo of a pallet label and return extracted field values.
-
-    POST body: { "image": "<base64 data-URL or raw base64>" }
-
-    Response: {
-        "success": true,
-        "fields": {
-            "handling_unit": "1000000000000621219",
-            "indus_part": "CCG1900",
-            "customer_part": "161878",
-            "pallet_qty": "8"
-        },
-        "missing": ["handling_unit"]   // list of field keys that could not be read
-    }
-    """
-    data = request.get_json(silent=True) or {}
-    b64 = data.get('image', '').strip()
-
-    if not b64:
-        return jsonify({"success": False, "message": "No image provided."}), 400
-
-    try:
-        from app.services.label_ocr import parse_label_image
-        fields = parse_label_image(b64)
-    except ImportError as e:
-        logger.warning("OCR dependencies missing: %s", e)
-        return jsonify({
-            "success": False,
-            "message": str(e),
-        }), 503
-    except RuntimeError as e:
-        # Tesseract not installed/found — give a clear message
-        logger.error("Tesseract not available: %s", e)
-        return jsonify({
-            "success": False,
-            "message": "OCR not ready on server: " + str(e),
-        }), 503
-    except Exception as e:
-        logger.error("Label OCR failed: %s", e, exc_info=True)
-        return jsonify({
-            "success": False,
-            "message": "OCR failed: " + str(e),
-        }), 422
-
-    missing = [k for k, v in fields.items() if not v]
-
-    return jsonify({
-        "success": True,
-        "fields": fields,
-        "missing": missing,
-    }), 200
