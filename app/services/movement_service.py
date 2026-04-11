@@ -68,7 +68,13 @@ from app.services.graph_client import (
     read_all_rows_as_dicts,
     GraphAPIError,
 )
-from app.utils.validators import validate_handling_unit, validate_movement_type
+from app.utils.validators import (
+    validate_handling_unit,
+    validate_movement_type,
+    validate_indus_part,
+    validate_customer_part,
+    validate_pallet_qty,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +142,23 @@ def process_movement(
         _log_error('MOVEMENT', 'TYPE_INVALID', hu, movement)
         return Result(False, 'rejected_validation', movement)
 
-    if not indus_part or not str(indus_part).strip():
-        _log_error('MOVEMENT', 'MISSING_INDUS_PART', hu, 'Indus Part not scanned')
-        return Result(False, 'rejected_validation', 'Indus Part is missing. Scan the Indus Part QR code.')
+    # ── Validate Indus Part ──
+    ok_indus, indus_clean = validate_indus_part(indus_part)
+    if not ok_indus:
+        _log_error('MOVEMENT', 'INVALID_INDUS_PART', hu, indus_clean)
+        return Result(False, 'rejected_validation', indus_clean)
+
+    # ── Validate Customer Part ──
+    ok_cust, cust_clean = validate_customer_part(customer_part, indus_clean)
+    if not ok_cust:
+        _log_error('MOVEMENT', 'INVALID_CUSTOMER_PART', hu, cust_clean)
+        return Result(False, 'rejected_validation', cust_clean)
+
+    # ── Validate Pallet Qty ──
+    ok_qty, qty_clean = validate_pallet_qty(pallet_qty)
+    if not ok_qty:
+        _log_error('MOVEMENT', 'INVALID_QTY', hu, qty_clean)
+        return Result(False, 'rejected_validation', qty_clean)
 
     # ── Validate location ──
     loc = _s(location).strip().upper()
@@ -163,9 +183,9 @@ def process_movement(
         if not is_override:
             dup_err = _check_duplicate_in_log(
                 log_sheet, hu,
-                _s(indus_part).strip(),
-                _s(customer_part).strip(),
-                _s(pallet_qty).strip(),
+                indus_clean,
+                cust_clean,
+                qty_clean,
                 movement,
             )
             if dup_err:
@@ -178,8 +198,8 @@ def process_movement(
         cur_state = _s(current.get('Last_Movement_Type', 'NONE')).upper() if current else 'NONE'
 
         err = _check_transition(hu, movement, cur_state, is_override,
-                                indus_part=indus_part,
-                                pallet_qty=pallet_qty,
+                                indus_part=indus_clean,
+                                pallet_qty=qty_clean,
                                 current_row=current,
                                 incoming_location=loc)
         if err:
@@ -196,9 +216,9 @@ def process_movement(
             event_id,                           # A: Event_ID
             _fmt_timestamp(timestamp),          # B: Timestamp_UTC
             hu,                                 # C: Handling_Unit
-            _s(indus_part).strip(),             # D: Indus_Part
-            _s(customer_part).strip(),          # E: Customer_Part
-            _s(pallet_qty).strip(),             # F: Pallet_Qty
+            indus_clean,                        # D: Indus_Part
+            cust_clean,                         # E: Customer_Part
+            qty_clean,                          # F: Pallet_Qty
             _s(job_no).strip(),                 # G: Job_No
             movement,                           # H: Movement_Type
             operator_id,                        # I: Operator_ID
@@ -217,13 +237,13 @@ def process_movement(
             event_id,                           # C: Last_Event_ID
             movement,                           # D: Last_Movement_Type
             _fmt_timestamp(timestamp),          # E: Last_Movement_Time
-            _s(indus_part).strip(),             # F: Indus_Part
-            _s(pallet_qty).strip(),             # G: Pallet_Qty
+            indus_clean,                        # F: Indus_Part
+            qty_clean,                          # G: Pallet_Qty
             loc,                                # H: Last_Location
         ]
         upsert_row(status_sheet, 0, hu, status_row, PALLET_STATUS_COLS)
 
-        logger.info(f"Movement OK: {movement} HU={hu} part={indus_part} location={loc} event={event_id}")
+        logger.info(f"Movement OK: {movement} HU={hu} part={indus_clean} location={loc} event={event_id}")
 
         display_type = 'Stock IN' if movement == 'STOCK_IN' else 'Stock OUT'
         return Result(True, 'success_synced', f"{display_type} recorded.",
@@ -234,9 +254,9 @@ def process_movement(
                           'timestamp': timestamp,
                           'current_status': current_status,
                           'location': loc,
-                          'indus_part': _s(indus_part),
-                          'customer_part': _s(customer_part),
-                          'pallet_qty': _s(pallet_qty),
+                          'indus_part': indus_clean,
+                          'customer_part': cust_clean,
+                          'pallet_qty': qty_clean,
                           'job_no': _s(job_no),
                           'is_override': is_override,
                       })
