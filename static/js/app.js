@@ -15,10 +15,20 @@
    ═══════════════════════════════════════════════════════════ */
 'use strict';
 
+// ── Field Validation Rules ──
+// HU: 18-20 digits, all numeric, no special chars
+const HU_PATTERN       = /^\d{18,20}$/;
+// Indus Part: exactly 7 chars, first 3 uppercase letters, next 4 letters/digits
+const INDUS_PATTERN    = /^[A-Z]{3}[A-Z0-9]{4}$/;
+// Customer Part: letters, digits, hyphen, dot, underscore, slash, space
+const CUST_PART_ALLOWED = /^[A-Za-z0-9\-._\/ ]+$/;
+// Qty: 1-4 digits, positive integer only
+const QTY_PATTERN      = /^\d{1,4}$/;
+
 // ── State ──
 let scanned = {
-  handling_unit: '',   // from barcode (long numeric, 10-18 digits)
-  indus_part: '',      // from QR 1 (alphanumeric part code)
+  handling_unit: '',   // from barcode (18-20 digits)
+  indus_part: '',      // from QR 1 (7-char alphanumeric part code)
   customer_part: '',   // from QR 2 (alphanumeric, may be pure number)
   pallet_qty: '',      // from QR 3 (numeric, small number)
 };
@@ -194,18 +204,22 @@ function classifyAndStore(val) {
   const v = val.trim();
   if (!v) return;
 
-  if (/^\d{16,18}$/.test(v) && v.startsWith('1000')) {
+  // HU: 18-20 digits, all numeric, starts with 1000
+  if (HU_PATTERN.test(v) && v.startsWith('1000')) {
     if (!scanned.handling_unit) scanned.handling_unit = v;
     return;
   }
-  if (/^[A-Z]{3}\d{4}$/.test(v)) {
-    if (!scanned.indus_part) scanned.indus_part = v;
+  // Indus Part: exactly 7 chars, first 3 uppercase letters + 4 alphanumeric
+  if (INDUS_PATTERN.test(v.toUpperCase())) {
+    if (!scanned.indus_part) scanned.indus_part = v.toUpperCase();
     return;
   }
-  if (/^\d{1,3}$/.test(v) && parseInt(v, 10) >= 1) {
+  // Qty: 1-4 digits, positive integer
+  if (QTY_PATTERN.test(v) && parseInt(v, 10) >= 1) {
     if (!scanned.pallet_qty) scanned.pallet_qty = v;
     return;
   }
+  // Customer Part: fallback — accepts anything with no strict format
   if (!scanned.customer_part) {
     scanned.customer_part = v;
     return;
@@ -277,11 +291,14 @@ function showManualHU() {
   document.getElementById('huManualInput').focus();
 }
 function manualHU() {
-  const val = document.getElementById('huManualInput').value.trim();
-  if (!val) { toast('Type the HU number from the label.', 'warn'); return; }
-  if (!/^\d{10,20}$/.test(val)) { toast('HU should be 10-20 digits. Check the number.', 'warn'); return; }
-  scanned.handling_unit = val;
-  allScannedCodes.add(val);
+  const raw = document.getElementById('huManualInput').value.trim();
+  if (!raw) { toast('Type the HU number from the label.', 'warn'); return; }
+  if (!HU_PATTERN.test(raw)) {
+    toast('Invalid HU. Must be 18\u201320 digits (numbers only, no letters or special characters).', 'warn', 5000);
+    return;
+  }
+  scanned.handling_unit = raw;
+  allScannedCodes.add(raw);
   updateScanDisplay();
   document.getElementById('huManualRow').style.display = 'none';
   toast('Handling Unit set manually.', 'ok', 2000);
@@ -294,10 +311,22 @@ function showManualIndus() {
   document.getElementById('indusManualInput').focus();
 }
 function manualIndus() {
-  const val = document.getElementById('indusManualInput').value.trim().toUpperCase();
-  if (!val) { toast('Type the Indus Part code from the label.', 'warn'); return; }
-  scanned.indus_part = val;
-  allScannedCodes.add(val);
+  const raw = document.getElementById('indusManualInput').value.trim().toUpperCase();
+  if (!raw) { toast('Type the Indus Part code from the label.', 'warn'); return; }
+  if (raw.length !== 7) {
+    toast(`Invalid Indus Part (${raw.length} chars). Must be exactly 7 characters (e.g. CEJ1773).`, 'warn', 5000);
+    return;
+  }
+  if (!/^[A-Z]{3}/.test(raw)) {
+    toast('Invalid Indus Part. First 3 characters must be uppercase letters (e.g. CEJ1773).', 'warn', 5000);
+    return;
+  }
+  if (!INDUS_PATTERN.test(raw)) {
+    toast('Invalid Indus Part. Must be 3 letters followed by 4 letters/digits, no special characters (e.g. CEJ1773).', 'warn', 5000);
+    return;
+  }
+  scanned.indus_part = raw;
+  allScannedCodes.add(raw);
   updateScanDisplay();
   document.getElementById('indusManualRow').style.display = 'none';
   toast('Indus Part set manually.', 'ok', 2000);
@@ -310,10 +339,18 @@ function showManualCust() {
   document.getElementById('custManualInput').focus();
 }
 function manualCust() {
-  const val = document.getElementById('custManualInput').value.trim();
-  if (!val) { toast('Type the Customer Part from the label.', 'warn'); return; }
-  scanned.customer_part = val;
-  allScannedCodes.add(val);
+  const raw = document.getElementById('custManualInput').value.trim();
+  if (!raw) { toast('Type the Customer Part from the label.', 'warn'); return; }
+  if (!CUST_PART_ALLOWED.test(raw)) {
+    toast('Invalid Customer Part. Only letters, digits, hyphens (-), dots (.), underscores (_), slashes (/), and spaces are allowed. No other special characters.', 'warn', 6000);
+    return;
+  }
+  if (scanned.indus_part && raw.toUpperCase() === scanned.indus_part.toUpperCase()) {
+    toast('Customer Part cannot be the same as Indus Part. Check the label.', 'warn', 5000);
+    return;
+  }
+  scanned.customer_part = raw;
+  allScannedCodes.add(raw);
   updateScanDisplay();
   document.getElementById('custManualRow').style.display = 'none';
   toast('Customer Part set manually.', 'ok', 2000);
@@ -326,11 +363,18 @@ function showManualQty() {
   document.getElementById('qtyManualInput').focus();
 }
 function manualQty() {
-  const val = document.getElementById('qtyManualInput').value.trim();
-  if (!val) { toast('Type the pallet quantity from the label.', 'warn'); return; }
-  if (!/^\d{1,4}$/.test(val) || parseInt(val, 10) < 1) { toast('Qty should be a positive number (e.g. 39).', 'warn'); return; }
-  scanned.pallet_qty = val;
-  allScannedCodes.add(val);
+  const raw = document.getElementById('qtyManualInput').value.trim();
+  if (!raw) { toast('Type the pallet quantity from the label.', 'warn'); return; }
+  if (!QTY_PATTERN.test(raw)) {
+    toast('Invalid Quantity. Must be a whole number (1\u20139999) with no decimals, no letters, and no special characters.', 'warn', 5000);
+    return;
+  }
+  if (parseInt(raw, 10) < 1) {
+    toast('Quantity must be a positive number (at least 1).', 'warn');
+    return;
+  }
+  scanned.pallet_qty = raw;
+  allScannedCodes.add(raw);
   updateScanDisplay();
   document.getElementById('qtyManualRow').style.display = 'none';
   toast('Pallet Qty set manually.', 'ok', 2000);
@@ -491,7 +535,8 @@ async function extractHUFromImage(file) {
             const qr = new Html5Qrcode('_barcodeWorker');
             const result = await qr.scanFile(f, false);
             const v = result ? result.trim() : null;
-            if (v && /^\d{16,20}$/.test(v) && v.startsWith('1000')) resolve(v);
+            // Accept 18-20 digit numeric barcodes starting with 1000
+            if (v && HU_PATTERN.test(v) && v.startsWith('1000')) resolve(v);
             else resolve(null);
           } catch (e) { resolve(null); }
         }, 'image/jpeg', 0.97);
