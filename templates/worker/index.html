@@ -38,9 +38,7 @@
       background: #E3F2FD;
       color: var(--pri);
     }
-    .loc-btn.full-width {
-      grid-column: 1 / -1;
-    }
+    .loc-btn.full-width { grid-column: 1 / -1; }
     .loc-modal-title {
       font-size: 1.15rem;
       font-weight: 800;
@@ -52,10 +50,67 @@
       color: var(--txt2);
       margin-bottom: 16px;
     }
-    #locPostBtn:disabled {
-      opacity: .45;
-      cursor: not-allowed;
+    #btnConfirmLocation:disabled { opacity: .45; cursor: not-allowed; }
+
+    /* ── HU input row ── */
+    .hu-input-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
     }
+    .hu-input-row input {
+      flex: 1;
+      padding: 14px 12px;
+      border: 2px solid #E0E0E0;
+      border-radius: 8px;
+      font-size: 1.05rem;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .hu-input-row input:focus { border-color: #1565C0; }
+    .btn-lookup {
+      padding: 14px 18px;
+      background: #1565C0;
+      color: #FFF;
+      border: none;
+      border-radius: 8px;
+      font-weight: 800;
+      font-size: .95rem;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-lookup:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-lookup:active { background: #0D47A1; }
+
+    /* ── SAP result card ── */
+    .sap-result {
+      margin-top: 14px;
+      padding: 14px;
+      background: #F1F8E9;
+      border: 1.5px solid #A5D6A7;
+      border-radius: 10px;
+      display: none;
+    }
+    .sap-result.visible { display: block; }
+    .sap-result-title {
+      font-size: .72rem;
+      font-weight: 700;
+      color: #388E3C;
+      letter-spacing: .8px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .sap-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+      border-bottom: 1px solid #C8E6C9;
+    }
+    .sap-row:last-child { border-bottom: none; }
+    .sap-lbl { font-size: .78rem; color: #555; }
+    .sap-val { font-size: .95rem; font-weight: 700; color: #1B5E20; }
   </style>
 </head>
 <body>
@@ -75,118 +130,70 @@
 
 <div class="wrap">
 
-  <!-- ═══ SCREEN 1: SCAN ALL CODES ═══ -->
+  <!-- ═══ SCREEN 1: SCAN BARCODE ═══ -->
   <div class="scr on" id="scrScan">
 
     <div class="card">
-      <h2 style="font-size:1.1rem;margin-bottom:12px;color:#1565C0">Scan Pallet Label</h2>
-      <p style="font-size:.85rem;color:#757575;margin-bottom:16px">Scan all 4 codes from the pallet label. The camera reads QR codes and barcodes automatically.</p>
+      <h2 style="font-size:1.1rem;margin-bottom:6px;color:#1565C0">Scan Pallet Barcode</h2>
+      <p style="font-size:.82rem;color:#757575;margin-bottom:14px">
+        Scan the barcode on the pallet label or type the HU number manually.
+        The app will retrieve the part and quantity from SAP automatically.
+      </p>
 
-      <!-- Scanner area -->
-      <div id="scannerContainer" style="width:100%;margin-bottom:16px"></div>
-      <div id="_photoScanWorker" style="display:none"></div>
-      <div id="_barcodeWorker" style="display:none"></div>
-      <div id="_qrCrop1" style="display:none"></div>
-      <div id="_qrCrop2" style="display:none"></div>
-      <div id="_qrCrop3" style="display:none"></div>
-      <div id="_qrCrop4" style="display:none"></div>
-      <div id="_qrCrop5" style="display:none"></div>
-      <div id="_qrCrop6" style="display:none"></div>
+      <!-- Camera: barcode only -->
+      <div id="scannerContainer" style="width:100%;margin-bottom:14px"></div>
 
       <button class="btn btn-pri" id="btnToggleScan" onclick="toggleScanner()">
         <span class="btn-icon">&#128247;</span> START CAMERA
       </button>
-
-      <!-- Photo scan: hidden file input triggered by button below -->
-      <input
-        type="file"
-        id="labelPhotoInput"
-        accept="image/*"
-        capture="environment"
-        style="display:none"
-        onchange="processLabelPhoto(this)">
-
-      <button
-        class="btn btn-outline"
-        style="margin-top:10px;font-size:.9rem"
-        onclick="document.getElementById('labelPhotoInput').click()">
-        &#128248; PHOTO SCAN &mdash; Photograph entire label
-      </button>
-      <p style="font-size:.75rem;color:#9E9E9E;margin-top:6px;text-align:center">
-        Use if camera won't scan a code &mdash; takes a photo and reads all fields at once
+      <p style="font-size:.72rem;color:#9E9E9E;margin-top:6px;text-align:center">
+        Camera reads barcodes only &mdash; point at the Code 128 barcode on the label
       </p>
     </div>
 
-    <!-- Scanned values display -->
+    <!-- HU entry + SAP lookup -->
     <div class="card mt16" id="scannedCard">
-      <h3 style="font-size:.95rem;margin-bottom:12px;color:#212121">Scanned Values</h3>
+      <h3 style="font-size:.95rem;margin-bottom:4px;color:#212121">Handling Unit</h3>
+      <p style="font-size:.75rem;color:#9E9E9E;margin-bottom:4px">
+        RF gun users: scan barcode into the field below, then tap LOOKUP.
+      </p>
 
-      <div class="scan-field" id="sf-hu">
-        <div class="sf-row">
-          <span class="sf-label">Handling Unit (Barcode)</span>
-          <span class="sf-status" id="st-hu">NOT SCANNED</span>
-        </div>
-        <div class="sf-value" id="val-hu">&mdash;</div>
-        <div id="huManualRow" style="margin-top:8px;display:none">
-          <div style="display:flex;gap:8px">
-            <input type="text" id="huManualInput" placeholder="Type HU number from label" inputmode="numeric" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
-            <button onclick="manualHU()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
-          </div>
-        </div>
-        <button onclick="showManualHU()" id="huManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">Barcode won't scan? Type it manually</button>
+      <!-- Single HU input -->
+      <div class="hu-input-row">
+        <input
+          type="text"
+          id="huManualInput"
+          placeholder="Scan or type HU number (18-20 digits)"
+          inputmode="numeric"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          onkeydown="if(event.key==='Enter'){confirmHULookup();}"
+        >
+        <button class="btn-lookup" id="btnLookupHU" onclick="confirmHULookup()">LOOKUP</button>
       </div>
 
-      <div class="scan-field" id="sf-indus">
-        <div class="sf-row">
-          <span class="sf-label">Indus Part (QR 1)</span>
-          <span class="sf-status" id="st-indus">NOT SCANNED</span>
+      <!-- SAP result (shown after successful lookup) -->
+      <div class="sap-result" id="sapResultCard">
+        <div class="sap-result-title">&#10003; SAP Data Retrieved</div>
+        <div class="sap-row">
+          <span class="sap-lbl">Handling Unit</span>
+          <span class="sap-val" id="val-hu">&mdash;</span>
         </div>
-        <div class="sf-value" id="val-indus">&mdash;</div>
-        <div id="indusManualRow" style="margin-top:8px;display:none">
-          <div style="display:flex;gap:8px">
-            <input type="text" id="indusManualInput" placeholder="e.g. CCR2324" autocapitalize="characters" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
-            <button onclick="manualIndus()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
-          </div>
+        <div class="sap-row">
+          <span class="sap-lbl">Indus Part (Material)</span>
+          <span class="sap-val" id="val-indus">&mdash;</span>
         </div>
-        <button onclick="showManualIndus()" id="indusManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">QR won't scan? Type it manually</button>
+        <div class="sap-row">
+          <span class="sap-lbl">Quantity</span>
+          <span class="sap-val" id="val-qty">&mdash;</span>
+        </div>
       </div>
 
-      <div class="scan-field" id="sf-cust">
-        <div class="sf-row">
-          <span class="sf-label">Customer Part (QR 2)</span>
-          <span class="sf-status" id="st-cust">NOT SCANNED</span>
-        </div>
-        <div class="sf-value" id="val-cust">&mdash;</div>
-        <div id="custManualRow" style="margin-top:8px;display:none">
-          <div style="display:flex;gap:8px">
-            <input type="text" id="custManualInput" placeholder="e.g. 161878 or ENG-1440" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
-            <button onclick="manualCust()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
-          </div>
-        </div>
-        <button onclick="showManualCust()" id="custManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">QR won't scan? Type it manually</button>
-      </div>
-
-      <div class="scan-field" id="sf-qty">
-        <div class="sf-row">
-          <span class="sf-label">Pallet Qty (QR 3)</span>
-          <span class="sf-status" id="st-qty">NOT SCANNED</span>
-        </div>
-        <div class="sf-value" id="val-qty">&mdash;</div>
-        <div id="qtyManualRow" style="margin-top:8px;display:none">
-          <div style="display:flex;gap:8px">
-            <input type="text" id="qtyManualInput" placeholder="e.g. 39" inputmode="numeric" style="flex:1;padding:10px;border:2px solid #E0E0E0;border-radius:8px;font-size:1rem">
-            <button onclick="manualQty()" style="padding:10px 16px;background:#1565C0;color:#FFF;border:none;border-radius:8px;font-weight:700;font-size:.9rem;white-space:nowrap">SET</button>
-          </div>
-        </div>
-        <button onclick="showManualQty()" id="qtyManualBtn" style="margin-top:6px;background:none;border:none;color:#1565C0;font-size:.78rem;font-weight:600;cursor:pointer;padding:4px 0">QR won't scan? Type it manually</button>
-      </div>
-
-      <div style="margin-top:12px;padding:8px 0;border-top:1px solid #E0E0E0">
-        <div class="sf-row">
-          <span class="sf-label" style="font-size:.75rem">Scan Progress</span>
-          <span style="font-weight:700;font-size:.9rem" id="scanProgress">0 / 4</span>
-        </div>
-      </div>
+      <!-- Hidden status elements kept so app.js _updateField() calls don't throw -->
+      <span id="st-hu" style="display:none"></span>
+      <span id="st-indus" style="display:none"></span>
+      <span id="st-qty" style="display:none"></span>
     </div>
 
     <div class="btn-group">
@@ -194,12 +201,12 @@
         PROCEED TO MOVEMENT &rarr;
       </button>
       <button class="btn btn-outline" onclick="resetScans()">
-        RESET ALL SCANS
+        RESET
       </button>
     </div>
   </div>
 
-  <!-- ═══ SCREEN 2: CONFIRM & CHOOSE MOVEMENT ═══ -->
+  <!-- ═══ SCREEN 2: CONFIRM &amp; CHOOSE MOVEMENT ═══ -->
   <div class="scr" id="scrAction">
     <div class="card" id="palletCard">
       <div>
@@ -213,14 +220,11 @@
     </div>
 
     <div class="btn-group">
-      <button class="btn btn-ok" onclick="openLocationModal('STOCK_IN')">
+      <button class="btn btn-ok" onclick="promptLocation('STOCK_IN')">
         <span class="btn-icon">&#128229;</span> STOCK IN
       </button>
-      <button class="btn btn-err" onclick="openLocationModal('STOCK_OUT')">
+      <button class="btn btn-err" onclick="promptLocation('STOCK_OUT')">
         <span class="btn-icon">&#128228;</span> STOCK OUT
-      </button>
-      <button class="btn btn-warn" onclick="showOverrideModal()">
-        &#128273; SUPERVISOR OVERRIDE
       </button>
       <button class="btn btn-outline" onclick="goScan()">
         &larr; BACK TO SCAN
@@ -252,18 +256,18 @@
 <!-- ═══ Location Modal ═══ -->
 <div class="modal-bg" id="locationModal">
   <div class="modal">
-    <p class="loc-modal-title" id="locModalTitle">Select Location</p>
+    <p class="loc-modal-title" id="locationModalTitle">Select Location</p>
     <p class="loc-modal-sub">Choose where this movement is happening. Required before posting.</p>
     <div class="loc-grid">
-      <button class="loc-btn" onclick="selectLocation('M4')">M4</button>
-      <button class="loc-btn" onclick="selectLocation('M5')">M5</button>
-      <button class="loc-btn" onclick="selectLocation('M6')">M6</button>
-      <button class="loc-btn" onclick="selectLocation('M4_STORE')">M4_STORE</button>
-      <button class="loc-btn full-width" onclick="selectLocation('M16_STORE')">M16_STORE</button>
+      <button class="loc-btn" data-loc="M4"     onclick="selectLocation('M4')">M4</button>
+      <button class="loc-btn" data-loc="M5"     onclick="selectLocation('M5')">M5</button>
+      <button class="loc-btn" data-loc="M6"     onclick="selectLocation('M6')">M6</button>
+      <button class="loc-btn" data-loc="M4_STORE" onclick="selectLocation('M4_STORE')">M4_STORE</button>
+      <button class="loc-btn full-width" data-loc="M16_STORE" onclick="selectLocation('M16_STORE')">M16_STORE</button>
     </div>
     <div class="modal-btns">
-      <button class="btn btn-outline" onclick="closeLocationModal()">Cancel</button>
-      <button class="btn btn-ok" id="locPostBtn" onclick="confirmLocation()" disabled>POST</button>
+      <button class="btn btn-outline" onclick="cancelLocation()">Cancel</button>
+      <button class="btn btn-ok" id="btnConfirmLocation" onclick="confirmLocation()" disabled>POST</button>
     </div>
   </div>
 </div>
@@ -272,43 +276,35 @@
 <div class="modal-bg" id="overrideModal">
   <div class="modal">
     <h2>&#128273; Supervisor Override</h2>
+    <p id="overrideMessage" style="font-size:.85rem;color:#C62828;margin-bottom:14px"></p>
     <div class="fg">
-      <label for="pinInput">Supervisor PIN</label>
-      <input type="password" id="pinInput" maxlength="10" inputmode="numeric" placeholder="&bull;&bull;&bull;&bull;">
-    </div>
-    <div class="fg">
-      <label for="overrideMovement">Movement Type</label>
-      <select id="overrideMovement">
-        <option value="STOCK_IN">STOCK IN</option>
-        <option value="STOCK_OUT">STOCK OUT</option>
-      </select>
-    </div>
-    <div class="fg">
-      <label for="overrideLocation">Location</label>
-      <select id="overrideLocation">
-        <option value="" disabled selected>Select location&hellip;</option>
-        <option value="M4">M4</option>
-        <option value="M5">M5</option>
-        <option value="M6">M6</option>
-        <option value="M4_STORE">M4_STORE</option>
-        <option value="M16_STORE">M16_STORE</option>
-      </select>
-    </div>
-    <div class="fg">
-      <label for="overrideReason">Reason (required)</label>
-      <textarea id="overrideReason" placeholder="Why is this override needed?" rows="3"></textarea>
+      <label for="overridePinInput">Supervisor PIN</label>
+      <input type="password" id="overridePinInput" maxlength="10" inputmode="numeric" placeholder="&bull;&bull;&bull;&bull;">
     </div>
     <div class="modal-btns">
-      <button class="btn btn-outline" onclick="closeOverride()">Cancel</button>
-      <button class="btn btn-err" onclick="submitOverride()">CONFIRM OVERRIDE</button>
+      <button class="btn btn-outline" onclick="cancelOverride()">Cancel</button>
+      <button class="btn btn-err" onclick="confirmOverride()">CONFIRM OVERRIDE</button>
     </div>
   </div>
 </div>
 
-<!-- html5-qrcode library -->
+<!-- html5-qrcode library (still used for barcode-only camera scanning) -->
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="/static/js/offline.js"></script>
 <script src="/static/js/app.js"></script>
+
+<!-- After SAP lookup succeeds, show the green result card -->
+<script>
+  // Patch updateScanDisplay to also toggle the SAP result card visibility
+  const _origUpdateScanDisplay = updateScanDisplay;
+  updateScanDisplay = function() {
+    _origUpdateScanDisplay();
+    const card = document.getElementById('sapResultCard');
+    if (!card) return;
+    const hu = document.getElementById('val-hu').textContent;
+    card.classList.toggle('visible', hu && hu !== '\u2014' && hu !== '');
+  };
+</script>
 
 <script>
   if ('serviceWorker' in navigator) {
