@@ -20,6 +20,8 @@ Security additions in this revision:
     Excel read error instead of silently allowing the movement through.
     Duplicate detection is now HU + Movement_Type only (not the full
     fingerprint) and applies to ALL movements including overrides.
+    Returns status 'rejected_duplicate' so the frontend can block cleanly
+    without offering a supervisor override option.
 
   Fix 4 — Pallet_Status data takes precedence over SAP
     /api/lookup-hu first checks Pallet_Status for the HU.  If found,
@@ -146,6 +148,11 @@ def record_movement():
     supervisor_pin is the short numeric PIN — validated normally.
     The two cases are distinguished by token length: tokens are 32 hex chars,
     numeric PINs are always shorter.
+
+    Returns:
+      200 — success
+      409 — rejected_validation or rejected_duplicate (no retry with override for duplicates)
+      502 — write/graph failure
     """
     data = request.get_json(silent=True) or {}
     hu = data.get('handling_unit', '')
@@ -198,7 +205,7 @@ def record_movement():
 
     if result.success:
         return jsonify(result.to_dict()), 200
-    elif result.status == 'rejected_validation':
+    elif result.status in ('rejected_validation', 'rejected_duplicate'):
         return jsonify(result.to_dict()), 409
     else:
         return jsonify(result.to_dict()), 502
