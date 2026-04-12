@@ -105,9 +105,9 @@ class Result:
                 "message": self.message, "data": self.data}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 #  PROCESS MOVEMENT — data comes from scanned label, no master lookup
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def process_movement(
     handling_unit,
@@ -176,10 +176,8 @@ def process_movement(
         status_sheet = current_app.config['SHEET_PALLET_STATUS']
 
         # ── Duplicate check against Movement_Log (persistent, dyno-safe) ──
-        # Supersedes the old in-memory idempotency store.
-        # A scan is a duplicate when ALL five identity fields match AND
-        # the existing row is NOT an OVERRIDE (overrides are always unique
-        # intentional acts).
+        # Fix 3: now fails closed — Excel read errors block the movement with
+        # a friendly retry message instead of silently allowing it through.
         if not is_override:
             dup_err = _check_duplicate_in_log(
                 log_sheet, hu,
@@ -274,9 +272,9 @@ def process_movement(
                       {'needs_sync': True})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 #  OFFLINE SYNC
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def sync_offline_event(event):
     return process_movement(
@@ -296,9 +294,9 @@ def sync_offline_event(event):
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 #  ADMIN QUERIES
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def get_recent_movements(limit=50):
     try:
@@ -328,9 +326,9 @@ def get_all_pallet_statuses():
         return []
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 #  PRIVATE HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def _s(val):
     if val is None:
@@ -368,14 +366,11 @@ def _check_duplicate_in_log(log_sheet, hu, indus_part, customer_part, pallet_qty
     Supervisor overrides are intentional re-submissions and are always
     allowed to pass through this check.
 
-    The caller already gates this function with is_override=False, so
-    the current incoming scan is never an override when we reach here.
+    Fix 3: on Excel read failure, returns a friendly retry message instead
+    of None (which previously let all movements through silently).
 
-    Location is intentionally NOT part of the duplicate fingerprint:
-    the state transition check already prevents double STOCK_INs, so
-    adding location here would be redundant and overly restrictive.
-
-    Returns an error message string if duplicate found, or None if clean.
+    Returns an error message string if duplicate found or read failed,
+    or None if clean.
     """
     try:
         from app.services.graph_client import read_all_rows
@@ -414,11 +409,14 @@ def _check_duplicate_in_log(log_sheet, hu, indus_part, customer_part, pallet_qty
                     f"Use supervisor override if this is intentional."
                 )
         return None
+
     except Exception as e:
-        # If the log read fails, log it but do NOT block the movement.
-        # It is better to risk a rare duplicate than to block all scanning.
-        logger.warning(f"Duplicate log check failed (non-blocking): {e}")
-        return None
+        # Fix 3: fail closed — block the movement with a friendly message
+        # rather than silently allowing a potential duplicate through.
+        logger.warning(f"Duplicate log check failed (blocking movement): {e}")
+        return (
+            "System is temporarily busy. Please try again in a moment."
+        )
 
 
 def _check_transition(hu, movement, cur_state, is_override,
