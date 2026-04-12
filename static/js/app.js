@@ -55,6 +55,20 @@ let deviceId = localStorage.getItem('deviceId') || (() => {
 })();
 let deviceName = localStorage.getItem('deviceName') || '';
 
+// ── PIN lockout state — client-side display only ──
+// The server enforces the real 3-strike / 30-second lockout per-IP.
+// These variables drive the countdown UI and attempt counter display.
+// Each override operation gets a fresh counter (_nfoPinAttempts resets
+// inside _openNotFoundOverrideModal so previous failures don't carry over).
+const _PIN_MAX_ATTEMPTS  = 3;
+const _PIN_LOCKOUT_SECS  = 30;
+let _nfoPinAttempts      = 0;   // wrong guesses in the current modal session
+let _nfoPinCountdownId   = null; // setInterval handle for the countdown timer
+
+// Same counters for the rejection-override modal
+let _ovPinAttempts     = 0;
+let _ovPinCountdownId  = null;
+
 
 // ── Screen switching ──
 function showScreen(id) {
@@ -393,6 +407,57 @@ function _resetLookupState() {
 
 
 // ═══════════════════════════════════════════════════════════
+//  PIN LOCKOUT HELPERS
+//
+//  _startPinCountdown(secs, errEl, inputEl, btnEl, onUnlock)
+//    Disables inputEl + btnEl, shows a live "Try again in Xs…"
+//    countdown in errEl, then re-enables everything when done
+//    and calls onUnlock() so the caller can do any extra reset.
+//
+//  _clearPinCountdown(timerId)
+//    Clears a running countdown interval safely.
+//
+//  _pinAttemptsMessage(remaining)
+//    Returns a human-readable string for remaining attempts.
+// ═══════════════════════════════════════════════════════════
+
+function _startPinCountdown(secs, errEl, inputEl, btnEl, onUnlock) {
+  let remaining = secs;
+
+  function _tick() {
+    remaining -= 1;
+    if (errEl) errEl.textContent = `Too many failed attempts. Try again in ${remaining}s.`;
+    if (remaining <= 0) {
+      clearInterval(timerId);
+      if (inputEl) { inputEl.disabled = false; inputEl.value = ''; inputEl.focus(); }
+      if (btnEl)   btnEl.disabled = false;
+      if (errEl)   errEl.textContent = '';
+      if (typeof onUnlock === 'function') onUnlock();
+    }
+  }
+
+  // Disable immediately and show first tick message
+  if (inputEl) inputEl.disabled = true;
+  if (btnEl)   btnEl.disabled   = true;
+  if (errEl)   errEl.textContent = `Too many failed attempts. Try again in ${remaining}s.`;
+
+  const timerId = setInterval(_tick, 1000);
+  return timerId;
+}
+
+function _clearPinCountdown(timerId) {
+  if (timerId !== null) clearInterval(timerId);
+  return null;
+}
+
+function _pinAttemptsMessage(remaining) {
+  if (remaining === 1) return 'Incorrect PIN. 1 attempt remaining.';
+  if (remaining > 1)  return `Incorrect PIN. ${remaining} attempts remaining.`;
+  return 'Incorrect PIN.';
+}
+
+
+// ═══════════════════════════════════════════════════════════
 //  SAP-NOT-FOUND SUPERVISOR OVERRIDE MODAL
 //
 //  Triggered only when error_code === 'HU_NOT_FOUND'.
@@ -411,6 +476,12 @@ function _openNotFoundOverrideModal(hu) {
   _notFoundOverrideHU = hu;
   _nfoOverrideToken   = '';  // clear any stale token
 
+  // ── Per-operation state reset ──
+  // Clear any countdown that is still running from a previous override
+  // operation so it never bleeds into this new one.
+  _nfoPinCountdownId = _clearPinCountdown(_nfoPinCountdownId);
+  _nfoPinAttempts    = 0;
+
   // Populate the HU display inside the modal
   const huSpan = document.getElementById('nfoHUDisplay');
   if (huSpan) huSpan.textContent = hu;
@@ -422,13 +493,15 @@ function _openNotFoundOverrideModal(hu) {
   const pinInput  = document.getElementById('nfoPinInput');
   const partInput = document.getElementById('nfoIndusPart');
   const qtyInput  = document.getElementById('nfoQty');
-  if (pinInput)  pinInput.value  = '';
+  if (pinInput)  { pinInput.value  = ''; pinInput.disabled  = false; }
   if (partInput) partInput.value = '';
   if (qtyInput)  qtyInput.value  = '';
 
-  // Clear any previous PIN error
-  const pinErr = document.getElementById('nfoPinError');
-  if (pinErr) pinErr.textContent = '';
+  // Clear any previous PIN error and re-enable verify button
+  const pinErr    = document.getElementById('nfoPinError');
+  const verifyBtn = document.getElementById('nfoBtnVerifyPin');
+  if (pinErr)    pinErr.textContent = '';
+  if (verifyBtn) verifyBtn.disabled = false;
 
   document.getElementById('sapNotFoundModal').classList.add('on');
 }
@@ -443,8 +516,9 @@ function _showNFOStep(step) {
 
 // Called when supervisor taps VERIFY PIN in the not-found override modal
 async function nfoVerifyPin() {
-  const pinInput = document.getElementById('nfoPinInput');
-  const pinErr   = document.getElementById('nfoPinError');
+  const pinInput  = document.getElementById('nfoPinInput');
+  const pinErr    = document.getElementById('nfoPinError');
+  const verifyBtn = document.getElementById('nfoBtnVerifyPin');
   const pin = pinInput ? pinInput.value.trim() : '';
 
   if (!pin) {
@@ -452,9 +526,8 @@ async function nfoVerifyPin() {
     return;
   }
 
-  const verifyBtn = document.getElementById('nfoBtnVerifyPin');
   if (verifyBtn) verifyBtn.disabled = true;
-  if (pinErr) pinErr.textContent = '';
+  if (pinErr)    pinErr.textContent = '';
 
   try {
     const resp = await fetch('/api/validate-pin', {
@@ -465,17 +538,40 @@ async function nfoVerifyPin() {
     const data = await resp.json();
 
     if (data.valid && data.override_token) {
+      // ── Correct PIN ──
+      // Per-operation reset: clear attempt counter so next override starts fresh
+      _nfoPinAttempts    = 0;
+      _nfoPinCountdownId = _clearPinCountdown(_nfoPinCountdownId);
+
       // Fix 2: store the server-issued token for use in the movement POST
       _nfoOverrideToken = data.override_token;
       _showNFOStep('fields');
+
+    } else if (resp.status === 429) {
+      // ── Server-enforced lockout ──
+      // Start the visual countdown; input+button stay disabled until it ends
+      _nfoPinCountdownId = _clearPinCountdown(_nfoPinCountdownId);
+      _nfoPinCountdownId = _startPinCountdown(
+        _PIN_LOCKOUT_SECS,
+        pinErr,
+        pinInput,
+        verifyBtn,
+        () => { _nfoPinAttempts = 0; }
+      );
+
     } else {
-      // Show error from server (may include lockout message)
-      if (pinErr) pinErr.textContent = data.message || 'Incorrect PIN. Try again.';
-      if (pinInput) pinInput.value = '';
+      // ── Wrong PIN (not yet locked) ──
+      _nfoPinAttempts += 1;
+      const remaining = _PIN_MAX_ATTEMPTS - _nfoPinAttempts;
+      if (pinErr) pinErr.textContent = remaining > 0
+        ? _pinAttemptsMessage(remaining)
+        : 'Incorrect PIN.';
+      if (pinInput) { pinInput.value = ''; pinInput.focus(); }
+      if (verifyBtn) verifyBtn.disabled = false;
     }
+
   } catch (e) {
-    if (pinErr) pinErr.textContent = 'Network error. Try again.';
-  } finally {
+    if (pinErr)    pinErr.textContent = 'Network error. Try again.';
     if (verifyBtn) verifyBtn.disabled = false;
   }
 }
@@ -532,6 +628,10 @@ function nfoConfirmFields() {
 
 // Called when supervisor/worker taps Cancel in the not-found override modal
 function nfoCancelOverride() {
+  // Stop any running countdown before closing
+  _nfoPinCountdownId = _clearPinCountdown(_nfoPinCountdownId);
+  _nfoPinAttempts    = 0;
+
   document.getElementById('sapNotFoundModal').classList.remove('on');
   _notFoundOverrideHU = '';
   _nfoOverrideToken   = '';
@@ -746,14 +846,37 @@ function _showOverrideOption(serverMessage, originalPayload) {
   const msg   = document.getElementById('overrideMessage');
   if (!modal) { toast(serverMessage, 'fail', 7000); return; }
   msg.textContent = serverMessage;
+
+  // Per-operation state reset for the rejection override PIN
+  _ovPinCountdownId = _clearPinCountdown(_ovPinCountdownId);
+  _ovPinAttempts    = 0;
+
+  const pinInput = document.getElementById('overridePinInput');
+  const confirmBtn = document.getElementById('btnConfirmOverride');
+  const ovErr = document.getElementById('overridePinError');
+  if (pinInput)   { pinInput.value = ''; pinInput.disabled = false; }
+  if (confirmBtn) confirmBtn.disabled = false;
+  if (ovErr)      ovErr.textContent = '';
+
   modal.classList.add('on');
   modal._overridePayload = originalPayload;
 }
 
-function confirmOverride() {
-  const modal = document.getElementById('overrideModal');
-  const pin   = document.getElementById('overridePinInput').value.trim();
-  if (!pin) { toast('Enter supervisor PIN.', 'warn'); return; }
+async function confirmOverride() {
+  const modal      = document.getElementById('overrideModal');
+  const pinInput   = document.getElementById('overridePinInput');
+  const confirmBtn = document.getElementById('btnConfirmOverride');
+  // Use a dedicated error element if present; fall back to toast
+  const ovErr      = document.getElementById('overridePinError');
+
+  const pin = pinInput ? pinInput.value.trim() : '';
+  if (!pin) {
+    if (ovErr) ovErr.textContent = 'Enter supervisor PIN.';
+    else toast('Enter supervisor PIN.', 'warn');
+    return;
+  }
+
+  if (confirmBtn) confirmBtn.disabled = true;
 
   const payload = {
     ...modal._overridePayload,
@@ -761,39 +884,76 @@ function confirmOverride() {
     supervisor_pin: pin,
     override_reason: 'Supervisor override at worker terminal',
   };
-  modal.classList.remove('on');
-  movementInFlight = false;
 
-  movementInFlight = true;
-  showSpinner('Submitting override\u2026');
-  fetch('/api/movement', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  .then(r => r.json())
-  .then(data => {
+  try {
+    movementInFlight = true;
+    showSpinner('Submitting override\u2026');
+
+    const resp = await fetch('/api/movement', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+
     hideSpinner();
     movementInFlight = false;
+
     if (data.success) {
+      // ── Correct PIN, override accepted ──
+      _ovPinAttempts    = 0;
+      _ovPinCountdownId = _clearPinCountdown(_ovPinCountdownId);
+      modal.classList.remove('on');
       toast(data.message || 'Override accepted.', 'ok', 4000);
       setTimeout(goScan, 1800);
+
     } else if (data.status === 'rejected_duplicate') {
       // Even overrides can hit the duplicate guard — block cleanly
+      _ovPinCountdownId = _clearPinCountdown(_ovPinCountdownId);
+      modal.classList.remove('on');
       toast(data.message || 'Already recorded \u2014 duplicate blocked.', 'warn', 6000);
       setTimeout(goScan, 2500);
+
+    } else if (resp.status === 429) {
+      // ── Server-enforced PIN lockout ──
+      _ovPinCountdownId = _clearPinCountdown(_ovPinCountdownId);
+      _ovPinCountdownId = _startPinCountdown(
+        _PIN_LOCKOUT_SECS,
+        ovErr || { textContent: '' },  // if no dedicated el, silently degrade
+        pinInput,
+        confirmBtn,
+        () => { _ovPinAttempts = 0; }
+      );
+      if (!ovErr) toast('Too many failed attempts. Wait 30 seconds.', 'fail', 6000);
+
     } else {
-      toast(data.message || 'Override failed.', 'fail', 6000);
+      // ── Wrong PIN (not yet locked) or other rejection ──
+      _ovPinAttempts += 1;
+      const remaining = _PIN_MAX_ATTEMPTS - _ovPinAttempts;
+      const msg = (data.status === 'rejected_validation' && data.message &&
+                   data.message.toLowerCase().includes('pin'))
+        ? (remaining > 0 ? _pinAttemptsMessage(remaining) : 'Incorrect PIN.')
+        : (data.message || 'Override failed.');
+      if (ovErr) ovErr.textContent = msg;
+      else toast(msg, 'fail', 6000);
+      if (pinInput) { pinInput.value = ''; pinInput.focus(); }
+      if (confirmBtn) confirmBtn.disabled = false;
     }
-  })
-  .catch(() => {
+
+  } catch (err) {
     hideSpinner();
     movementInFlight = false;
-    toast('Network error during override.', 'fail', 5000);
-  });
+    if (ovErr)      ovErr.textContent = 'Network error during override.';
+    else toast('Network error during override.', 'fail', 5000);
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
 }
 
 function cancelOverride() {
+  // Stop any running countdown before closing
+  _ovPinCountdownId = _clearPinCountdown(_ovPinCountdownId);
+  _ovPinAttempts    = 0;
+
   const modal = document.getElementById('overrideModal');
   if (modal) modal.classList.remove('on');
   movementInFlight = false;
