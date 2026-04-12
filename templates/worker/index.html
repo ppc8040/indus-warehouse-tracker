@@ -83,7 +83,7 @@
     .btn-lookup:disabled { opacity: .45; cursor: not-allowed; }
     .btn-lookup:active { background: #0D47A1; }
 
-    /* ── SAP result card ── */
+    /* ── SAP result card (green = normal, amber = not-found override) ── */
     .sap-result {
       margin-top: 14px;
       padding: 14px;
@@ -93,6 +93,10 @@
       display: none;
     }
     .sap-result.visible { display: block; }
+    .sap-result.override {
+      background: #FFF8E1;
+      border-color: #FFD54F;
+    }
     .sap-result-title {
       font-size: .72rem;
       font-weight: 700;
@@ -101,6 +105,9 @@
       text-transform: uppercase;
       margin-bottom: 10px;
     }
+    .sap-result.override .sap-result-title {
+      color: #F57F17;
+    }
     .sap-row {
       display: flex;
       justify-content: space-between;
@@ -108,9 +115,71 @@
       padding: 4px 0;
       border-bottom: 1px solid #C8E6C9;
     }
+    .sap-result.override .sap-row { border-bottom-color: #FFE082; }
     .sap-row:last-child { border-bottom: none; }
     .sap-lbl { font-size: .78rem; color: #555; }
     .sap-val { font-size: .95rem; font-weight: 700; color: #1B5E20; }
+    .sap-result.override .sap-val { color: #E65100; }
+
+    /* ── SAP-Not-Found Override Modal ── */
+    #sapNotFoundModal .modal {
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .nfo-hu-badge {
+      display: inline-block;
+      background: #FFF3E0;
+      border: 1.5px solid #FFB74D;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: .82rem;
+      font-weight: 700;
+      color: #E65100;
+      letter-spacing: .5px;
+      margin-bottom: 10px;
+      word-break: break-all;
+    }
+    .nfo-explain {
+      font-size: .82rem;
+      color: #555;
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }
+    .nfo-pin-error,
+    .nfo-fields-error {
+      font-size: .8rem;
+      color: #C62828;
+      min-height: 1.2em;
+      margin-top: 4px;
+      margin-bottom: 4px;
+    }
+    .nfo-fields-label {
+      font-size: .78rem;
+      font-weight: 700;
+      color: #333;
+      margin-bottom: 4px;
+      margin-top: 12px;
+      display: block;
+    }
+    .nfo-fields-input {
+      width: 100%;
+      padding: 13px 12px;
+      border: 2px solid #E0E0E0;
+      border-radius: 8px;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color .15s;
+      box-sizing: border-box;
+    }
+    .nfo-fields-input:focus { border-color: #F57F17; }
+    .nfo-step-title {
+      font-size: .88rem;
+      font-weight: 800;
+      color: #E65100;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
   </style>
 </head>
 <body>
@@ -173,9 +242,9 @@
         <button class="btn-lookup" id="btnLookupHU" onclick="confirmHULookup()">LOOKUP</button>
       </div>
 
-      <!-- SAP result (shown after successful lookup) -->
+      <!-- SAP result card (green = normal, amber = supervisor override) -->
       <div class="sap-result" id="sapResultCard">
-        <div class="sap-result-title">&#10003; SAP Data Retrieved</div>
+        <div class="sap-result-title" id="sapResultTitle">&#10003; SAP Data Retrieved</div>
         <div class="sap-row">
           <span class="sap-lbl">Handling Unit</span>
           <span class="sap-val" id="val-hu">&mdash;</span>
@@ -190,10 +259,10 @@
         </div>
       </div>
 
-      <!-- Hidden status elements kept so app.js _updateField() calls don't throw -->
-      <span id="st-hu" style="display:none"></span>
+      <!-- Hidden status elements kept so _updateField() calls don't throw -->
+      <span id="st-hu"    style="display:none"></span>
       <span id="st-indus" style="display:none"></span>
-      <span id="st-qty" style="display:none"></span>
+      <span id="st-qty"   style="display:none"></span>
     </div>
 
     <div class="btn-group">
@@ -259,10 +328,10 @@
     <p class="loc-modal-title" id="locationModalTitle">Select Location</p>
     <p class="loc-modal-sub">Choose where this movement is happening. Required before posting.</p>
     <div class="loc-grid">
-      <button class="loc-btn" data-loc="M4"     onclick="selectLocation('M4')">M4</button>
-      <button class="loc-btn" data-loc="M5"     onclick="selectLocation('M5')">M5</button>
-      <button class="loc-btn" data-loc="M6"     onclick="selectLocation('M6')">M6</button>
-      <button class="loc-btn" data-loc="M4_STORE" onclick="selectLocation('M4_STORE')">M4_STORE</button>
+      <button class="loc-btn" data-loc="M4"        onclick="selectLocation('M4')">M4</button>
+      <button class="loc-btn" data-loc="M5"        onclick="selectLocation('M5')">M5</button>
+      <button class="loc-btn" data-loc="M6"        onclick="selectLocation('M6')">M6</button>
+      <button class="loc-btn" data-loc="M4_STORE"  onclick="selectLocation('M4_STORE')">M4_STORE</button>
       <button class="loc-btn full-width" data-loc="M16_STORE" onclick="selectLocation('M16_STORE')">M16_STORE</button>
     </div>
     <div class="modal-btns">
@@ -272,7 +341,7 @@
   </div>
 </div>
 
-<!-- Override Modal -->
+<!-- ═══ Movement-Rejection Override Modal (unchanged) ═══ -->
 <div class="modal-bg" id="overrideModal">
   <div class="modal">
     <h2>&#128273; Supervisor Override</h2>
@@ -288,21 +357,101 @@
   </div>
 </div>
 
-<!-- html5-qrcode library (still used for barcode-only camera scanning) -->
+<!-- ═══ SAP-Not-Found Override Modal ═══
+     Shown when /api/lookup-hu returns error_code = HU_NOT_FOUND.
+     Step 1: Supervisor PIN verification.
+     Step 2: Manual Indus Part + Qty entry by worker.
+     Movement is then posted with is_override=true.
+-->
+<div class="modal-bg" id="sapNotFoundModal">
+  <div class="modal">
+    <h2 style="color:#E65100">&#9888; HU Not in SAP</h2>
+
+    <!-- HU badge shown in both steps -->
+    <div class="nfo-hu-badge" id="nfoHUDisplay"></div>
+
+    <!-- ── Step 1: PIN entry ── -->
+    <div id="nfoStepPin">
+      <p class="nfo-explain">
+        This Handling Unit was not found in the SAP system.<br>
+        If the pallet is physically in the warehouse, a supervisor
+        can authorise a manual override by entering their PIN below.
+      </p>
+      <div class="fg">
+        <label for="nfoPinInput" style="font-size:.85rem;font-weight:700">Supervisor PIN</label>
+        <input
+          type="password"
+          id="nfoPinInput"
+          maxlength="10"
+          inputmode="numeric"
+          placeholder="&bull;&bull;&bull;&bull;"
+          onkeydown="if(event.key==='Enter'){nfoVerifyPin();}"
+        >
+      </div>
+      <div class="nfo-pin-error" id="nfoPinError"></div>
+      <div class="modal-btns">
+        <button class="btn btn-outline" onclick="nfoCancelOverride()">Cancel</button>
+        <button class="btn btn-err" id="nfoBtnVerifyPin" onclick="nfoVerifyPin()">VERIFY PIN</button>
+      </div>
+    </div>
+
+    <!-- ── Step 2: Manual data entry (shown after PIN verified) ── -->
+    <div id="nfoStepFields" style="display:none">
+      <p class="nfo-step-title">&#10003; PIN Verified &mdash; Enter Pallet Data</p>
+      <p class="nfo-explain">
+        SAP has no record for this HU. Enter the Indus Part number
+        and quantity from the physical label.
+      </p>
+
+      <label class="nfo-fields-label" for="nfoIndusPart">Indus Part (Material)</label>
+      <input
+        type="text"
+        id="nfoIndusPart"
+        class="nfo-fields-input"
+        placeholder="e.g. AJM0488"
+        autocomplete="off"
+        autocorrect="off"
+        spellcheck="false"
+        style="text-transform:uppercase"
+      >
+
+      <label class="nfo-fields-label" for="nfoQty">Quantity</label>
+      <input
+        type="number"
+        id="nfoQty"
+        class="nfo-fields-input"
+        placeholder="e.g. 36"
+        inputmode="numeric"
+        min="1"
+        step="1"
+      >
+
+      <div class="nfo-fields-error" id="nfoFieldsError"></div>
+
+      <div class="modal-btns">
+        <button class="btn btn-outline" onclick="nfoCancelOverride()">Cancel</button>
+        <button class="btn btn-ok" onclick="nfoConfirmFields()">CONFIRM &amp; PROCEED</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- html5-qrcode library (used for barcode-only camera scanning) -->
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="/static/js/offline.js"></script>
 <script src="/static/js/app.js"></script>
 
-<!-- After SAP lookup succeeds, show the green result card -->
+<!-- Update SAP result card title when override flag changes -->
 <script>
-  // Patch updateScanDisplay to also toggle the SAP result card visibility
   const _origUpdateScanDisplay = updateScanDisplay;
   updateScanDisplay = function() {
     _origUpdateScanDisplay();
-    const card = document.getElementById('sapResultCard');
-    if (!card) return;
-    const hu = document.getElementById('val-hu').textContent;
-    card.classList.toggle('visible', hu && hu !== '\u2014' && hu !== '');
+    const title = document.getElementById('sapResultTitle');
+    if (!title) return;
+    title.textContent = _isNotFoundOverride
+      ? '\u26a0\ufe0f Supervisor Override \u2014 Manual Data'
+      : '\u2713 SAP Data Retrieved';
   };
 </script>
 

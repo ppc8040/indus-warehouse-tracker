@@ -14,8 +14,9 @@ api_bp = Blueprint('api', __name__)
 def record_movement():
     """
     Record a Stock IN or Stock OUT movement.
-    indus_part and pallet_qty now come from the SAP HU lookup (done on the frontend
-    before this call). customer_part is intentionally left blank.
+    indus_part and pallet_qty now come from either the SAP HU lookup
+    (normal path) or manual supervisor override (SAP-not-found path).
+    customer_part is intentionally left blank in both cases.
     POST body: {
         "handling_unit": "100000000000839157",
         "movement_type": "STOCK_IN",
@@ -84,10 +85,18 @@ def lookup_hu():
         "pallet_qty": "36"
     }
 
-    Response (failure):
+    Response (failure — HU not in SAP, supervisor override should be offered):
     {
         "success": false,
-        "message": "Handling Unit not found in SAP."
+        "error_code": "HU_NOT_FOUND",
+        "message": "Handling Unit ... was not found in SAP. ..."
+    }
+
+    Response (failure — any other error, no override, just retry):
+    {
+        "success": false,
+        "error_code": "SAP_TIMEOUT" | "SAP_CONN" | "SAP_AUTH" | ...,
+        "message": "..."
     }
     """
     data = request.get_json(silent=True) or {}
@@ -96,7 +105,7 @@ def lookup_hu():
     # Validate HU format before hitting SAP
     ok, hu = validate_handling_unit(hu_raw)
     if not ok:
-        return jsonify({"success": False, "message": hu}), 400
+        return jsonify({"success": False, "error_code": "INVALID_HU", "message": hu}), 400
 
     try:
         from app.services.sap_client import lookup_hu as sap_lookup, SAPLookupError
@@ -107,11 +116,16 @@ def lookup_hu():
             "indus_part": result["indus_part"],
             "pallet_qty": result["pallet_qty"],
         }), 200
-    except Exception as e:
-        # SAPLookupError and any unexpected exception both surface here
-        msg = str(e)
-        logger.error("HU lookup failed for %s: %s", hu, msg)
-        return jsonify({"success": False, "message": msg}), 502
+    except Exception as exc:
+        # Capture error_code from SAPLookupError if present; generic otherwise
+        error_code = getattr(exc, 'error_code', 'SAP_UNKNOWN')
+        msg = str(exc)
+        logger.error("HU lookup failed for %s [%s]: %s", hu, error_code, msg)
+        return jsonify({
+            "success": False,
+            "error_code": error_code,
+            "message": msg,
+        }), 502
 
 
 @api_bp.route('/sync', methods=['POST'])
