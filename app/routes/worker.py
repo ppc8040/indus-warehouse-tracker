@@ -1,7 +1,7 @@
 """
 Worker-facing routes — serves the PWA pages.
 """
-from flask import Blueprint, render_template, make_response
+from flask import Blueprint, render_template, make_response, current_app
 
 worker_bp = Blueprint('worker', __name__)
 
@@ -20,7 +20,10 @@ def manifest():
 
 @worker_bp.route('/sw.js')
 def service_worker():
-    resp = make_response(render_template('worker/sw.js'))
+    deploy_id = current_app.config.get('DEPLOY_ID', 'v2')
+    resp = make_response(render_template('worker/sw.js', deploy_id=deploy_id))
     resp.headers['Content-Type'] = 'application/javascript'
     resp.headers['Service-Worker-Allowed'] = '/'
+    # No caching on the SW file itself — browser must always fetch fresh
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
     return resp

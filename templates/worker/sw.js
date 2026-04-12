@@ -1,4 +1,4 @@
-const CACHE_NAME = 'indus-wh-v2';
+const CACHE_NAME = 'indus-wh-{{ deploy_id }}';
 const STATIC_ASSETS = [
   '/',
   '/static/css/worker.css',

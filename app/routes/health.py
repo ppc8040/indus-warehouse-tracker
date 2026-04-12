@@ -1,5 +1,5 @@
 """
-Health check for Heroku / monitoring.
+Health check and keep-alive ping for Heroku / monitoring.
 """
 from flask import Blueprint, jsonify, current_app
 from app.services.graph_client import test_connection
@@ -20,3 +20,9 @@ def healthcheck():
         "version": current_app.config.get('APP_VERSION'),
         "graph_api": graph,
     }), 200
+
+
+@health_bp.route('/ping')
+def ping():
+    """Lightweight keep-alive endpoint. No DB or Graph calls."""
+    return jsonify({"ok": True}), 200

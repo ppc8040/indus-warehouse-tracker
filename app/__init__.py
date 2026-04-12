@@ -3,7 +3,9 @@ Indus FG Warehouse Tracker — Flask Application Factory
 """
 import os
 import sys
+import time
 import logging
+import threading
 from flask import Flask
 
 
@@ -15,6 +17,13 @@ def create_app():
     )
 
     app.config.from_object('app.config.Config')
+
+    # Unique ID per deploy: version + startup epoch.
+    # Changes every redeploy → service worker installs a fresh cache.
+    version = app.config.get('APP_VERSION', '2')
+    deploy_id = f"{version}-{int(time.time())}"
+    app.config['DEPLOY_ID'] = deploy_id
+
     _setup_logging(app)
     _validate_environment(app)
 
@@ -37,8 +46,34 @@ def create_app():
         app.logger.error(f"Internal server error: {e}")
         return {"error": "Something went wrong. Please try again."}, 500
 
-    app.logger.info("Indus Warehouse Tracker v2 started.")
+    # Keep eco dyno awake: self-ping every 25 minutes.
+    # Only starts once (guarded by env flag so multiple gunicorn workers
+    # don't each spawn their own thread).
+    if not os.environ.get('_KEEPALIVE_STARTED'):
+        os.environ['_KEEPALIVE_STARTED'] = '1'
+        _start_keepalive(app)
+
+    app.logger.info(f"Indus Warehouse Tracker v2 started. deploy_id={deploy_id}")
     return app
+
+
+def _start_keepalive(app):
+    """Ping /ping every 25 min to prevent Heroku eco dyno from sleeping."""
+    import requests as _requests
+
+    def _ping_loop():
+        # Wait 2 min before first ping so the dyno is fully up
+        time.sleep(120)
+        while True:
+            try:
+                port = os.environ.get('PORT', '5000')
+                _requests.get(f'http://localhost:{port}/ping', timeout=10)
+            except Exception:
+                pass  # Silently ignore — dyno may still be booting
+            time.sleep(25 * 60)  # 25 minutes
+
+    t = threading.Thread(target=_ping_loop, daemon=True)
+    t.start()
 
 
 def _setup_logging(app):
