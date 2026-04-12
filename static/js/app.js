@@ -7,8 +7,7 @@
    If SAP returns HU_NOT_FOUND, a supervisor override modal appears
    where the supervisor enters their PIN and the worker manually
    enters the Indus Part and Qty. Movement is then posted normally
-   with is_override=true and override_reason flagging it as
-   SAP-not-found override.
+   with is_override=true and override_token from /validate-pin.
 
    QR codes are no longer scanned. Camera is barcode-only.
    ═══════════════════════════════════════════════════════════ */
@@ -33,6 +32,11 @@ let sapLookupInProgress = false;
 let _isNotFoundOverride = false;
 let _notFoundOverrideHU = '';  // HU being overridden (held while modal is open)
 
+// Fix 2: server-issued one-use token returned by /validate-pin on success.
+// Sent as supervisor_pin in the movement POST for SAP-not-found overrides.
+// Cleared after use or on any reset.
+let _nfoOverrideToken = '';
+
 // ── Submit lock: prevents double-tap duplicates on STOCK IN / STOCK OUT ──
 let movementInFlight = false;
 
@@ -40,11 +44,17 @@ let movementInFlight = false;
 let _pendingMovementType = '';   // 'STOCK_IN' or 'STOCK_OUT'
 let _selectedLocation = '';      // chosen location value
 
+// ── Fix 5: Device identity ──
+// deviceId is a stable random ID stored in localStorage (used only for
+// registration lookup — the movement payload sends deviceName instead).
+// deviceName is the human-readable name entered on first visit.
 let deviceId = localStorage.getItem('deviceId') || (() => {
   const id = 'DEV-' + Math.random().toString(36).substring(2, 10).toUpperCase();
   localStorage.setItem('deviceId', id);
   return id;
 })();
+let deviceName = localStorage.getItem('deviceName') || '';
+
 
 // ── Screen switching ──
 function showScreen(id) {
@@ -98,7 +108,10 @@ function updateOnlineStatus() {
 }
 window.addEventListener('online', updateOnlineStatus);
 window.addEventListener('offline', updateOnlineStatus);
-document.addEventListener('DOMContentLoaded', updateOnlineStatus);
+document.addEventListener('DOMContentLoaded', () => {
+  updateOnlineStatus();
+  _initDeviceRegistration();
+});
 
 function updatePendingBadge() {
   OfflineQueue.count().then(n => {
@@ -109,6 +122,88 @@ function updatePendingBadge() {
 }
 setInterval(updatePendingBadge, 5000);
 document.addEventListener('DOMContentLoaded', updatePendingBadge);
+
+
+// ═══════════════════════════════════════════════════════════
+//  FIX 5 — DEVICE NAME REGISTRATION
+//
+//  On DOMContentLoaded, check localStorage for a saved deviceName.
+//  If none, show the registration overlay (not dismissible).
+//  On submit: POST to /api/register-device.
+//    - If the name is taken by another device: show inline error.
+//    - If the same deviceId is already in the sheet: restore saved name.
+//    - On success: save to localStorage, update deviceName, hide overlay.
+// ═══════════════════════════════════════════════════════════
+
+function _initDeviceRegistration() {
+  if (deviceName) {
+    // Already registered on this device — show name in header and proceed
+    _setDeviceNameDisplay(deviceName);
+    return;
+  }
+  // No name in localStorage — show the registration overlay
+  document.getElementById('deviceRegOverlay').classList.add('on');
+}
+
+function _setDeviceNameDisplay(name) {
+  const el = document.getElementById('deviceNameDisplay');
+  if (el) el.textContent = name;
+}
+
+async function submitDeviceName() {
+  const input = document.getElementById('deviceNameInput');
+  const errEl = document.getElementById('deviceNameError');
+  const btn   = document.getElementById('deviceNameBtn');
+
+  const name = input ? input.value.trim() : '';
+  if (!name) {
+    if (errEl) errEl.textContent = 'Please enter your name before continuing.';
+    return;
+  }
+  if (name.length > 40) {
+    if (errEl) errEl.textContent = 'Name is too long. Keep it under 40 characters.';
+    return;
+  }
+
+  if (errEl) errEl.textContent = '';
+  if (btn) btn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/register-device', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId, device_name: name }),
+    });
+    const data = await resp.json();
+
+    if (data.success) {
+      // Use the name the server confirmed (handles already_registered case)
+      const confirmedName = data.device_name || name;
+      deviceName = confirmedName;
+      localStorage.setItem('deviceName', confirmedName);
+      _setDeviceNameDisplay(confirmedName);
+      document.getElementById('deviceRegOverlay').classList.remove('on');
+    } else if (data.taken) {
+      if (errEl) errEl.textContent = data.message ||
+        'That name is already in use on another scanner. Please choose a different name.';
+    } else {
+      if (errEl) errEl.textContent = data.message ||
+        'Could not register. Please try again.';
+    }
+  } catch (e) {
+    if (errEl) errEl.textContent = 'Network error. Make sure you are connected and try again.';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Allow Enter key to submit the device name form
+document.addEventListener('DOMContentLoaded', () => {
+  const inp = document.getElementById('deviceNameInput');
+  if (inp) inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitDeviceName();
+  });
+});
 
 
 // ═══════════════════════════════════════════════════════════
@@ -254,6 +349,7 @@ async function _doSAPLookup(hu) {
       scanned.pallet_qty    = data.pallet_qty;
       scanned.customer_part = '';
       _isNotFoundOverride   = false;
+      _nfoOverrideToken     = '';
 
       updateScanDisplay();
       toast(`Found: ${data.indus_part} \u00d7 ${data.pallet_qty}`, 'ok', 3000);
@@ -263,11 +359,10 @@ async function _doSAPLookup(hu) {
 
     } else if (data.error_code === 'HU_NOT_FOUND') {
       // ── Override path: HU not in SAP but physically in warehouse ──
-      // Do not show a generic error toast — open the supervisor override modal instead.
       _openNotFoundOverrideModal(hu);
 
     } else {
-      // ── All other failures (network, auth, parse) — plain error, no override ──
+      // ── All other failures (network, auth, parse) ──
       toast(data.message || 'SAP lookup failed. Try again.', 'fail', 6000);
       _resetLookupState();
     }
@@ -290,6 +385,7 @@ function _resetLookupState() {
   scanned.pallet_qty    = '';
   scanned.customer_part = '';
   _isNotFoundOverride   = false;
+  _nfoOverrideToken     = '';
   updateScanDisplay();
   const proceedBtn = document.getElementById('btnProceed');
   if (proceedBtn) proceedBtn.disabled = true;
@@ -303,14 +399,17 @@ function _resetLookupState() {
 //  Flow:
 //    1. Show modal with HU number and explanation
 //    2. Supervisor enters PIN → validated against /api/validate-pin
-//    3. On valid PIN: hide PIN step, show manual Indus Part + Qty fields
-//    4. Worker fills in Indus Part + Qty and taps CONFIRM
-//    5. scanned state populated → PROCEED button enabled → normal flow
-//       Movement will be posted with is_override=true
+//       On success the server returns an override_token (Fix 2).
+//    3. Token stored in _nfoOverrideToken (in-memory only).
+//    4. Worker fills Indus Part + Qty and taps CONFIRM.
+//    5. scanned state populated → PROCEED button enabled.
+//       Movement is posted with is_override=true and
+//       supervisor_pin = _nfoOverrideToken.
 // ═══════════════════════════════════════════════════════════
 
 function _openNotFoundOverrideModal(hu) {
   _notFoundOverrideHU = hu;
+  _nfoOverrideToken   = '';  // clear any stale token
 
   // Populate the HU display inside the modal
   const huSpan = document.getElementById('nfoHUDisplay');
@@ -365,11 +464,13 @@ async function nfoVerifyPin() {
     });
     const data = await resp.json();
 
-    if (data.valid) {
-      // PIN correct — advance to data-entry step
+    if (data.valid && data.override_token) {
+      // Fix 2: store the server-issued token for use in the movement POST
+      _nfoOverrideToken = data.override_token;
       _showNFOStep('fields');
     } else {
-      if (pinErr) pinErr.textContent = 'Incorrect PIN. Try again.';
+      // Show error from server (may include lockout message)
+      if (pinErr) pinErr.textContent = data.message || 'Incorrect PIN. Try again.';
       if (pinInput) pinInput.value = '';
     }
   } catch (e) {
@@ -396,6 +497,12 @@ function nfoConfirmFields() {
   const qtyNum = parseInt(rawQty, 10);
   if (!rawQty || isNaN(qtyNum) || qtyNum < 1) {
     if (fieldsErr) fieldsErr.textContent = 'Enter a valid quantity (whole number, at least 1).';
+    return;
+  }
+
+  // Token guard: should not be reachable without a valid token, but defend anyway
+  if (!_nfoOverrideToken) {
+    if (fieldsErr) fieldsErr.textContent = 'Session expired. Close this and re-enter the supervisor PIN.';
     return;
   }
 
@@ -427,6 +534,7 @@ function nfoConfirmFields() {
 function nfoCancelOverride() {
   document.getElementById('sapNotFoundModal').classList.remove('on');
   _notFoundOverrideHU = '';
+  _nfoOverrideToken   = '';
   // Leave the HU input populated so they can try again or use a different HU
   _resetLookupState();
 }
@@ -446,7 +554,6 @@ function updateScanDisplay() {
   if (card) {
     const hasData = !!(scanned.handling_unit && scanned.indus_part && scanned.pallet_qty);
     card.classList.toggle('visible', hasData);
-    // If this is a not-found override, use amber styling instead of green
     if (hasData) {
       card.classList.toggle('override', _isNotFoundOverride);
     }
@@ -479,6 +586,7 @@ function resetScans() {
   sapLookupInProgress = false;
   _isNotFoundOverride = false;
   _notFoundOverrideHU = '';
+  _nfoOverrideToken   = '';
 
   const inp = document.getElementById('huManualInput');
   if (inp) inp.value = '';
@@ -541,6 +649,12 @@ function doMovement(type, location) {
   showSpinner(type === 'STOCK_IN' ? 'Recording Stock IN\u2026' : 'Recording Stock OUT\u2026');
 
   const idempotencyKey = `${scanned.handling_unit}-${type}-${Date.now()}`;
+
+  // Fix 2: for SAP-not-found overrides, send the one-use token as supervisor_pin.
+  // For all other movements (normal or rejection override), send '' or the PIN
+  // as usual — the rejection override path sets its own pin via confirmOverride().
+  const supervisorPin = _isNotFoundOverride ? _nfoOverrideToken : '';
+
   const payload = {
     handling_unit:   scanned.handling_unit,
     movement_type:   type,
@@ -548,24 +662,21 @@ function doMovement(type, location) {
     customer_part:   '',
     pallet_qty:      scanned.pallet_qty,
     job_no:          '',
-    operator_id:     'WORKER',
-    device_id:       deviceId,
+    // Fix 5: use the registered device name instead of the random device ID
+    operator_id:     deviceName || 'WORKER',
+    device_id:       deviceName || deviceId,
     location:        location,
     timestamp:       new Date().toISOString(),
     idempotency_key: idempotencyKey,
-    // If this is a SAP-not-found override, flag it so the backend
-    // records the correct override_reason in the Excel sheet.
     is_override:     _isNotFoundOverride,
     override_reason: _isNotFoundOverride
       ? 'SAP-not-found supervisor override — data entered manually'
       : '',
-    // Supervisor PIN is not re-sent here; it was already validated
-    // during the modal flow. The backend accepts is_override=true without
-    // a pin only for SAP-not-found cases since the pin was validated
-    // at the modal step. The movement-rejection override (existing modal)
-    // still sends the pin as before.
-    supervisor_pin:  '',
+    supervisor_pin:  supervisorPin,
   };
+
+  // Clear the token immediately after building the payload — single use
+  if (_isNotFoundOverride) _nfoOverrideToken = '';
 
   if (!navigator.onLine) {
     _queueOffline(payload);
@@ -612,10 +723,9 @@ function _queueOffline(payload) {
   });
 }
 
-// ── Movement-rejection supervisor override (unchanged) ──
-// This is triggered when the backend rejects a movement due to bad
-// transition or validation. It is separate from the SAP-not-found
-// override above.
+// ── Movement-rejection supervisor override (unchanged logic) ──
+// Triggered when backend rejects due to bad transition or validation.
+// Sends the numeric PIN directly — goes through the rate limiter (Fix 1).
 
 function _showOverrideOption(serverMessage, originalPayload) {
   const modal = document.getElementById('overrideModal');
@@ -640,8 +750,6 @@ function confirmOverride() {
   modal.classList.remove('on');
   movementInFlight = false;
 
-  // Submit the override payload directly (bypasses doMovement to keep
-  // the pin and override flags intact)
   movementInFlight = true;
   showSpinner('Submitting override\u2026');
   fetch('/api/movement', {
