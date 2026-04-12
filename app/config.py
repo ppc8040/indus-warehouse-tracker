@@ -22,6 +22,7 @@ class Config:
     SHEET_MOVEMENT_LOG = 'Movement_Log'
     SHEET_PALLET_STATUS = 'Pallet_Status'
     SHEET_ERROR_LOG = 'Error_Log'
+    SHEET_DEVICE_NAMES = 'Device_Names'
     # Master_Parts sheet exists but is NOT used — all data comes from scanning the label
 
     # Factory floor auth
