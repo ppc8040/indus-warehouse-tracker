@@ -179,12 +179,12 @@ def process_movement(
 
         # ── Duplicate check — runs for ALL movements (including overrides) ──
         # An override bypasses TRANSITION checks only, never duplicate checks.
-        # We check HU + Movement_Type only (not the full fingerprint) so that
-        # any second scan of the same HU for the same direction is blocked.
+        # Returns status 'rejected_duplicate' so the frontend can block cleanly
+        # without offering a supervisor override option.
         dup_err = _check_duplicate_in_log(log_sheet, hu, movement)
         if dup_err:
             _log_error('MOVEMENT', 'DUPLICATE', hu, dup_err)
-            return Result(False, 'rejected_validation', dup_err,
+            return Result(False, 'rejected_duplicate', dup_err,
                           {'attempted': movement})
 
         # ── State transition check (skipped for overrides) ──
