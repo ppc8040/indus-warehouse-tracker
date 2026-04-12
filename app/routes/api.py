@@ -18,6 +18,14 @@ Security additions in this revision:
   Fix 3 — Duplicate check fails closed
     _check_duplicate_in_log() now returns a friendly retry message on
     Excel read error instead of silently allowing the movement through.
+    Duplicate detection is now HU + Movement_Type only (not the full
+    fingerprint) and applies to ALL movements including overrides.
+
+  Fix 4 — Pallet_Status data takes precedence over SAP
+    /api/lookup-hu first checks Pallet_Status for the HU.  If found,
+    the stored Material and Qty are returned instead of SAP values.
+    This handles cases where the physical label shows 60PC but SAP
+    says 6PC — the previously-recorded correct values win.
 
   Fix 5 — Device name registration
     New /register-device route.  First visit shows a name-entry overlay;
@@ -41,9 +49,6 @@ api_bp = Blueprint('api', __name__)
 
 # ---------------------------------------------------------------------------
 # Fix 1 — in-memory PIN rate limiter
-#   Structure:  { ip: {"failures": [timestamp, ...], "locked_until": float} }
-#   3 failures within the rolling window → 30-second lockout.
-#   A correct PIN clears the record for that IP immediately.
 # ---------------------------------------------------------------------------
 _PIN_MAX_FAILURES  = 3
 _PIN_LOCKOUT_SECS  = 30
@@ -51,29 +56,21 @@ _pin_failures: dict = defaultdict(lambda: {"failures": [], "locked_until": 0.0})
 
 
 def _get_client_ip() -> str:
-    """Best-effort client IP (works behind Heroku's proxy)."""
     return (request.headers.get('X-Forwarded-For', '') or
             request.remote_addr or 'unknown').split(',')[0].strip()
 
 
 def _pin_is_locked(ip: str) -> bool:
-    """Return True if the IP is currently in a PIN lockout period."""
     rec = _pin_failures[ip]
     if time.time() < rec["locked_until"]:
         return True
-    # Prune expired lockout
     rec["locked_until"] = 0.0
     return False
 
 
 def _pin_record_failure(ip: str) -> bool:
-    """
-    Record a failed PIN attempt.  Lock the IP if the threshold is reached.
-    Returns True if the IP is now locked.
-    """
     now = time.time()
     rec = _pin_failures[ip]
-    # Keep only failures within the last lockout window
     rec["failures"] = [t for t in rec["failures"] if now - t < _PIN_LOCKOUT_SECS]
     rec["failures"].append(now)
     if len(rec["failures"]) >= _PIN_MAX_FAILURES:
@@ -84,37 +81,28 @@ def _pin_record_failure(ip: str) -> bool:
 
 
 def _pin_clear(ip: str):
-    """Clear failure record for an IP after a successful PIN."""
     _pin_failures[ip] = {"failures": [], "locked_until": 0.0}
 
 
 # ---------------------------------------------------------------------------
 # Fix 2 — single-use override token store
-#   { token_hex: {"issued_at": float, "used": bool} }
 # ---------------------------------------------------------------------------
-_TOKEN_TTL_SECS = 600  # 10 minutes
+_TOKEN_TTL_SECS = 600
 _override_tokens: dict = {}
 
 
 def _issue_override_token() -> str:
-    """Generate and store a one-use 32-char hex override token."""
-    # Prune expired tokens to avoid unbounded growth
     now = time.time()
     expired = [k for k, v in _override_tokens.items()
                if now - v["issued_at"] > _TOKEN_TTL_SECS]
     for k in expired:
         del _override_tokens[k]
-
-    token = secrets.token_hex(16)  # 32 hex chars
+    token = secrets.token_hex(16)
     _override_tokens[token] = {"issued_at": now, "used": False}
     return token
 
 
 def _consume_override_token(token: str) -> bool:
-    """
-    Validate and consume a token.
-    Returns True only if token exists, is within TTL, and has not been used.
-    """
     rec = _override_tokens.get(token)
     if not rec:
         return False
@@ -172,7 +160,6 @@ def record_movement():
         ip  = _get_client_ip()
         pin = data.get('supervisor_pin', '')
 
-        # Distinguish token (32 hex) vs numeric PIN
         if len(pin) == 32 and all(c in '0123456789abcdefABCDEF' for c in pin):
             # SAP-not-found override — validate one-use token
             if not _consume_override_token(pin):
@@ -220,8 +207,15 @@ def record_movement():
 @api_bp.route('/lookup-hu', methods=['POST'])
 def lookup_hu():
     """
-    Look up a Handling Unit in SAP S/4HANA.
-    Returns material and quantity, or HU_NOT_FOUND if the HU is not in SAP.
+    Look up a Handling Unit.
+
+    Fix 4: Check Pallet_Status first.  If the HU already exists in the
+    worksheet, return the stored Material and Qty instead of calling SAP.
+    This handles label discrepancies (e.g. label says 60PC, SAP says 6PC)
+    by trusting the previously-recorded correct values.
+
+    Only falls through to SAP when the HU is not yet in Pallet_Status.
+    Returns HU_NOT_FOUND if SAP also has no record.
     """
     data = request.get_json(silent=True) or {}
     hu_raw = data.get('handling_unit', '')
@@ -230,6 +224,35 @@ def lookup_hu():
     if not ok:
         return jsonify({"success": False, "error_code": "INVALID_HU", "message": hu}), 400
 
+    # ── Fix 4: Check Pallet_Status before calling SAP ──
+    try:
+        from app.services.graph_client import find_row_as_dict
+        status_sheet = current_app.config['SHEET_PALLET_STATUS']
+        existing = find_row_as_dict(status_sheet, 'Handling_Unit', hu)
+        if existing:
+            stored_part = str(existing.get('Indus_Part', '') or '').strip().upper()
+            stored_qty  = str(existing.get('Pallet_Qty', '') or '').strip()
+            # Strip .0 from Excel float leak
+            if stored_qty.endswith('.0') and stored_qty[:-2].isdigit():
+                stored_qty = stored_qty[:-2]
+            if stored_part and stored_qty and stored_qty != '0':
+                logger.info(
+                    "HU %s found in Pallet_Status — using stored values "
+                    "(part=%s qty=%s) instead of SAP",
+                    hu, stored_part, stored_qty
+                )
+                return jsonify({
+                    "success": True,
+                    "handling_unit": hu,
+                    "indus_part": stored_part,
+                    "pallet_qty": stored_qty,
+                    "source": "pallet_status",
+                }), 200
+    except Exception as ps_exc:
+        # Non-fatal — fall through to SAP lookup
+        logger.warning("Pallet_Status check failed (non-fatal), falling back to SAP: %s", ps_exc)
+
+    # ── SAP lookup (fallback when HU not yet in Pallet_Status) ──
     try:
         from app.services.sap_client import lookup_hu as sap_lookup
         result = sap_lookup(hu)
@@ -238,6 +261,7 @@ def lookup_hu():
             "handling_unit": result["handling_unit"],
             "indus_part": result["indus_part"],
             "pallet_qty": result["pallet_qty"],
+            "source": "sap",
         }), 200
     except Exception as exc:
         error_code = getattr(exc, 'error_code', 'SAP_UNKNOWN')
@@ -255,7 +279,6 @@ def sync_offline():
     if not events:
         return jsonify({"success": True, "message": "No events to sync.", "results": []}), 200
 
-    # Fix 6 — reject oversized batches
     if len(events) > 50:
         return jsonify({
             "success": False,
@@ -319,8 +342,7 @@ def register_device():
     POST body: { "device_id": "DEV-XXXX", "device_name": "Ahmed" }
 
     Checks Device_Names sheet for:
-      a) device_id already registered — returns that name (re-registration allowed
-         on same device, e.g. after browser data cleared).
+      a) device_id already registered — returns that name.
       b) device_name already taken by a DIFFERENT device_id — returns {taken: true}.
       c) Neither — writes a new row and returns {success: true}.
     """
@@ -347,16 +369,13 @@ def register_device():
             existing_id   = str(row.get('Device_ID',   '')).strip()
             existing_name = str(row.get('Device_Name', '')).strip().upper()
 
-            # Same device re-registering (e.g. localStorage cleared)
             if existing_id == device_id:
-                # Return the stored name so the frontend can restore it
                 return jsonify({
                     "success": True,
                     "already_registered": True,
                     "device_name": str(row.get('Device_Name', device_name)).strip(),
                 }), 200
 
-            # Name taken by a different device
             if existing_name == norm_name:
                 return jsonify({
                     "success": False,
@@ -365,7 +384,6 @@ def register_device():
                                "Please choose a different name.",
                 }), 409
 
-        # New device + unique name — write to sheet
         now_utc   = datetime.now(timezone.utc)
         reg_time  = _fmt_dubai(now_utc)
         append_row(sheet, [device_id, device_name, reg_time], 3)

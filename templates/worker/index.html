@@ -83,7 +83,7 @@
     .btn-lookup:disabled { opacity: .45; cursor: not-allowed; }
     .btn-lookup:active { background: #0D47A1; }
 
-    /* ── SAP result card (green = normal, amber = not-found override) ── */
+    /* ── SAP result card ── */
     .sap-result {
       margin-top: 14px;
       padding: 14px;
@@ -105,9 +105,7 @@
       text-transform: uppercase;
       margin-bottom: 10px;
     }
-    .sap-result.override .sap-result-title {
-      color: #F57F17;
-    }
+    .sap-result.override .sap-result-title { color: #F57F17; }
     .sap-row {
       display: flex;
       justify-content: space-between;
@@ -180,6 +178,83 @@
       text-transform: uppercase;
       letter-spacing: .5px;
     }
+
+    /* ── Device Registration Overlay ── */
+    .dev-reg-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.55);
+      z-index: 999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .dev-reg-overlay.on { display: flex; }
+    .dev-reg-card {
+      background: #FFF;
+      border-radius: 16px;
+      padding: 28px 22px 22px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.22);
+    }
+    .dev-reg-title {
+      font-size: 1.15rem;
+      font-weight: 800;
+      color: #1565C0;
+      margin-bottom: 6px;
+    }
+    .dev-reg-sub {
+      font-size: .8rem;
+      color: #757575;
+      margin-bottom: 18px;
+      line-height: 1.5;
+    }
+    .dev-reg-input {
+      width: 100%;
+      padding: 14px 12px;
+      border: 2px solid #E0E0E0;
+      border-radius: 8px;
+      font-size: 1.05rem;
+      outline: none;
+      transition: border-color .15s;
+      box-sizing: border-box;
+      margin-bottom: 8px;
+    }
+    .dev-reg-input:focus { border-color: #1565C0; }
+    .dev-reg-error {
+      font-size: .8rem;
+      color: #C62828;
+      min-height: 1.2em;
+      margin-bottom: 10px;
+    }
+    .dev-reg-btn {
+      width: 100%;
+      padding: 16px;
+      background: #1565C0;
+      color: #FFF;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .dev-reg-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .dev-reg-btn:active { background: #0D47A1; }
+
+    /* ── Device name chip in header ── */
+    .dev-name-chip {
+      font-size: .72rem;
+      font-weight: 700;
+      color: #90CAF9;
+      letter-spacing: .3px;
+      max-width: 90px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -188,6 +263,7 @@
 <header class="hdr">
   <h1>INDUS WAREHOUSE</h1>
   <div class="hdr-right">
+    <span class="dev-name-chip" id="deviceNameDisplay"></span>
     <span class="badge" id="pendingBadge">0 pending</span>
     <span class="dot" id="statusDot"></span>
     <span id="statusText">Online</span>
@@ -227,7 +303,6 @@
         RF gun users: scan barcode into the field below, then tap LOOKUP.
       </p>
 
-      <!-- Single HU input -->
       <div class="hu-input-row">
         <input
           type="text"
@@ -242,7 +317,7 @@
         <button class="btn-lookup" id="btnLookupHU" onclick="confirmHULookup()">LOOKUP</button>
       </div>
 
-      <!-- SAP result card (green = normal, amber = supervisor override) -->
+      <!-- SAP result card -->
       <div class="sap-result" id="sapResultCard">
         <div class="sap-result-title" id="sapResultTitle">&#10003; SAP Data Retrieved</div>
         <div class="sap-row">
@@ -259,7 +334,6 @@
         </div>
       </div>
 
-      <!-- Hidden status elements kept so _updateField() calls don't throw -->
       <span id="st-hu"    style="display:none"></span>
       <span id="st-indus" style="display:none"></span>
       <span id="st-qty"   style="display:none"></span>
@@ -275,7 +349,7 @@
     </div>
   </div>
 
-  <!-- ═══ SCREEN 2: CONFIRM &amp; CHOOSE MOVEMENT ═══ -->
+  <!-- ═══ SCREEN 2: CONFIRM & CHOOSE MOVEMENT ═══ -->
   <div class="scr" id="scrAction">
     <div class="card" id="palletCard">
       <div>
@@ -341,7 +415,7 @@
   </div>
 </div>
 
-<!-- ═══ Movement-Rejection Override Modal (unchanged) ═══ -->
+<!-- ═══ Movement-Rejection Override Modal ═══ -->
 <div class="modal-bg" id="overrideModal">
   <div class="modal">
     <h2>&#128273; Supervisor Override</h2>
@@ -357,20 +431,14 @@
   </div>
 </div>
 
-<!-- ═══ SAP-Not-Found Override Modal ═══
-     Shown when /api/lookup-hu returns error_code = HU_NOT_FOUND.
-     Step 1: Supervisor PIN verification.
-     Step 2: Manual Indus Part + Qty entry by worker.
-     Movement is then posted with is_override=true.
--->
+<!-- ═══ SAP-Not-Found Override Modal ═══ -->
 <div class="modal-bg" id="sapNotFoundModal">
   <div class="modal">
     <h2 style="color:#E65100">&#9888; HU Not in SAP</h2>
 
-    <!-- HU badge shown in both steps -->
     <div class="nfo-hu-badge" id="nfoHUDisplay"></div>
 
-    <!-- ── Step 1: PIN entry ── -->
+    <!-- Step 1: PIN entry -->
     <div id="nfoStepPin">
       <p class="nfo-explain">
         This Handling Unit was not found in the SAP system.<br>
@@ -395,7 +463,7 @@
       </div>
     </div>
 
-    <!-- ── Step 2: Manual data entry (shown after PIN verified) ── -->
+    <!-- Step 2: Manual data entry (shown after PIN verified) -->
     <div id="nfoStepFields" style="display:none">
       <p class="nfo-step-title">&#10003; PIN Verified &mdash; Enter Pallet Data</p>
       <p class="nfo-explain">
@@ -437,12 +505,40 @@
   </div>
 </div>
 
-<!-- html5-qrcode library (used for barcode-only camera scanning) -->
+<!-- ═══ Device Registration Overlay ═══
+     Shown on first visit (no deviceName in localStorage).
+     Not dismissible — user must enter a name before using the app.
+-->
+<div class="dev-reg-overlay" id="deviceRegOverlay">
+  <div class="dev-reg-card">
+    <div class="dev-reg-title">&#128104;&#8205;&#127981; Register This Scanner</div>
+    <p class="dev-reg-sub">
+      Enter your name so movements can be tracked to the correct operator.
+      This is a one-time step for this device.
+    </p>
+    <input
+      type="text"
+      id="deviceNameInput"
+      class="dev-reg-input"
+      placeholder="e.g. Ahmed, Warehouse 1"
+      maxlength="40"
+      autocomplete="off"
+      autocorrect="off"
+      spellcheck="false"
+    >
+    <div class="dev-reg-error" id="deviceNameError"></div>
+    <button class="dev-reg-btn" id="deviceNameBtn" onclick="submitDeviceName()">
+      REGISTER &amp; CONTINUE
+    </button>
+  </div>
+</div>
+
+<!-- html5-qrcode (barcode-only camera scanning) -->
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="/static/js/offline.js"></script>
 <script src="/static/js/app.js"></script>
 
-<!-- Update SAP result card title when override flag changes -->
+<!-- Patch SAP result card title for override flag -->
 <script>
   const _origUpdateScanDisplay = updateScanDisplay;
   updateScanDisplay = function() {

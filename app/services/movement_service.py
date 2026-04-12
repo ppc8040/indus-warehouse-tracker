@@ -1,13 +1,10 @@
 """
 Core business logic — scan-to-log architecture.
 
-NO Master_Parts lookup. All pallet data comes from scanning the label:
-  - QR code 1: Indus_Part (e.g. CCR2324)
-  - QR code 2: Customer_Part (e.g. ENG-1440)
-  - QR code 3: Pallet_Qty (e.g. 39)
+NO Master_Parts lookup. All pallet data comes from the SAP HU lookup
+or Pallet_Status (whichever takes precedence via /api/lookup-hu):
   - Barcode (Code 128): Handling_Unit (e.g. 100000000000839157)
-
-The worker scans all 4 codes, the app assembles the record, then logs it.
+  - SAP API / Pallet_Status: Indus_Part, Pallet_Qty
 
 Pallet_Status still tracks current state for transition validation.
 Movement_Log is append-only.
@@ -29,13 +26,18 @@ Error_Log (7 cols A-G):
   E=Error_Code  F=Error_Message  G=Resolved_Flag
 
 Duplicate detection strategy:
-  Instead of in-memory idempotency keys (which are lost on dyno restart,
-  don't work across multiple dynos, and break on offline replay with
-  different timestamps), duplicate blocking is done by querying Movement_Log
-  directly. A scan is rejected as a duplicate when a row already exists with
-  the same (Handling_Unit, Indus_Part, Customer_Part, Pallet_Qty,
-  Movement_Type) AND Validation_Status != OVERRIDE.
-  Supervisor overrides are always allowed through regardless.
+  Duplicate blocking is done by querying Movement_Log directly.
+  A movement is a duplicate when a row already exists with the same
+  (Handling_Unit, Movement_Type) combination — regardless of whether
+  the previous record was an override or not.
+
+  Exception: if the most-recent matching row has Movement_Type=STOCK_IN
+  and the new movement is STOCK_OUT (or vice versa), it is NOT a duplicate
+  — it is a valid continuation of the IN/OUT cycle.  The transition check
+  (Pallet_Status) handles this case separately.
+
+  This rule applies to ALL movements, including supervisor overrides.
+  An override bypasses transition checks but never bypasses duplicate checks.
 
 Location rules:
   - Every STOCK_IN or STOCK_OUT must include a location (M4, M5, M6,
@@ -50,11 +52,10 @@ Location rules:
 
 Handling_Unit apostrophe note:
   In the workbook, HU values are stored with a leading apostrophe (e.g.
-  '100000000000839157) so Excel treats them as text and does not corrupt the
-  18-digit number as a float. The Graph API returns the raw value without the
-  apostrophe. The _normalise_cell helper in graph_client.py strips whitespace
-  and uppercases, so all HU comparisons work correctly without any special
-  handling here.
+  '100000000000839157) so Excel treats them as text and does not corrupt
+  the 18-digit number as a float. The Graph API returns the raw value
+  without the apostrophe. The _normalise_cell helper in graph_client.py
+  strips whitespace and uppercases, so all HU comparisons work correctly.
 """
 import uuid
 import logging
@@ -84,7 +85,7 @@ ERROR_LOG_COLS = 7
 
 VALID_LOCATIONS = {'M4', 'M5', 'M6', 'M4_STORE', 'M16_STORE'}
 
-# Movement_Log column positions (0-based) used for duplicate detection
+# Movement_Log column positions (0-based)
 _ML_COL_HU         = 2   # C: Handling_Unit
 _ML_COL_INDUS      = 3   # D: Indus_Part
 _ML_COL_CUST       = 4   # E: Customer_Part
@@ -106,7 +107,7 @@ class Result:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  PROCESS MOVEMENT — data comes from scanned label, no master lookup
+#  PROCESS MOVEMENT
 # ════════════════════════════════════════════════════════════════════════════════
 
 def process_movement(
@@ -126,9 +127,8 @@ def process_movement(
 ):
     """
     Record a Stock IN / Stock OUT movement.
-    All pallet data (indus_part, customer_part, pallet_qty) comes from the scanned label.
-    No master data lookup needed.
-    location must be one of: M4, M5, M6, M4_STORE, M16_STORE.
+    Duplicate check runs for ALL movements, including supervisor overrides.
+    Transition check is bypassed for overrides.
     """
 
     # ── Validate HU and movement type ──
@@ -163,9 +163,11 @@ def process_movement(
     # ── Validate location ──
     loc = _s(location).strip().upper()
     if loc not in VALID_LOCATIONS:
-        _log_error('MOVEMENT', 'MISSING_LOCATION', hu, f'Invalid or missing location: {location}')
+        _log_error('MOVEMENT', 'MISSING_LOCATION', hu,
+                   f'Invalid or missing location: {location}')
         return Result(False, 'rejected_validation',
-                      'Location is required. Select a valid location (M4, M5, M6, M4_STORE, M16_STORE).')
+                      'Location is required. Select a valid location '
+                      '(M4, M5, M6, M4_STORE, M16_STORE).')
 
     now_utc = datetime.now(timezone.utc)
     timestamp = client_timestamp or now_utc.isoformat()
@@ -175,73 +177,76 @@ def process_movement(
         log_sheet    = current_app.config['SHEET_MOVEMENT_LOG']
         status_sheet = current_app.config['SHEET_PALLET_STATUS']
 
-        # ── Duplicate check against Movement_Log (persistent, dyno-safe) ──
-        # Fix 3: now fails closed — Excel read errors block the movement with
-        # a friendly retry message instead of silently allowing it through.
+        # ── Duplicate check — runs for ALL movements (including overrides) ──
+        # An override bypasses TRANSITION checks only, never duplicate checks.
+        # We check HU + Movement_Type only (not the full fingerprint) so that
+        # any second scan of the same HU for the same direction is blocked.
+        dup_err = _check_duplicate_in_log(log_sheet, hu, movement)
+        if dup_err:
+            _log_error('MOVEMENT', 'DUPLICATE', hu, dup_err)
+            return Result(False, 'rejected_validation', dup_err,
+                          {'attempted': movement})
+
+        # ── State transition check (skipped for overrides) ──
         if not is_override:
-            dup_err = _check_duplicate_in_log(
-                log_sheet, hu,
-                indus_clean,
-                cust_clean,
-                qty_clean,
-                movement,
-            )
-            if dup_err:
-                _log_error('MOVEMENT', 'DUPLICATE', hu, dup_err)
-                return Result(False, 'rejected_validation', dup_err,
-                              {'attempted': movement})
+            current  = find_row_as_dict(status_sheet, 'Handling_Unit', hu)
+            cur_state = _s(current.get('Last_Movement_Type', 'NONE')).upper() \
+                if current else 'NONE'
 
-        # ── State transition check (from Pallet_Status) ──
-        current  = find_row_as_dict(status_sheet, 'Handling_Unit', hu)
-        cur_state = _s(current.get('Last_Movement_Type', 'NONE')).upper() if current else 'NONE'
-
-        err = _check_transition(hu, movement, cur_state, is_override,
-                                indus_part=indus_clean,
-                                pallet_qty=qty_clean,
-                                current_row=current,
-                                incoming_location=loc)
-        if err:
-            _log_error('MOVEMENT', 'INVALID_TRANSITION', hu,
-                       f"{movement} blocked. state={cur_state} override={is_override}")
-            return Result(False, 'rejected_validation', err,
-                          {'current_state': cur_state, 'attempted': movement})
+            err = _check_transition(hu, movement, cur_state, is_override,
+                                    indus_part=indus_clean,
+                                    pallet_qty=qty_clean,
+                                    current_row=current,
+                                    incoming_location=loc)
+            if err:
+                _log_error('MOVEMENT', 'INVALID_TRANSITION', hu,
+                           f"{movement} blocked. state={cur_state} override={is_override}")
+                return Result(False, 'rejected_validation', err,
+                              {'current_state': cur_state, 'attempted': movement})
+        else:
+            # Override: still fetch current row for the upsert below,
+            # but skip all transition/location checks.
+            current = find_row_as_dict(status_sheet, 'Handling_Unit', hu)
 
         # ── Determine validation status ──
         validation_status = "OVERRIDE" if is_override else "VALID"
 
         # ── Write Movement_Log (append-only, 13 columns A-M) ──
         log_row = [
-            event_id,                           # A: Event_ID
-            _fmt_timestamp(timestamp),          # B: Timestamp_UTC
-            hu,                                 # C: Handling_Unit
-            indus_clean,                        # D: Indus_Part
-            cust_clean,                         # E: Customer_Part
-            qty_clean,                          # F: Pallet_Qty
-            _s(job_no).strip(),                 # G: Job_No
-            movement,                           # H: Movement_Type
-            operator_id,                        # I: Operator_ID
-            device_id,                          # J: Device_ID
-            'SYNCED',                           # K: Sync_Status
-            validation_status,                  # L: Validation_Status
-            loc,                                # M: Location
+            event_id,
+            _fmt_timestamp(timestamp),
+            hu,
+            indus_clean,
+            cust_clean,
+            qty_clean,
+            _s(job_no).strip(),
+            movement,
+            operator_id,
+            device_id,
+            'SYNCED',
+            validation_status,
+            loc,
         ]
         append_row(log_sheet, log_row, MOVEMENT_LOG_COLS)
 
         # ── Upsert Pallet_Status (8 columns A-H) ──
         current_status = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
         status_row = [
-            hu,                                 # A: Handling_Unit
-            current_status,                     # B: Current_Status
-            event_id,                           # C: Last_Event_ID
-            movement,                           # D: Last_Movement_Type
-            _fmt_timestamp(timestamp),          # E: Last_Movement_Time
-            indus_clean,                        # F: Indus_Part
-            qty_clean,                          # G: Pallet_Qty
-            loc,                                # H: Last_Location
+            hu,
+            current_status,
+            event_id,
+            movement,
+            _fmt_timestamp(timestamp),
+            indus_clean,
+            qty_clean,
+            loc,
         ]
         upsert_row(status_sheet, 0, hu, status_row, PALLET_STATUS_COLS)
 
-        logger.info(f"Movement OK: {movement} HU={hu} part={indus_clean} location={loc} event={event_id}")
+        logger.info(
+            "Movement OK: %s HU=%s part=%s location=%s event=%s",
+            movement, hu, indus_clean, loc, event_id
+        )
 
         display_type = 'Stock IN' if movement == 'STOCK_IN' else 'Stock OUT'
         return Result(True, 'success_synced', f"{display_type} recorded.",
@@ -260,7 +265,8 @@ def process_movement(
                       })
 
     except GraphAPIError as e:
-        _log_error('MOVEMENT', 'GRAPH_ERROR', hu, f"Graph write failed: {e.message}")
+        _log_error('MOVEMENT', 'GRAPH_ERROR', hu,
+                   f"Graph write failed: {e.message}")
         return Result(False, 'failed_write_logged',
                       "Could not save. Saved locally — will sync automatically.",
                       {'needs_sync': True})
@@ -338,36 +344,42 @@ def _s(val):
 
 def _normalise_str(val):
     """Strip, uppercase, remove trailing .0 from numeric strings.
-    Also strips a leading apostrophe that Excel inserts as a text-prefix
-    for long numeric strings (e.g. '100000000000839157 -> 100000000000839157).
-    The Graph API typically returns the value without the apostrophe, but
-    this guard ensures safety in all paths.
+    Also strips a leading apostrophe that Excel inserts as a text-prefix.
     """
     s = str(val).strip() if val is not None else ''
-    # Strip Excel text-prefix apostrophe if present
     if s.startswith("'"):
         s = s[1:]
     s = s.upper()
-    # Handle '39.0' → '39' (Excel float leakage)
     if s.endswith('.0') and s[:-2].isdigit():
         s = s[:-2]
     return s
 
 
-def _check_duplicate_in_log(log_sheet, hu, indus_part, customer_part, pallet_qty, movement):
+def _check_duplicate_in_log(log_sheet, hu, movement):
     """
-    Query Movement_Log to see if an identical non-override row already exists.
+    Query Movement_Log to see if the same HU has already been recorded
+    with the same Movement_Type.
 
-    Fields checked (all must match):
-      C=Handling_Unit, D=Indus_Part, E=Customer_Part,
-      F=Pallet_Qty,   H=Movement_Type, L=Validation_Status
+    This check applies to ALL movements — including supervisor overrides.
+    An override bypasses transition checks only; it never bypasses duplicate
+    detection.  This prevents the same pallet being accidentally double-scanned
+    (or intentionally re-submitted) for the same direction.
 
-    A row is a duplicate only when Validation_Status is NOT 'OVERRIDE'.
-    Supervisor overrides are intentional re-submissions and are always
-    allowed to pass through this check.
+    Logic:
+      - Scan all rows in Movement_Log.
+      - Find rows where Handling_Unit matches.
+      - Among those, find the most-recent row by index (last row = most recent
+        since the log is append-only).
+      - If the most-recent matching row has the same Movement_Type as the
+        incoming movement → duplicate, block it.
+      - If the most-recent matching row has the OPPOSITE Movement_Type
+        (e.g. last was STOCK_IN, now doing STOCK_OUT) → legitimate cycle
+        continuation, allow through.  The transition check handles the
+        rest of the business rules for this case.
+      - If no matching row exists → brand new HU, allow through.
 
-    Fix 3: on Excel read failure, returns a friendly retry message instead
-    of None (which previously let all movements through silently).
+    Fails closed: on Excel read error, returns a friendly retry message
+    instead of None so that no movement silently passes through.
 
     Returns an error message string if duplicate found or read failed,
     or None if clean.
@@ -377,42 +389,38 @@ def _check_duplicate_in_log(log_sheet, hu, indus_part, customer_part, pallet_qty
         headers, rows = read_all_rows(log_sheet)
 
         n_hu   = _normalise_str(hu)
-        n_part = _normalise_str(indus_part)
-        n_cust = _normalise_str(customer_part)
-        n_qty  = _normalise_str(pallet_qty)
         n_move = _normalise_str(movement)
 
+        last_matching_move = None  # Movement_Type of the most-recent HU row
+
         for row in rows:
-            # Safely read each column by index with a fallback
             def _cell(idx):
                 return _normalise_str(row[idx]) if idx < len(row) else ''
 
-            row_hu    = _cell(_ML_COL_HU)
-            row_part  = _cell(_ML_COL_INDUS)
-            row_cust  = _cell(_ML_COL_CUST)
-            row_qty   = _cell(_ML_COL_QTY)
-            row_move  = _cell(_ML_COL_MOVE_TYPE)
-            row_valid = _cell(_ML_COL_VALID_STAT)
+            row_hu   = _cell(_ML_COL_HU)
+            row_move = _cell(_ML_COL_MOVE_TYPE)
 
-            # Skip rows that are already overrides — they are intentional
-            if row_valid == 'OVERRIDE':
-                continue
+            if row_hu == n_hu:
+                # Keep updating — we want the LAST (most recent) matching row
+                last_matching_move = row_move
 
-            if (row_hu   == n_hu   and
-                row_part == n_part and
-                row_cust == n_cust and
-                row_qty  == n_qty  and
-                row_move == n_move):
-                return (
-                    f"This exact movement was already recorded "
-                    f"(HU {hu}, {indus_part}, qty {pallet_qty}, {movement}). "
-                    f"Use supervisor override if this is intentional."
-                )
+        if last_matching_move is None:
+            # HU has never been recorded — allow
+            return None
+
+        if last_matching_move == n_move:
+            # Same direction as the last recorded movement → duplicate
+            direction = 'Stock IN' if n_move == 'STOCK_IN' else 'Stock OUT'
+            return (
+                f"HU {hu} was already recorded as {direction}. "
+                f"Scan a different pallet, or use supervisor override "
+                f"if this is intentional."
+            )
+
+        # Opposite direction (IN→OUT or OUT→IN) → legitimate cycle, allow
         return None
 
     except Exception as e:
-        # Fix 3: fail closed — block the movement with a friendly message
-        # rather than silently allowing a potential duplicate through.
         logger.warning(f"Duplicate log check failed (blocking movement): {e}")
         return (
             "System is temporarily busy. Please try again in a moment."
@@ -424,23 +432,19 @@ def _check_transition(hu, movement, cur_state, is_override,
                       incoming_location=''):
     """
     Validate the movement transition using Pallet_Status.
+    Only called when is_override=False.
 
     STOCK_IN:
       - Blocked if the same HU + Indus_Part + Pallet_Qty combo is already IN.
       - Different Indus_Part or Qty on the same HU = new pallet run, allowed.
-      - No location restriction at STOCK_IN time.
 
     STOCK_OUT:
       - Blocked if already OUT or never seen.
-      - If the HU is currently IN, the outgoing Indus_Part and Pallet_Qty are
-        compared against the stored values. A mismatch means the worker may be
-        scanning the wrong label — blocked unless supervisor override.
-      - Location lock: the selected location must match Last_Location in
-        Pallet_Status (where it was last stocked IN). Override bypasses this.
+      - If the HU is currently IN, outgoing part/qty are compared with stored
+        values.  Mismatch → blocked (wrong label guard).
+      - Location lock: outgoing location must match the stored Last_Location.
     """
     if movement == 'STOCK_IN' and cur_state == 'STOCK_IN':
-        if is_override:
-            return None
         if current_row:
             stored_part = _normalise_str(current_row.get('Indus_Part', ''))
             stored_qty  = _normalise_str(current_row.get('Pallet_Qty', ''))
@@ -450,7 +454,6 @@ def _check_transition(hu, movement, cur_state, is_override,
                     f"Pallet {hu} ({indus_part}, qty {pallet_qty}) is already "
                     f"IN the warehouse. Do Stock OUT first, or use supervisor override."
                 )
-            # Different part or qty on same HU = allow as a new run
             return None
         return (
             f"Pallet {hu} is already IN the warehouse. "
@@ -459,19 +462,14 @@ def _check_transition(hu, movement, cur_state, is_override,
 
     if movement == 'STOCK_OUT':
         if cur_state == 'STOCK_OUT':
-            if is_override:
-                return None
             return (f"Pallet {hu} is already OUT of the warehouse. "
                     f"Use supervisor override if needed.")
 
         if cur_state in ('NONE', '', 'NOT IN SYSTEM', 'UNKNOWN'):
-            if is_override:
-                return None
             return f"Pallet {hu} was never stocked IN. Do Stock IN first."
 
-        # HU is currently IN — verify the outgoing scan matches stored identity.
-        # Protects against a worker accidentally scanning the wrong label.
-        if current_row and not is_override:
+        # HU is currently IN — verify outgoing scan matches stored identity
+        if current_row:
             stored_part = _normalise_str(current_row.get('Indus_Part', ''))
             stored_qty  = _normalise_str(current_row.get('Pallet_Qty', ''))
             incoming_part = _normalise_str(indus_part)
@@ -485,18 +483,19 @@ def _check_transition(hu, movement, cur_state, is_override,
                 )
             if stored_qty and stored_qty != incoming_qty:
                 return (
-                    f"Pallet {hu} was stocked IN with qty {current_row.get('Pallet_Qty')} "
+                    f"Pallet {hu} was stocked IN with qty "
+                    f"{current_row.get('Pallet_Qty')} "
                     f"but the scanned label shows qty {pallet_qty}. "
                     f"Check the label, or use supervisor override."
                 )
 
-            # Location lock: STOCK_OUT must come from the same location as the last STOCK_IN.
-            # cur_state is 'STOCK_IN' here (passed all earlier guards).
             stored_location = _normalise_str(current_row.get('Last_Location', ''))
-            if stored_location and stored_location != _normalise_str(incoming_location):
+            if stored_location and \
+                    stored_location != _normalise_str(incoming_location):
                 return (
                     f"Pallet {hu} was stocked IN at {stored_location}. "
-                    f"You must do Stock OUT from {stored_location}, not {incoming_location}. "
+                    f"You must do Stock OUT from {stored_location}, "
+                    f"not {incoming_location}. "
                     f"Use supervisor override if this is intentional."
                 )
 
@@ -531,7 +530,11 @@ def _log_error(stage, error_code, handling_unit, message):
         sheet = current_app.config.get('SHEET_ERROR_LOG', 'Error_Log')
         eid = str(uuid.uuid4())[:12].upper()
         now = datetime.now(timezone.utc).isoformat()
-        row = [eid, _fmt_timestamp(now), str(handling_unit), stage, error_code, str(message)[:500], 'NO']
+        row = [eid, _fmt_timestamp(now), str(handling_unit), stage,
+               error_code, str(message)[:500], 'NO']
         append_row(sheet, row, ERROR_LOG_COLS)
     except Exception as e:
-        logger.error(f"Error_Log write failed: {e}. Original: {stage}/{error_code}/{handling_unit}/{message}")
+        logger.error(
+            "Error_Log write failed: %s. Original: %s/%s/%s/%s",
+            e, stage, error_code, handling_unit, message
+        )
