@@ -692,15 +692,29 @@ function doMovement(type, location) {
   .then(data => {
     hideSpinner();
     movementInFlight = false;
+
     if (data.success) {
+      // ── Happy path ──
       toast(data.message || `${type} recorded.`, 'ok', 4000);
       setTimeout(goScan, 1800);
+
     } else if (data.status === 'rejected_duplicate') {
-      toast(data.message || 'Duplicate \u2014 already recorded.', 'warn', 6000);
+      // ── Exact duplicate: already recorded, never offer override ──
+      toast(data.message || 'Already recorded \u2014 this movement is a duplicate.', 'warn', 6000);
       setTimeout(goScan, 2500);
-    } else if (data.status === 'rejected_transition' || data.status === 'rejected_validation') {
+
+    } else if (data.status === 'rejected_transition') {
+      // ── Bad transition (e.g. STOCK_IN when already IN): supervisor can override ──
       _showOverrideOption(data.message, payload);
+
+    } else if (data.status === 'rejected_validation') {
+      // ── Structural validation failure (missing fields, bad PIN, expired token) ──
+      // Never offer a supervisor override for validation errors — show and reset.
+      toast(data.message || 'Movement blocked \u2014 check the details and try again.', 'fail', 6000);
+      setTimeout(goScan, 2500);
+
     } else {
+      // ── Write / server error — queue offline for retry ──
       toast(data.message || 'Server error. Saving offline.', 'fail', 5000);
       _queueOffline(payload);
     }
@@ -723,9 +737,9 @@ function _queueOffline(payload) {
   });
 }
 
-// ── Movement-rejection supervisor override (unchanged logic) ──
-// Triggered when backend rejects due to bad transition or validation.
-// Sends the numeric PIN directly — goes through the rate limiter (Fix 1).
+// ── Movement-rejection supervisor override ──
+// Only triggered for rejected_transition — bad state machine transitions.
+// Sends the numeric PIN directly through the rate limiter (Fix 1).
 
 function _showOverrideOption(serverMessage, originalPayload) {
   const modal = document.getElementById('overrideModal');
@@ -764,6 +778,10 @@ function confirmOverride() {
     if (data.success) {
       toast(data.message || 'Override accepted.', 'ok', 4000);
       setTimeout(goScan, 1800);
+    } else if (data.status === 'rejected_duplicate') {
+      // Even overrides can hit the duplicate guard — block cleanly
+      toast(data.message || 'Already recorded \u2014 duplicate blocked.', 'warn', 6000);
+      setTimeout(goScan, 2500);
     } else {
       toast(data.message || 'Override failed.', 'fail', 6000);
     }
@@ -783,7 +801,7 @@ function cancelOverride() {
 
 
 // ═══════════════════════════════════════════════════════════
-//  OFFLINE SYNC — unchanged logic
+//  OFFLINE SYNC
 // ═══════════════════════════════════════════════════════════
 
 async function syncPendingEvents() {
@@ -802,6 +820,8 @@ async function syncPendingEvents() {
     const data = await resp.json();
     if (data.results) {
       for (const r of data.results) {
+        // Remove from queue on success OR if the server confirms it is a
+        // duplicate — both mean the movement is definitively handled.
         if (r.success || r.status === 'rejected_duplicate') {
           await OfflineQueue.removeByKey(r.idempotency_key);
         }
