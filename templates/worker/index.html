@@ -12,6 +12,17 @@
   <title>Indus Warehouse Tracker</title>
   <link rel="stylesheet" href="/static/css/worker.css">
   <style>
+    /* ── Version tag ── */
+    .hdr-version {
+      font-size: .65rem;
+      font-weight: 600;
+      color: rgba(255,255,255,0.55);
+      letter-spacing: .6px;
+      margin-left: 8px;
+      align-self: flex-end;
+      padding-bottom: 2px;
+    }
+
     /* ── Location Modal ── */
     .loc-grid {
       display: grid;
@@ -184,7 +195,10 @@
 
 <!-- Header -->
 <header class="hdr">
-  <h1>INDUS WAREHOUSE</h1>
+  <div style="display:flex;align-items:baseline;gap:0">
+    <h1>INDUS WAREHOUSE</h1>
+    <span class="hdr-version">v1.4.0</span>
+  </div>
   <div class="hdr-right">
     <span class="badge" id="pendingBadge">0 pending</span>
     <span class="dot" id="statusDot"></span>
