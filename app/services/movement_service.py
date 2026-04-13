@@ -1,4 +1,3 @@
-
 """
 Core business logic — scan-to-log architecture.
 
@@ -109,6 +108,10 @@ _ML_COL_CUST       = 4   # E: Customer_Part
 _ML_COL_QTY        = 5   # F: Pallet_Qty
 _ML_COL_MOVE_TYPE  = 7   # H: Movement_Type
 _ML_COL_VALID_STAT = 11  # L: Validation_Status
+
+# Excel's epoch: serial 1 = 1900-01-01, but Excel incorrectly treats
+# 1900 as a leap year, so the practical epoch is 1899-12-30.
+_EXCEL_EPOCH = datetime(1899, 12, 30, tzinfo=timezone.utc)
 
 
 class Result:
@@ -536,25 +539,53 @@ def _check_transition(hu, movement, cur_state, is_override,
 
 def _fmt_timestamp(iso_str):
     """
-    Convert an incoming timestamp to Dubai time (Asia/Dubai).
-    Output: D/M/YYYY H:MM  e.g. 12/4/2026 14:53
-    No leading zeros on day or month. 24-hour clock. No seconds.
+    Convert an incoming ISO timestamp (UTC) to Dubai time (Asia/Dubai)
+    and return it as an Excel serial number (float).
+
+    Excel serial = number of days since 1899-12-30 (its effective epoch).
+    Sending a float via the Graph API makes Excel store the cell as a
+    native datetime value, so the column's number format (D/M/YYYY H:MM)
+    displays it correctly — e.g. 12/4/2026 14:53 — and the cell remains
+    sortable and filterable.
+
+    Sending a string instead causes Excel to store it as plain text with
+    no serial number, breaking date operations.
+
+    Accepted inputs:
+      2026-04-13T12:37:00.000Z
+      2026-04-13T12:37:00+00:00
+      2026-04-13 12:37:00
+      (naive timestamps assumed UTC)
+
+    Falls back to the original string on any parse error so nothing breaks.
     """
     if not iso_str:
         return iso_str
     try:
         from zoneinfo import ZoneInfo
+
         s = str(iso_str).strip()
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
+
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+
+        # Convert to Dubai local time
         dubai_tz = ZoneInfo("Asia/Dubai")
         dt_dubai = dt.astimezone(dubai_tz)
-        # %-d and %-m strip leading zeros on Linux (Heroku)
-        return dt_dubai.strftime('%-d/%-m/%Y %H:%M')
+
+        # Strip timezone info so the delta is computed against the naive epoch
+        dt_naive = dt_dubai.replace(tzinfo=None)
+        epoch_naive = datetime(1899, 12, 30)
+        delta = dt_naive - epoch_naive
+
+        # Return as float — Graph API writes this as an Excel datetime serial
+        return delta.total_seconds() / 86400.0
+
     except Exception:
+        # Safe fallback: return original string rather than crashing
         return str(iso_str)
 
 
