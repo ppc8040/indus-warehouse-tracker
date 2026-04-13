@@ -419,8 +419,8 @@ function nfoConfirmFields() {
     return;
   }
 
-  // Token guard: should not be reachable without a valid token, but defend anyway
-  if (!_nfoOverrideToken) {
+  // Token guard: must have a valid 32-char token before proceeding
+  if (!_nfoOverrideToken || _nfoOverrideToken.length !== 32) {
     if (fieldsErr) fieldsErr.textContent = 'Session expired. Close this and re-enter the supervisor PIN.';
     return;
   }
@@ -454,7 +454,7 @@ function nfoCancelOverride() {
   document.getElementById('sapNotFoundModal').classList.remove('on');
   _notFoundOverrideHU = '';
   _nfoOverrideToken   = '';
-  // Leave the HU input populated so they can try again or use a different HU
+  // Full reset so no stale override state lingers
   _resetLookupState();
 }
 
@@ -564,6 +564,15 @@ function doMovement(type, location) {
     return;
   }
 
+  // ── Safety guard: if _isNotFoundOverride is flagged but the token is
+  //    missing or invalid (empty / wrong length), clear the override flag.
+  //    This prevents the backend from receiving is_override=true with a
+  //    broken token, which would trigger "Override authorisation expired".
+  if (_isNotFoundOverride && (!_nfoOverrideToken || _nfoOverrideToken.length !== 32)) {
+    _isNotFoundOverride = false;
+    _nfoOverrideToken   = '';
+  }
+
   movementInFlight = true;
   showSpinner(type === 'STOCK_IN' ? 'Recording Stock IN\u2026' : 'Recording Stock OUT\u2026');
 
@@ -610,7 +619,7 @@ function doMovement(type, location) {
     movementInFlight = false;
 
     if (data.success) {
-      // ── Happy path ──
+      // ── Happy path — full reset before next scan ──
       toast(data.message || `${type} recorded.`, 'ok', 4000);
       setTimeout(goScan, 1800);
 
@@ -669,7 +678,14 @@ function _showOverrideOption(serverMessage, originalPayload) {
   if (ovErr)      ovErr.textContent = '';
 
   modal.classList.add('on');
-  modal._overridePayload = originalPayload;
+  // Store the original payload but strip any NFO override state — the
+  // rejection override uses a direct numeric PIN, not a token.
+  modal._overridePayload = {
+    ...originalPayload,
+    is_override:     false,
+    supervisor_pin:  '',
+    override_reason: '',
+  };
 }
 
 async function confirmOverride() {
@@ -687,10 +703,12 @@ async function confirmOverride() {
 
   if (confirmBtn) confirmBtn.disabled = true;
 
+  // Build a clean override payload with the numeric PIN directly.
+  // is_override=true + short numeric pin → backend validates against SUPERVISOR_PIN.
   const payload = {
     ...modal._overridePayload,
-    is_override: true,
-    supervisor_pin: pin,
+    is_override:     true,
+    supervisor_pin:  pin,
     override_reason: 'Supervisor override at worker terminal',
   };
 
@@ -709,7 +727,7 @@ async function confirmOverride() {
     movementInFlight = false;
 
     if (data.success) {
-      // ── Correct PIN, override accepted ──
+      // ── Correct PIN, override accepted — full reset ──
       modal.classList.remove('on');
       toast(data.message || 'Override accepted.', 'ok', 4000);
       setTimeout(goScan, 1800);
@@ -741,6 +759,9 @@ function cancelOverride() {
   const modal = document.getElementById('overrideModal');
   if (modal) modal.classList.remove('on');
   movementInFlight = false;
+  // Reset all override state so next scan starts clean
+  _isNotFoundOverride = false;
+  _nfoOverrideToken   = '';
 }
 
 
