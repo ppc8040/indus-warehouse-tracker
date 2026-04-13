@@ -1,3 +1,4 @@
+
 """
 Core business logic — scan-to-log architecture.
 
@@ -536,7 +537,8 @@ def _check_transition(hu, movement, cur_state, is_override,
 def _fmt_timestamp(iso_str):
     """
     Convert an incoming timestamp to Dubai time (Asia/Dubai).
-    Output: DD/MM/YYYY HH:MM:SS AM/PM
+    Output: D/M/YYYY H:MM  e.g. 12/4/2026 14:53
+    No leading zeros on day or month. 24-hour clock. No seconds.
     """
     if not iso_str:
         return iso_str
@@ -550,7 +552,8 @@ def _fmt_timestamp(iso_str):
             dt = dt.replace(tzinfo=timezone.utc)
         dubai_tz = ZoneInfo("Asia/Dubai")
         dt_dubai = dt.astimezone(dubai_tz)
-        return dt_dubai.strftime('%d/%m/%Y %I:%M:%S %p')
+        # %-d and %-m strip leading zeros on Linux (Heroku)
+        return dt_dubai.strftime('%-d/%-m/%Y %H:%M')
     except Exception:
         return str(iso_str)
 
