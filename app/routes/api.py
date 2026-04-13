@@ -4,9 +4,8 @@ JSON API routes.
 Security:
   PIN validation — /validate-pin and /movement (override path) validate
   the supervisor PIN against the configured SUPERVISOR_PIN.
-  For SAP-not-found overrides, /validate-pin returns a signed one-use
-  override token (32-char hex, 10-minute TTL) which must be sent with
-  the movement POST. Single-use prevents token replay.
+  Both SAP-not-found overrides and movement-rejection overrides use the
+  same direct numeric PIN validation. No tokens, no TTL, no replay risk.
 
   Duplicate guard — _check_duplicate_in_log() applies to ALL movements
   including overrides. Returns status 'rejected_duplicate' so the
@@ -19,8 +18,6 @@ Security:
   Offline sync — /sync is capped at 50 events per request.
 """
 import logging
-import secrets
-import time
 from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify, current_app
@@ -29,37 +26,6 @@ from app.utils.validators import validate_supervisor_pin, validate_handling_unit
 
 logger = logging.getLogger(__name__)
 api_bp = Blueprint('api', __name__)
-
-
-# ---------------------------------------------------------------------------
-# Single-use override token store
-# ---------------------------------------------------------------------------
-_TOKEN_TTL_SECS = 600
-_override_tokens: dict = {}
-
-
-def _issue_override_token() -> str:
-    now = time.time()
-    expired = [k for k, v in _override_tokens.items()
-               if now - v["issued_at"] > _TOKEN_TTL_SECS]
-    for k in expired:
-        del _override_tokens[k]
-    token = secrets.token_hex(16)
-    _override_tokens[token] = {"issued_at": now, "used": False}
-    return token
-
-
-def _consume_override_token(token: str) -> bool:
-    rec = _override_tokens.get(token)
-    if not rec:
-        return False
-    if rec["used"]:
-        return False
-    if time.time() - rec["issued_at"] > _TOKEN_TTL_SECS:
-        del _override_tokens[token]
-        return False
-    rec["used"] = True
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -86,13 +52,10 @@ def record_movement():
     """
     Record a Stock IN or Stock OUT movement.
 
-    For SAP-not-found supervisor overrides (is_override=True from the NFO modal),
-    supervisor_pin must be a valid one-use override token issued by /validate-pin.
-
-    For movement-rejection overrides (is_override=True from the rejection modal),
-    supervisor_pin is the short numeric PIN validated directly.
-    The two cases are distinguished by token length: tokens are 32 hex chars,
-    numeric PINs are always shorter.
+    For any supervisor override (is_override=True), supervisor_pin is
+    validated directly as a numeric PIN against SUPERVISOR_PIN config.
+    This applies to both SAP-not-found overrides and movement-rejection
+    overrides — same simple check for both cases.
 
     Returns:
       200 — success
@@ -110,19 +73,10 @@ def record_movement():
     is_override = data.get('is_override', False)
     if is_override:
         pin = data.get('supervisor_pin', '')
-
-        if len(pin) == 32 and all(c in '0123456789abcdefABCDEF' for c in pin):
-            # SAP-not-found override — validate one-use token
-            if not _consume_override_token(pin):
-                return jsonify({"success": False, "status": "rejected_validation",
-                                "message": "Override authorisation expired or already used. "
-                                           "Supervisor must re-enter PIN."}), 403
-        else:
-            # Movement-rejection override — validate numeric PIN directly
-            correct = current_app.config.get('SUPERVISOR_PIN', '9999')
-            if not validate_supervisor_pin(pin, correct):
-                return jsonify({"success": False, "status": "rejected_validation",
-                                "message": "Invalid supervisor PIN."}), 403
+        correct = current_app.config.get('SUPERVISOR_PIN', '9999')
+        if not validate_supervisor_pin(pin, correct):
+            return jsonify({"success": False, "status": "rejected_validation",
+                            "message": "Invalid supervisor PIN."}), 403
 
     result = process_movement(
         handling_unit=hu,
@@ -254,14 +208,14 @@ def sync_offline():
 def validate_pin():
     """
     Validate supervisor PIN.
-    Returns a one-use override_token on success for SAP-not-found overrides.
+    Returns valid:true on success. Used by the SAP-not-found override modal
+    to confirm the PIN before showing the manual entry fields.
     """
     data = request.get_json(silent=True) or {}
     pin  = data.get('pin', '')
     correct = current_app.config.get('SUPERVISOR_PIN', '9999')
 
     if validate_supervisor_pin(pin, correct):
-        token = _issue_override_token()
-        return jsonify({"valid": True, "override_token": token}), 200
+        return jsonify({"valid": True}), 200
 
     return jsonify({"valid": False, "message": "Invalid PIN."}), 403
