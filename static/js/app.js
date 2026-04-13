@@ -5,9 +5,9 @@
    → app fetches Material + Qty from SAP API → STOCK IN or OUT.
 
    If SAP returns HU_NOT_FOUND, a supervisor override modal appears
-   where the supervisor enters their PIN and the worker manually
-   enters the Indus Part and Qty. Movement is then posted normally
-   with is_override=true and override_token from /validate-pin.
+   where the supervisor enters their PIN. On success the worker
+   manually enters the Indus Part and Qty. Movement is then posted
+   normally with is_override=true and the raw supervisor PIN.
 
    QR codes are no longer scanned. Camera is barcode-only.
    ═══════════════════════════════════════════════════════════ */
@@ -32,10 +32,9 @@ let sapLookupInProgress = false;
 let _isNotFoundOverride = false;
 let _notFoundOverrideHU = '';  // HU being overridden (held while modal is open)
 
-// server-issued one-use token returned by /validate-pin on success.
-// Sent as supervisor_pin in the movement POST for SAP-not-found overrides.
-// Cleared after use or on any reset.
-let _nfoOverrideToken = '';
+// Supervisor PIN entered in the NFO modal — sent as supervisor_pin in the
+// movement POST for SAP-not-found overrides. Cleared after use or on reset.
+let _nfoSupervisorPin = '';
 
 // ── Submit lock: prevents double-tap duplicates on STOCK IN / STOCK OUT ──
 let movementInFlight = false;
@@ -264,7 +263,7 @@ async function _doSAPLookup(hu) {
       scanned.pallet_qty    = data.pallet_qty;
       scanned.customer_part = '';
       _isNotFoundOverride   = false;
-      _nfoOverrideToken     = '';
+      _nfoSupervisorPin     = '';
 
       updateScanDisplay();
       toast(`Found: ${data.indus_part} \u00d7 ${data.pallet_qty}`, 'ok', 3000);
@@ -300,7 +299,7 @@ function _resetLookupState() {
   scanned.pallet_qty    = '';
   scanned.customer_part = '';
   _isNotFoundOverride   = false;
-  _nfoOverrideToken     = '';
+  _nfoSupervisorPin     = '';
   updateScanDisplay();
   const proceedBtn = document.getElementById('btnProceed');
   if (proceedBtn) proceedBtn.disabled = true;
@@ -314,17 +313,16 @@ function _resetLookupState() {
 //  Flow:
 //    1. Show modal with HU number and explanation
 //    2. Supervisor enters PIN → validated against /api/validate-pin
-//       On success the server returns an override_token.
-//    3. Token stored in _nfoOverrideToken (in-memory only).
-//    4. Worker fills Indus Part + Qty and taps CONFIRM.
-//    5. scanned state populated → PROCEED button enabled.
+//       On success the PIN is stored in _nfoSupervisorPin.
+//    3. Worker fills Indus Part + Qty and taps CONFIRM.
+//    4. scanned state populated → PROCEED button enabled.
 //       Movement is posted with is_override=true and
-//       supervisor_pin = _nfoOverrideToken.
+//       supervisor_pin = _nfoSupervisorPin.
 // ═══════════════════════════════════════════════════════════
 
 function _openNotFoundOverrideModal(hu) {
   _notFoundOverrideHU = hu;
-  _nfoOverrideToken   = '';  // clear any stale token
+  _nfoSupervisorPin   = '';  // clear any stale PIN
 
   // Populate the HU display inside the modal
   const huSpan = document.getElementById('nfoHUDisplay');
@@ -381,9 +379,9 @@ async function nfoVerifyPin() {
     });
     const data = await resp.json();
 
-    if (data.valid && data.override_token) {
-      // ── Correct PIN ──
-      _nfoOverrideToken = data.override_token;
+    if (data.valid) {
+      // ── Correct PIN — store it and show the fields step ──
+      _nfoSupervisorPin = pin;
       _showNFOStep('fields');
 
     } else {
@@ -419,9 +417,9 @@ function nfoConfirmFields() {
     return;
   }
 
-  // Token guard: must have a valid 32-char token before proceeding
-  if (!_nfoOverrideToken || _nfoOverrideToken.length !== 32) {
-    if (fieldsErr) fieldsErr.textContent = 'Session expired. Close this and re-enter the supervisor PIN.';
+  // PIN guard: must have a stored PIN before proceeding
+  if (!_nfoSupervisorPin) {
+    if (fieldsErr) fieldsErr.textContent = 'Session lost. Close this and re-enter the supervisor PIN.';
     return;
   }
 
@@ -453,7 +451,7 @@ function nfoConfirmFields() {
 function nfoCancelOverride() {
   document.getElementById('sapNotFoundModal').classList.remove('on');
   _notFoundOverrideHU = '';
-  _nfoOverrideToken   = '';
+  _nfoSupervisorPin   = '';
   // Full reset so no stale override state lingers
   _resetLookupState();
 }
@@ -505,7 +503,7 @@ function resetScans() {
   sapLookupInProgress = false;
   _isNotFoundOverride = false;
   _notFoundOverrideHU = '';
-  _nfoOverrideToken   = '';
+  _nfoSupervisorPin   = '';
 
   const inp = document.getElementById('huManualInput');
   if (inp) inp.value = '';
@@ -564,22 +562,13 @@ function doMovement(type, location) {
     return;
   }
 
-  // ── Safety guard: if _isNotFoundOverride is flagged but the token is
-  //    missing or invalid (empty / wrong length), clear the override flag.
-  //    This prevents the backend from receiving is_override=true with a
-  //    broken token, which would trigger "Override authorisation expired".
-  if (_isNotFoundOverride && (!_nfoOverrideToken || _nfoOverrideToken.length !== 32)) {
-    _isNotFoundOverride = false;
-    _nfoOverrideToken   = '';
-  }
-
   movementInFlight = true;
   showSpinner(type === 'STOCK_IN' ? 'Recording Stock IN\u2026' : 'Recording Stock OUT\u2026');
 
   const idempotencyKey = `${scanned.handling_unit}-${type}-${Date.now()}`;
 
-  // For SAP-not-found overrides, send the one-use token as supervisor_pin.
-  const supervisorPin = _isNotFoundOverride ? _nfoOverrideToken : '';
+  // For SAP-not-found overrides, send the stored supervisor PIN.
+  const supervisorPin = _isNotFoundOverride ? _nfoSupervisorPin : '';
 
   const payload = {
     handling_unit:   scanned.handling_unit,
@@ -599,9 +588,6 @@ function doMovement(type, location) {
       : '',
     supervisor_pin:  supervisorPin,
   };
-
-  // Clear the token immediately after building the payload — single use
-  if (_isNotFoundOverride) _nfoOverrideToken = '';
 
   if (!navigator.onLine) {
     _queueOffline(payload);
@@ -633,7 +619,7 @@ function doMovement(type, location) {
       _showOverrideOption(data.message, payload);
 
     } else if (data.status === 'rejected_validation') {
-      // ── Structural validation failure (missing fields, bad PIN, expired token) ──
+      // ── Structural validation failure (missing fields, bad PIN) ──
       toast(data.message || 'Movement blocked \u2014 check the details and try again.', 'fail', 6000);
       setTimeout(goScan, 2500);
 
@@ -678,8 +664,8 @@ function _showOverrideOption(serverMessage, originalPayload) {
   if (ovErr)      ovErr.textContent = '';
 
   modal.classList.add('on');
-  // Store the original payload but strip any NFO override state — the
-  // rejection override uses a direct numeric PIN, not a token.
+  // Store the original payload — override_reason and supervisor_pin
+  // will be set when the supervisor confirms.
   modal._overridePayload = {
     ...originalPayload,
     is_override:     false,
@@ -703,8 +689,7 @@ async function confirmOverride() {
 
   if (confirmBtn) confirmBtn.disabled = true;
 
-  // Build a clean override payload with the numeric PIN directly.
-  // is_override=true + short numeric pin → backend validates against SUPERVISOR_PIN.
+  // Build override payload — send numeric PIN directly.
   const payload = {
     ...modal._overridePayload,
     is_override:     true,
@@ -761,7 +746,7 @@ function cancelOverride() {
   movementInFlight = false;
   // Reset all override state so next scan starts clean
   _isNotFoundOverride = false;
-  _nfoOverrideToken   = '';
+  _nfoSupervisorPin   = '';
 }
 
 
