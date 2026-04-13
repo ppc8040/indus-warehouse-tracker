@@ -191,8 +191,8 @@ function onBarcodeScanSuccess(decodedText) {
   const val = decodedText.trim();
   if (!val) return;
 
-  // Only accept values that look like an HU (18-20 digits, starts with 1000)
-  if (!HU_PATTERN.test(val) || !val.startsWith('1000')) {
+  // Only accept values that look like an HU (18-20 digits, starts with 10 or 11)
+  if (!HU_PATTERN.test(val) || (!val.startsWith('10') && !val.startsWith('11'))) {
     toast('Scanned code is not a valid HU barcode. Point at the barcode only.', 'warn', 3000);
     return;
   }
@@ -230,8 +230,8 @@ function confirmHULookup() {
     toast('Invalid HU. Must be 18\u201320 digits (numbers only, no letters or special characters).', 'warn', 5000);
     return;
   }
-  if (!raw.startsWith('1000')) {
-    toast('Invalid HU. Must start with 1000.', 'warn', 4000);
+  if (!raw.startsWith('10') && !raw.startsWith('11')) {
+    toast('Invalid HU. Must start with 10 or 11.', 'warn', 4000);
     return;
   }
   _doSAPLookup(raw);
@@ -615,7 +615,7 @@ function doMovement(type, location) {
       setTimeout(goScan, 2500);
 
     } else if (data.status === 'rejected_transition') {
-      // ── Bad transition (e.g. STOCK_IN when already IN): supervisor can override ──
+      // ── Bad transition (e.g. STOCK_OUT when never stocked IN): supervisor can override ──
       _showOverrideOption(data.message, payload);
 
     } else if (data.status === 'rejected_validation') {

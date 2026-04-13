@@ -147,7 +147,7 @@ def process_movement(
     Transition check is bypassed for overrides.
 
     Uses a single shared workbook session for all Graph operations to stay
-    within Microsoft's 5-concurrent-session limit.
+    within Microsoft's 5-concurrent-sessions limit.
     """
 
     # ── Validate HU and movement type ──
@@ -224,7 +224,7 @@ def process_movement(
             if err:
                 _log_error('MOVEMENT', 'INVALID_TRANSITION', hu,
                            f"{movement} blocked. state={cur_state} override={is_override}")
-                return Result(False, 'rejected_validation', err,
+                return Result(False, 'rejected_transition', err,
                               {'current_state': cur_state, 'attempted': movement})
         else:
             # Override: still fetch current row for the upsert below,
@@ -497,7 +497,7 @@ def _check_transition(hu, movement, cur_state, is_override,
                     f"Use supervisor override if needed.")
 
         if cur_state in ('NONE', '', 'NOT IN SYSTEM', 'UNKNOWN'):
-            return f"Pallet {hu} was never stocked IN. Do Stock IN first."
+            return f"Pallet {hu} was never stocked IN. Do Stock IN first, or use supervisor override."
 
         # HU is currently IN — verify outgoing scan matches stored identity
         if current_row:
