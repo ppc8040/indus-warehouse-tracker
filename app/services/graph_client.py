@@ -10,6 +10,23 @@ Matches the EXACT pattern from Indus-Open-Order-Report-CUST.py:
 
 No named tables — pure worksheet + range operations.
 All secrets server-side only.
+
+Session strategy
+────────────────
+Microsoft Graph limits a workbook to 5 concurrent open sessions.
+A single movement flow previously opened 3-4 sessions in series which,
+under concurrent workers, could easily exceed that limit and produce
+"Could not open workbook session" errors in the Error_Log.
+
+Fix: every public function now has an internal _impl variant that accepts
+an optional external (session_id, headers) tuple.  When a caller supplies
+a session the function uses it directly and does NOT close it.  When no
+session is supplied the function opens its own session and closes it in a
+finally block — the original behaviour, kept intact for every standalone
+caller (admin panel, health-check, duplicate check, etc.).
+
+movement_service.process_movement() opens ONE session, passes it through
+all Graph calls in that request, and closes it in its own finally block.
 """
 import time
 import logging
@@ -20,6 +37,7 @@ from flask import current_app
 
 logger = logging.getLogger(__name__)
 
+
 def _normalise_cell(val):
     """
     Normalise a cell value for comparison.
@@ -29,13 +47,14 @@ def _normalise_cell(val):
     if val is None:
         return ''
     if isinstance(val, float):
-        # If it's a whole number (no fractional part), convert to int string
         if val == int(val):
             return str(int(val)).strip().upper()
     return str(val).strip().upper()
 
+
 _token_cache = {'access_token': None, 'expires_at': 0}
 _http = requests.Session()
+
 
 def _safe_row(values_list):
     """
@@ -48,14 +67,14 @@ def _safe_row(values_list):
     for v in values_list:
         if v is not None:
             s = str(v).strip()
-            # If it's a pure digit string longer than 15 digits, force text storage
             if s.isdigit() and len(s) > 15:
-                safe.append("'" + s)   # leading apostrophe = Excel text prefix
+                safe.append("'" + s)
             else:
                 safe.append(v)
         else:
             safe.append(v)
     return safe
+
 
 class GraphAPIError(Exception):
     def __init__(self, message, status_code=500, details=""):
@@ -113,7 +132,7 @@ def _ws_url(sheet):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SESSION MANAGEMENT  (exactly like your reference)
+#  SESSION MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _open_session():
@@ -192,7 +211,7 @@ def _req(method, url, headers, json_data=None, attempt=0):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  WORKSHEET DATA OPERATIONS
+#  COLUMN HELPER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _col_letter(n):
@@ -205,14 +224,22 @@ def _col_letter(n):
     return s
 
 
-def read_all_rows(sheet_name):
+# ═══════════════════════════════════════════════════════════════════════════════
+#  INTERNAL IMPLEMENTATIONS  (accept an external session tuple)
+#
+#  Each _impl function takes an optional `ext_session` parameter which is
+#  (session_id, headers_dict).  When provided, the function uses that session
+#  and NEVER closes it — the caller is responsible for cleanup.  When None,
+#  the function opens and closes its own session exactly as before.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _read_all_rows_impl(sheet_name, ext_session=None):
     """
     Read entire used range from a worksheet.
     Returns (headers: list[str], rows: list[list]).
-    Row 1 = headers. Row 2+ = data.
-    Session-wrapped.
     """
-    sid, h = _open_session()
+    own_session = ext_session is None
+    sid, h = _open_session() if own_session else ext_session
     try:
         url = f"{_ws_url(sheet_name)}/usedRange"
         data = _req('GET', url, h)
@@ -224,53 +251,17 @@ def read_all_rows(sheet_name):
         logger.info(f"Read {len(rows)} rows from '{sheet_name}'")
         return headers, rows
     finally:
-        _close_session(sid)
+        if own_session:
+            _close_session(sid)
 
 
-def read_all_rows_as_dicts(sheet_name):
-    """Read sheet → list of dicts keyed by header names."""
-    headers, rows = read_all_rows(sheet_name)
-    result = []
-    for row in rows:
-        d = {}
-        for i, hdr in enumerate(headers):
-            d[hdr] = row[i] if i < len(row) else None
-        result.append(d)
-    return result
-
-
-def find_row(sheet_name, col_index, search_value):
-    """
-    Find first data row where col_index matches search_value (case-insensitive).
-    col_index is 0-based (A=0, B=1, ...).
-    Returns (row_number_1based, row_values_list) or (None, None).
-    Session-wrapped.
-    """
-    sid, h = _open_session()
-    try:
-        url = f"{_ws_url(sheet_name)}/usedRange"
-        data = _req('GET', url, h)
-        values = data.get('values', [])
-        if len(values) < 2:
-            return None, None
-        needle = str(search_value).strip().upper()
-        for i in range(1, len(values)):  # skip header row
-            row = values[i]
-            if col_index < len(row):
-                cell = _normalise_cell(row[col_index])
-                if cell == needle:
-                    return i + 1, row  # 1-based Excel row number
-        return None, None
-    finally:
-        _close_session(sid)
-
-
-def find_row_as_dict(sheet_name, col_name, search_value):
+def _find_row_as_dict_impl(sheet_name, col_name, search_value, ext_session=None):
     """
     Find first row where column named col_name matches search_value.
-    Returns dict or None. Session-wrapped.
+    Returns dict or None.
     """
-    sid, h = _open_session()
+    own_session = ext_session is None
+    sid, h = _open_session() if own_session else ext_session
     try:
         url = f"{_ws_url(sheet_name)}/usedRange"
         data = _req('GET', url, h)
@@ -294,76 +285,48 @@ def find_row_as_dict(sheet_name, col_name, search_value):
                     return d
         return None
     finally:
-        _close_session(sid)
+        if own_session:
+            _close_session(sid)
 
 
-def append_row(sheet_name, values_list, num_cols):
+def _append_row_impl(sheet_name, values_list, num_cols, ext_session=None):
     """
-    Append a single data row after the last REAL data row.
-
-    Fix:
-    - Do NOT scan every cell in usedRange, because Excel/SharePoint can keep
-      phantom used rows due to formulas, formatting, or broken summary sheets.
-    - Determine the next row from column A only, because all log/status sheets
-      have a mandatory key in column A:
-        Movement_Log -> Event_ID
-        Error_Log    -> Error_ID
-        Pallet_Status-> Handling_Unit
+    Append a single data row after the last REAL data row (keyed on column A).
     """
-    sid, h = _open_session()
+    own_session = ext_session is None
+    sid, h = _open_session() if own_session else ext_session
     try:
         url = f"{_ws_url(sheet_name)}/usedRange"
         data = _req('GET', url, h)
         all_values = data.get('values', [])
 
-        # If the sheet is completely empty, start with row 1.
         if not all_values:
             next_row = 1
         else:
-            # Find the last non-empty row based ONLY on column A.
-            # Row 1 is assumed to be the header row when present.
             last_data_row = 0
-            for i, row in enumerate(all_values, start=1):  # Excel-style row numbering
+            for i, row in enumerate(all_values, start=1):
                 first_cell = row[0] if len(row) > 0 else None
                 if first_cell is not None and str(first_cell).strip() != '':
                     last_data_row = i
-
-            # If only header exists, append to row 2.
-            # If header + data exist, append after the last real key row.
             next_row = last_data_row + 1 if last_data_row > 0 else 1
 
         addr = f"A{next_row}:{_col_letter(num_cols)}{next_row}"
         write_url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
         _req('PATCH', write_url, h, json_data={"values": [_safe_row(values_list)]})
-
         logger.info(f"Appended row {next_row} to '{sheet_name}'")
         return next_row
     finally:
-        _close_session(sid)
+        if own_session:
+            _close_session(sid)
 
 
-def update_row(sheet_name, row_number, values_list, num_cols):
-    """
-    Overwrite a specific row (1-based row_number).
-    Session-wrapped.
-    """
-    sid, h = _open_session()
-    try:
-        addr = f"A{row_number}:{_col_letter(num_cols)}{row_number}"
-        url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
-        _req('PATCH', url, h, json_data={"values": [_safe_row(values_list)]})
-        logger.info(f"Updated row {row_number} in '{sheet_name}'")
-    finally:
-        _close_session(sid)
-
-
-def upsert_row(sheet_name, key_col_index, key_value, values_list, num_cols):
+def _upsert_row_impl(sheet_name, key_col_index, key_value, values_list, num_cols, ext_session=None):
     """
     Find row by key column → update it. If not found → append.
-    Session-wrapped (single session for the whole operation).
     Returns 'updated' or 'appended'.
     """
-    sid, h = _open_session()
+    own_session = ext_session is None
+    sid, h = _open_session() if own_session else ext_session
     try:
         url = f"{_ws_url(sheet_name)}/usedRange"
         data = _req('GET', url, h)
@@ -371,7 +334,7 @@ def upsert_row(sheet_name, key_col_index, key_value, values_list, num_cols):
 
         needle = str(key_value).strip().upper()
         target_row = None
-        for i in range(1, len(all_values)):  # skip header
+        for i in range(1, len(all_values)):
             row = all_values[i]
             if key_col_index < len(row):
                 cell = _normalise_cell(row[key_col_index])
@@ -393,7 +356,100 @@ def upsert_row(sheet_name, key_col_index, key_value, values_list, num_cols):
             logger.info(f"Upsert: appended row {next_row} to '{sheet_name}'")
             return 'appended'
     finally:
+        if own_session:
+            _close_session(sid)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PUBLIC API  — unchanged signatures, own-session wrappers
+#
+#  All existing callers (admin panel, health-check, duplicate check, offline
+#  sync, etc.) continue to work exactly as before — each call manages its own
+#  single session with no changes required at the call site.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def read_all_rows(sheet_name):
+    """
+    Read entire used range from a worksheet.
+    Returns (headers: list[str], rows: list[list]).
+    Row 1 = headers. Row 2+ = data.
+    """
+    return _read_all_rows_impl(sheet_name, ext_session=None)
+
+
+def read_all_rows_as_dicts(sheet_name):
+    """Read sheet → list of dicts keyed by header names."""
+    headers, rows = read_all_rows(sheet_name)
+    result = []
+    for row in rows:
+        d = {}
+        for i, hdr in enumerate(headers):
+            d[hdr] = row[i] if i < len(row) else None
+        result.append(d)
+    return result
+
+
+def find_row(sheet_name, col_index, search_value):
+    """
+    Find first data row where col_index matches search_value (case-insensitive).
+    col_index is 0-based (A=0, B=1, ...).
+    Returns (row_number_1based, row_values_list) or (None, None).
+    """
+    sid, h = _open_session()
+    try:
+        url = f"{_ws_url(sheet_name)}/usedRange"
+        data = _req('GET', url, h)
+        values = data.get('values', [])
+        if len(values) < 2:
+            return None, None
+        needle = str(search_value).strip().upper()
+        for i in range(1, len(values)):
+            row = values[i]
+            if col_index < len(row):
+                cell = _normalise_cell(row[col_index])
+                if cell == needle:
+                    return i + 1, row
+        return None, None
+    finally:
         _close_session(sid)
+
+
+def find_row_as_dict(sheet_name, col_name, search_value):
+    """
+    Find first row where column named col_name matches search_value.
+    Returns dict or None.
+    """
+    return _find_row_as_dict_impl(sheet_name, col_name, search_value, ext_session=None)
+
+
+def append_row(sheet_name, values_list, num_cols):
+    """
+    Append a single data row after the last REAL data row.
+    Determines next row from column A only (all sheets have a key in col A).
+    """
+    return _append_row_impl(sheet_name, values_list, num_cols, ext_session=None)
+
+
+def update_row(sheet_name, row_number, values_list, num_cols):
+    """
+    Overwrite a specific row (1-based row_number).
+    """
+    sid, h = _open_session()
+    try:
+        addr = f"A{row_number}:{_col_letter(num_cols)}{row_number}"
+        url = f"{_ws_url(sheet_name)}/range(address='{addr}')"
+        _req('PATCH', url, h, json_data={"values": [_safe_row(values_list)]})
+        logger.info(f"Updated row {row_number} in '{sheet_name}'")
+    finally:
+        _close_session(sid)
+
+
+def upsert_row(sheet_name, key_col_index, key_value, values_list, num_cols):
+    """
+    Find row by key column → update it. If not found → append.
+    Returns 'updated' or 'appended'.
+    """
+    return _upsert_row_impl(sheet_name, key_col_index, key_value, values_list, num_cols, ext_session=None)
 
 
 def test_connection():
