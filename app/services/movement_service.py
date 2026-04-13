@@ -56,6 +56,17 @@ Handling_Unit apostrophe note:
   the 18-digit number as a float. The Graph API returns the raw value
   without the apostrophe. The _normalise_cell helper in graph_client.py
   strips whitespace and uppercases, so all HU comparisons work correctly.
+
+Session strategy:
+  process_movement() opens ONE workbook session at the start, forwards it
+  to every graph_client _impl call via the ext_session parameter, and closes
+  it exactly once in a finally block.  This keeps the total concurrent open
+  sessions at 1 per in-flight movement request, well below Microsoft Graph's
+  hard limit of 5 per workbook.
+
+  All other callers (_log_error, admin queries, offline sync, lookup-hu) use
+  the standalone public wrappers in graph_client.py which each manage their
+  own single session — no changes needed at those call sites.
 """
 import uuid
 import logging
@@ -63,9 +74,14 @@ from datetime import datetime, timezone
 
 from flask import current_app
 from app.services.graph_client import (
+    _open_session,
+    _close_session,
+    _read_all_rows_impl,
+    _find_row_as_dict_impl,
+    _append_row_impl,
+    _upsert_row_impl,
     find_row_as_dict,
     append_row,
-    upsert_row,
     read_all_rows_as_dicts,
     GraphAPIError,
 )
@@ -129,6 +145,9 @@ def process_movement(
     Record a Stock IN / Stock OUT movement.
     Duplicate check runs for ALL movements, including supervisor overrides.
     Transition check is bypassed for overrides.
+
+    Uses a single shared workbook session for all Graph operations to stay
+    within Microsoft's 5-concurrent-session limit.
     """
 
     # ── Validate HU and movement type ──
@@ -173,15 +192,18 @@ def process_movement(
     timestamp = client_timestamp or now_utc.isoformat()
     event_id = str(uuid.uuid4())[:12].upper()
 
+    # ── Open ONE session for the entire movement ──
+    # All Graph calls below share this session to avoid hitting Microsoft's
+    # 5-concurrent-sessions-per-workbook hard limit.
+    session = None
     try:
+        session = _open_session()
         log_sheet    = current_app.config['SHEET_MOVEMENT_LOG']
         status_sheet = current_app.config['SHEET_PALLET_STATUS']
 
         # ── Duplicate check — runs for ALL movements (including overrides) ──
         # An override bypasses TRANSITION checks only, never duplicate checks.
-        # Returns status 'rejected_duplicate' so the frontend can block cleanly
-        # without offering a supervisor override option.
-        dup_err = _check_duplicate_in_log(log_sheet, hu, movement)
+        dup_err = _check_duplicate_in_log(log_sheet, hu, movement, ext_session=session)
         if dup_err:
             _log_error('MOVEMENT', 'DUPLICATE', hu, dup_err)
             return Result(False, 'rejected_duplicate', dup_err,
@@ -189,7 +211,8 @@ def process_movement(
 
         # ── State transition check (skipped for overrides) ──
         if not is_override:
-            current  = find_row_as_dict(status_sheet, 'Handling_Unit', hu)
+            current = _find_row_as_dict_impl(status_sheet, 'Handling_Unit', hu,
+                                             ext_session=session)
             cur_state = _s(current.get('Last_Movement_Type', 'NONE')).upper() \
                 if current else 'NONE'
 
@@ -206,7 +229,8 @@ def process_movement(
         else:
             # Override: still fetch current row for the upsert below,
             # but skip all transition/location checks.
-            current = find_row_as_dict(status_sheet, 'Handling_Unit', hu)
+            current = _find_row_as_dict_impl(status_sheet, 'Handling_Unit', hu,
+                                             ext_session=session)
 
         # ── Determine validation status ──
         validation_status = "OVERRIDE" if is_override else "VALID"
@@ -227,7 +251,7 @@ def process_movement(
             validation_status,
             loc,
         ]
-        append_row(log_sheet, log_row, MOVEMENT_LOG_COLS)
+        _append_row_impl(log_sheet, log_row, MOVEMENT_LOG_COLS, ext_session=session)
 
         # ── Upsert Pallet_Status (8 columns A-H) ──
         current_status = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
@@ -241,7 +265,8 @@ def process_movement(
             qty_clean,
             loc,
         ]
-        upsert_row(status_sheet, 0, hu, status_row, PALLET_STATUS_COLS)
+        _upsert_row_impl(status_sheet, 0, hu, status_row, PALLET_STATUS_COLS,
+                         ext_session=session)
 
         logger.info(
             "Movement OK: %s HU=%s part=%s location=%s event=%s",
@@ -276,6 +301,10 @@ def process_movement(
         return Result(False, 'failed_write_logged',
                       "Something went wrong. Saved locally.",
                       {'needs_sync': True})
+    finally:
+        # Always close the shared session, even on error paths.
+        if session is not None:
+            _close_session(session[0])
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -355,10 +384,13 @@ def _normalise_str(val):
     return s
 
 
-def _check_duplicate_in_log(log_sheet, hu, movement):
+def _check_duplicate_in_log(log_sheet, hu, movement, ext_session=None):
     """
     Query Movement_Log to see if the same HU has already been recorded
     with the same Movement_Type.
+
+    Accepts an optional ext_session tuple so it can participate in the
+    caller's shared session instead of opening a new one.
 
     This check applies to ALL movements — including supervisor overrides.
     An override bypasses transition checks only; it never bypasses duplicate
@@ -385,8 +417,7 @@ def _check_duplicate_in_log(log_sheet, hu, movement):
     or None if clean.
     """
     try:
-        from app.services.graph_client import read_all_rows
-        headers, rows = read_all_rows(log_sheet)
+        headers, rows = _read_all_rows_impl(log_sheet, ext_session=ext_session)
 
         n_hu   = _normalise_str(hu)
         n_move = _normalise_str(movement)
@@ -525,7 +556,10 @@ def _fmt_timestamp(iso_str):
 
 
 def _log_error(stage, error_code, handling_unit, message):
-    """Best-effort write to Error_Log. Never raises."""
+    """Best-effort write to Error_Log. Never raises.
+    Uses the standalone append_row (its own session) intentionally —
+    this is called both inside and outside the main movement session scope.
+    """
     try:
         sheet = current_app.config.get('SHEET_ERROR_LOG', 'Error_Log')
         eid = str(uuid.uuid4())[:12].upper()
