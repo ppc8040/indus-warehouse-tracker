@@ -178,83 +178,6 @@
       text-transform: uppercase;
       letter-spacing: .5px;
     }
-
-    /* ── Device Registration Overlay ── */
-    .dev-reg-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,.55);
-      z-index: 999;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-    .dev-reg-overlay.on { display: flex; }
-    .dev-reg-card {
-      background: #FFF;
-      border-radius: 16px;
-      padding: 28px 22px 22px;
-      width: 100%;
-      max-width: 380px;
-      box-shadow: 0 8px 32px rgba(0,0,0,.22);
-    }
-    .dev-reg-title {
-      font-size: 1.15rem;
-      font-weight: 800;
-      color: #1565C0;
-      margin-bottom: 6px;
-    }
-    .dev-reg-sub {
-      font-size: .8rem;
-      color: #757575;
-      margin-bottom: 18px;
-      line-height: 1.5;
-    }
-    .dev-reg-input {
-      width: 100%;
-      padding: 14px 12px;
-      border: 2px solid #E0E0E0;
-      border-radius: 8px;
-      font-size: 1.05rem;
-      outline: none;
-      transition: border-color .15s;
-      box-sizing: border-box;
-      margin-bottom: 8px;
-    }
-    .dev-reg-input:focus { border-color: #1565C0; }
-    .dev-reg-error {
-      font-size: .8rem;
-      color: #C62828;
-      min-height: 1.2em;
-      margin-bottom: 10px;
-    }
-    .dev-reg-btn {
-      width: 100%;
-      padding: 16px;
-      background: #1565C0;
-      color: #FFF;
-      border: none;
-      border-radius: 8px;
-      font-size: 1rem;
-      font-weight: 800;
-      cursor: pointer;
-      transition: background .15s;
-    }
-    .dev-reg-btn:disabled { opacity: .45; cursor: not-allowed; }
-    .dev-reg-btn:active { background: #0D47A1; }
-
-    /* ── Device name chip in header ── */
-    .dev-name-chip {
-      font-size: .72rem;
-      font-weight: 700;
-      color: #90CAF9;
-      letter-spacing: .3px;
-      max-width: 90px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
   </style>
 </head>
 <body>
@@ -263,7 +186,6 @@
 <header class="hdr">
   <h1>INDUS WAREHOUSE</h1>
   <div class="hdr-right">
-    <span class="dev-name-chip" id="deviceNameDisplay"></span>
     <span class="badge" id="pendingBadge">0 pending</span>
     <span class="dot" id="statusDot"></span>
     <span id="statusText">Online</span>
@@ -424,9 +346,10 @@
       <label for="overridePinInput">Supervisor PIN</label>
       <input type="password" id="overridePinInput" maxlength="10" inputmode="numeric" placeholder="&bull;&bull;&bull;&bull;">
     </div>
+    <p class="nfo-pin-error" id="overridePinError"></p>
     <div class="modal-btns">
       <button class="btn btn-outline" onclick="cancelOverride()">Cancel</button>
-      <button class="btn btn-err" onclick="confirmOverride()">CONFIRM OVERRIDE</button>
+      <button class="btn btn-err" id="btnConfirmOverride" onclick="confirmOverride()">CONFIRM OVERRIDE</button>
     </div>
   </div>
 </div>
@@ -502,34 +425,6 @@
       </div>
     </div>
 
-  </div>
-</div>
-
-<!-- ═══ Device Registration Overlay ═══
-     Shown on first visit (no deviceName in localStorage).
-     Not dismissible — user must enter a name before using the app.
--->
-<div class="dev-reg-overlay" id="deviceRegOverlay">
-  <div class="dev-reg-card">
-    <div class="dev-reg-title">&#128104;&#8205;&#127981; Register This Scanner</div>
-    <p class="dev-reg-sub">
-      Enter your name so movements can be tracked to the correct operator.
-      This is a one-time step for this device.
-    </p>
-    <input
-      type="text"
-      id="deviceNameInput"
-      class="dev-reg-input"
-      placeholder="e.g. Ahmed, Warehouse 1"
-      maxlength="40"
-      autocomplete="off"
-      autocorrect="off"
-      spellcheck="false"
-    >
-    <div class="dev-reg-error" id="deviceNameError"></div>
-    <button class="dev-reg-btn" id="deviceNameBtn" onclick="submitDeviceName()">
-      REGISTER &amp; CONTINUE
-    </button>
   </div>
 </div>
 
