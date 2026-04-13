@@ -11,14 +11,73 @@ Data storage: Microsoft Excel Online on SharePoint via Graph API.
 ```
 Phone Browser (PWA)          Heroku (Flask + Gunicorn)         SharePoint Excel Online
 ┌──────────────────┐        ┌─────────────────────────┐       ┌──────────────────────┐
-│  ZXing Barcode   │──API──▶│  /api/movement           │──────▶│  Movement_Log sheet   │
-│  Scanner         │        │  /api/sync               │──────▶│  Pallet_Status sheet  │
-│  IndexedDB Queue │        │  /admin (dashboard)      │──────▶│  Error_Log sheet      │
-│  Service Worker  │        │  /health                 │       └──────────────────────┘
-└──────────────────┘        │                          │
+│  Html5-QRcode    │──API──▶│  /api/lookup-hu          │──────▶│  Pallet_Status sheet  │
+│  Barcode Scanner │        │  /api/movement           │──────▶│  Movement_Log sheet   │
+│  IndexedDB Queue │        │  /api/sync               │──────▶│  Error_Log sheet      │
+│  Service Worker  │        │  /api/validate-pin       │       └──────────────────────┘
+└──────────────────┘        │  /admin (dashboard)      │
+                            │  /health                 │
                             │  Graph Client (MSAL)     │──────▶ Microsoft Entra (Auth)
                             └─────────────────────────┘
 ```
+
+---
+
+## Worker Flow
+
+```
+Scan barcode (camera) or type HU manually → tap LOOKUP
+       │
+       ▼
+  SAP lookup (/api/lookup-hu)
+       │
+       ├── HU found in Pallet_Status? ─────► Return stored Material + Qty
+       │
+       ├── HU found in SAP? ───────────────► Return SAP Material + Qty
+       │
+       └── HU not found anywhere? ─────────► SAP-Not-Found supervisor override modal
+                                               Supervisor enters PIN → verified by /api/validate-pin
+                                               Worker enters Indus Part + Qty manually
+       │
+       ▼
+  Select Location (M4 / M5 / M6 / M4_STORE / M16_STORE)
+       │
+       ▼
+  Tap STOCK IN or STOCK OUT
+       │
+       ▼
+  State Check ──── Invalid transition? ──► Show error + offer supervisor override
+       │
+       ▼
+  Write Movement_Log row
+  Update Pallet_Status row
+       │
+       ▼
+  Show SUCCESS → auto-return to scan screen
+```
+
+### Offline Mode
+- If no internet: events saved to phone's IndexedDB
+- Yellow badge shows pending count
+- Auto-syncs when internet returns
+- Idempotency keys prevent duplicate writes
+
+### Supervisor Override — Two scenarios
+
+| Scenario | Trigger | Flow |
+|---|---|---|
+| **SAP-Not-Found** | HU_NOT_FOUND returned by lookup | Modal: supervisor enters PIN → `/validate-pin` issues one-use token → worker fills Indus Part + Qty → movement posted with token |
+| **Transition Rejection** | e.g. STOCK_IN when HU already IN | Modal: supervisor enters numeric PIN directly → sent with movement POST |
+
+All overrides are audit-logged with `Validation_Status = OVERRIDE`.
+
+---
+
+## Device Identity
+
+Each device generates a stable random `deviceId` (e.g. `DEV-XXXXXABC`) stored in `localStorage` on first use. This ID is sent as both `operator_id` and `device_id` in every movement payload. No name registration or login is required — workers simply pick up a device and scan.
+
+> **Note:** If `localStorage` is cleared (e.g. browser data wipe), a new `deviceId` is generated automatically. The device remains fully functional; only the ID changes in the log.
 
 ---
 
@@ -91,24 +150,25 @@ The response `id` field contains the site ID.
 
 The workbook must have exactly these 3 worksheets with these exact headers in Row 1:
 
-#### Movement_Log (12 columns A-L)
+#### Movement_Log (12 columns A–L)
 | A | B | C | D | E | F | G | H | I | J | K | L |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | Event_ID | Timestamp_UTC | Handling_Unit | Indus_Part | Customer_Part | Pallet_Qty | Job_No | Movement_Type | Operator_ID | Device_ID | Sync_Status | Validation_Status |
 
 - Append-only. Workers cannot edit historical rows.
+- `Operator_ID` and `Device_ID` are both set to the device's auto-generated `deviceId`.
 - The app writes here automatically on every movement.
 
-#### Pallet_Status (7 columns A-G)
+#### Pallet_Status (7 columns A–G)
 | A | B | C | D | E | F | G |
 |---|---|---|---|---|---|---|
 | Handling_Unit | Current_Status | Last_Event_ID | Last_Movement_Type | Last_Movement_Time | Indus_Part | Pallet_Qty |
 
 - One row per handling unit. Auto-created/updated on movement.
 - `Current_Status`: `IN_WAREHOUSE` or `OUT_OF_WAREHOUSE`
-- `Indus_Part` and `Pallet_Qty` are required because repeated `STOCK_IN` validation compares the current scan against the last pallet state.
+- `Indus_Part` and `Pallet_Qty` are stored here and returned on repeat lookups — this is how label vs SAP discrepancies are handled (recorded value takes priority over SAP).
 
-#### Error_Log (7 columns A-G)
+#### Error_Log (7 columns A–G)
 | A | B | C | D | E | F | G |
 |---|---|---|---|---|---|---|
 | Error_ID | Timestamp_UTC | Handling_Unit | Stage | Error_Code | Error_Message | Resolved_Flag |
@@ -156,54 +216,18 @@ heroku logs --tail
 
 ---
 
-## Worker Flow
-
-```
-Scan all label fields
-(Handling Unit + Indus Part + Customer Part + Pallet Qty [+ Job No if used])
-       │
-       ▼
-  Tap STOCK IN or STOCK OUT
-       │
-       ▼
-  State Check ──── Invalid transition? ──► Show error + offer override
-       │
-       ▼
-  Write Movement_Log row
-  Update Pallet_Status row
-       │
-       ▼
-  Show SUCCESS (green) with timestamp
-       │
-       ▼
-  Ready for next scan
-```
-
-### Offline Mode
-- If no internet: events saved to phone's IndexedDB
-- Yellow badge shows pending count
-- Auto-syncs when internet returns (30-second polling)
-- Idempotency keys prevent duplicate writes
-
-### Supervisor Override
-- Tap 🔑 SUPERVISOR OVERRIDE button
-- Enter PIN + select movement type + type reason
-- Overrides bypass state transition blocks (e.g., double Stock IN)
-- All overrides are audit-logged with `Validation_Status = OVERRIDE`
-
----
-
 ## Validation Rules
 
 | Rule | Behavior |
 |------|----------|
 | Missing Indus Part | Rejected. Error logged. |
-| Stock IN when same HU + same part + same qty already IN | Blocked (override available) |
+| Stock IN when same HU + same part + same qty already IN | Blocked (supervisor override available) |
 | Stock IN when same HU but different part or qty | Allowed as a new pallet run |
-| Stock OUT when already OUT | Blocked (override available) |
-| Stock OUT when never stocked IN | Blocked (override available) |
-| Duplicate event (same HU + type + timestamp) | Blocked by idempotency. |
-| Network failure during write | Queued offline. Auto-retry. |
+| Stock OUT when already OUT | Blocked (supervisor override available) |
+| Stock OUT when never stocked IN | Blocked (supervisor override available) |
+| Duplicate event (same HU + type + idempotency key) | Blocked silently — no override offered |
+| HU not found in SAP or Pallet_Status | SAP-Not-Found override modal (supervisor PIN required) |
+| Network failure during write | Queued to IndexedDB. Auto-retry on reconnect. |
 
 ---
 
@@ -212,42 +236,43 @@ Scan all label fields
 ```
 indus-warehouse-tracker/
 ├── app/
-│   ├── __init__.py          # Flask app factory
-│   ├── config.py            # All config from env vars
+│   ├── __init__.py              # Flask app factory
+│   ├── config.py                # All config from env vars
 │   ├── routes/
-│   │   ├── worker.py        # PWA page serving
-│   │   ├── api.py           # JSON API endpoints
-│   │   ├── admin.py         # Admin dashboard (auth protected)
-│   │   └── health.py        # Health check
+│   │   ├── worker.py            # PWA page serving
+│   │   ├── api.py               # JSON API endpoints
+│   │   ├── admin.py             # Admin dashboard (auth protected)
+│   │   └── health.py            # Health check
 │   ├── services/
-│   │   ├── graph_client.py  # Graph API + workbook sessions
+│   │   ├── graph_client.py      # Graph API + workbook sessions
+│   │   ├── sap_client.py        # SAP HU lookup
 │   │   └── movement_service.py  # Business logic
 │   └── utils/
-│       ├── validators.py    # Input validation
-│       └── idempotency.py   # Duplicate prevention
+│       ├── validators.py        # Input validation
+│       └── idempotency.py       # Duplicate prevention
 ├── static/
 │   ├── css/
-│   │   ├── worker.css       # Mobile-first worker styles
-│   │   └── admin.css        # Admin dashboard styles
+│   │   ├── worker.css           # Mobile-first worker styles
+│   │   └── admin.css            # Admin dashboard styles
 │   ├── js/
-│   │   ├── app.js           # Main worker app logic
-│   │   └── offline.js       # IndexedDB offline queue
+│   │   ├── app.js               # Main worker app logic
+│   │   └── offline.js           # IndexedDB offline queue
 │   └── icons/
-│       ├── icon-192.png     # PWA icon
-│       └── icon-512.png     # PWA icon
+│       ├── icon-192.png         # PWA icon
+│       └── icon-512.png         # PWA icon
 ├── templates/
 │   ├── worker/
-│   │   ├── index.html       # Main worker page
-│   │   ├── manifest.json    # PWA manifest
-│   │   └── sw.js            # Service worker
+│   │   ├── index.html           # Main worker page
+│   │   ├── manifest.json        # PWA manifest
+│   │   └── sw.js                # Service worker
 │   └── admin/
-│       └── dashboard.html   # Admin dashboard
-├── wsgi.py                  # Gunicorn entry point
-├── Procfile                 # Heroku process definition
-├── runtime.txt              # Python version
-├── requirements.txt         # Python dependencies
-├── .env.example             # Environment variable template
-└── README.md                # This file
+│       └── dashboard.html       # Admin dashboard
+├── wsgi.py                      # Gunicorn entry point
+├── Procfile                     # Heroku process definition
+├── runtime.txt                  # Python version
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Environment variable template
+└── README.md                    # This file
 ```
 
 ---
@@ -262,20 +287,25 @@ indus-warehouse-tracker/
 
 ### Functional Tests
 - [ ] `/health` returns 200 with `graph_api: connected`
+- [ ] Scan barcode → SAP data auto-populates (HU, Indus Part, Qty)
+- [ ] Scan barcode for known HU → Pallet_Status values returned (not SAP)
+- [ ] Manual HU entry → LOOKUP button works identically to camera scan
 - [ ] Stock IN on fresh pallet → success, Pallet_Status shows IN_WAREHOUSE
 - [ ] Stock OUT after Stock IN → success, Pallet_Status shows OUT_OF_WAREHOUSE
-- [ ] Stock IN again when same HU + part + qty already IN → blocked with error message
+- [ ] Stock IN again when same HU + part + qty already IN → blocked with error
 - [ ] Stock IN with same HU but different part or qty → allowed
-- [ ] Stock OUT when already OUT → blocked with error message
-- [ ] Stock OUT when never IN → blocked with error message
-- [ ] Supervisor override with correct PIN → movement succeeds
-- [ ] Supervisor override with wrong PIN → "Invalid PIN" error
+- [ ] Stock OUT when already OUT → blocked with error
+- [ ] Stock OUT when never IN → blocked with error
+- [ ] HU not in SAP → SAP-Not-Found modal appears
+- [ ] SAP-Not-Found: correct supervisor PIN → fields step shown → movement posts
+- [ ] SAP-Not-Found: wrong supervisor PIN → error message, can retry immediately
+- [ ] Transition rejection: supervisor override with correct PIN → movement succeeds
+- [ ] Transition rejection: wrong PIN → error, can retry immediately
 - [ ] Double-tap same button quickly → only one event recorded (idempotency)
 - [ ] Turn off WiFi → event saved offline → turn WiFi on → auto-syncs
-- [ ] Pending badge shows count while offline
+- [ ] Pending badge shows count while offline, clears after sync
 - [ ] Admin dashboard loads with movement history
-- [ ] Admin dashboard shows pallet statuses
-- [ ] Admin dashboard shows error log
+- [ ] Admin dashboard shows pallet statuses and error log
 
 ### Excel Verification
 - [ ] Movement_Log gets new rows on each successful movement
@@ -283,6 +313,7 @@ indus-warehouse-tracker/
 - [ ] Error_Log gets rows on validation failures
 - [ ] Event_ID is unique per movement
 - [ ] Timestamps are stored in Dubai display time format
+- [ ] `Operator_ID` and `Device_ID` columns show device's auto-generated ID (e.g. `DEV-XXXXXABC`)
 
 ---
 
@@ -290,6 +321,7 @@ indus-warehouse-tracker/
 
 - All Graph API auth is server-side (MSAL client credentials). No secrets in frontend.
 - Admin dashboard uses HTTP Basic Auth — set a strong `ADMIN_PASSWORD`.
-- Supervisor PIN is simple 4-digit for factory floor usability. Store as Heroku config var.
-- HTTPS is enforced by Heroku by default.
-- No user accounts or login — this is a factory tool, not a multi-tenant app.
+- Supervisor PIN is a short numeric code for factory floor usability. Stored as a Heroku config var (`SUPERVISOR_PIN`). No lockout is applied — wrong PINs simply show an error and allow retry.
+- SAP-Not-Found overrides use a server-issued one-use token (32-char hex, 10-minute TTL) so the PIN is never sent with the movement payload directly.
+- HTTPS enforced by Heroku by default.
+- No user accounts or login — this is a factory tool, not a multi-tenant app. Device identity is auto-generated (`deviceId`) and requires no registration.
