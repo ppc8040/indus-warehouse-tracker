@@ -1,0 +1,482 @@
+"""
+scripts/migrate_excel_to_pg.py
+
+One-time migration script: reads Movement_Log and IVT_Line from the live
+SharePoint Excel workbook via Microsoft Graph API and bulk-inserts all rows
+into the Postgres tables created by create_schema.py.
+
+After inserting all movements, derives pallet_status for every HU from
+its latest movement record.
+
+Run ONCE after create_schema.py has been executed successfully.
+
+Usage:
+    heroku run python scripts/migrate_excel_to_pg.py --app indus-warehouse-tracker
+    OR locally with both DATABASE_URL and Graph credentials set in your .env
+
+Safety:
+    - Checks for existing rows in `movements` before inserting.
+    - Will abort if movements table is non-empty to prevent double-migration.
+    - Use --force flag to bypass this check if you need to re-run.
+    - All inserts are wrapped in a single transaction; rolls back fully on error.
+"""
+
+import os
+import sys
+import time
+import logging
+import argparse
+from datetime import datetime, timezone
+
+import msal
+import requests
+import psycopg2
+import psycopg2.extras
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s  %(levelname)-8s  %(message)s',
+    datefmt='%H:%M:%S'
+)
+log = logging.getLogger('migrate')
+
+
+# ── Config (mirrors app/config.py exactly) ────────────────────────────────
+
+GRAPH_TENANT_ID      = 'ed97e9bb-e119-4bd4-ab00-307d64bdf908'
+GRAPH_CLIENT_ID      = 'a2239be7-12cd-442d-983f-ea7e316ef767'
+GRAPH_CLIENT_SECRET  = 'sho8Q~sanlYEX3SKXjYJb0NSXL.gPRpdi63-tcmp'
+SHAREPOINT_SITE_ID   = '201c767f-23cc-4eff-b76c-47a275706531,094b21f9-6ed4-47c3-a751-3b217a18b98e'
+WORKBOOK_FILENAME    = 'Indus Warehouse Stock Movement.xlsx'
+SHEET_MOVEMENT_LOG   = 'Movement_Log'
+SHEET_IVT_LINE       = 'IVT_Line'
+
+# Dubai timezone offset (+04:00) — used when parsing timestamps from Excel
+DUBAI_UTC_OFFSET = '+04:00'
+
+
+# ── Postgres connection ───────────────────────────────────────────────────
+
+def get_pg_conn():
+    uri = os.environ.get('DATABASE_URL')
+    if not uri:
+        log.error('DATABASE_URL is not set. Aborting.')
+        sys.exit(1)
+    if uri.startswith('postgres://'):
+        uri = uri.replace('postgres://', 'postgresql://', 1)
+    return psycopg2.connect(uri)
+
+
+# ── Graph API helpers (standalone, no Flask context needed) ────────────────
+
+_http = requests.Session()
+_token = {'value': None, 'expires_at': 0}
+
+
+def _get_token():
+    if _token['value'] and _token['expires_at'] > time.time() + 60:
+        return _token['value']
+    authority = f'https://login.microsoftonline.com/{GRAPH_TENANT_ID}'
+    app = msal.ConfidentialClientApplication(
+        GRAPH_CLIENT_ID,
+        authority=authority,
+        client_credential=GRAPH_CLIENT_SECRET
+    )
+    result = app.acquire_token_for_client(scopes=['https://graph.microsoft.com/.default'])
+    if 'access_token' not in result:
+        log.error(f"Auth failed: {result.get('error_description')}")
+        sys.exit(1)
+    _token['value'] = result['access_token']
+    _token['expires_at'] = time.time() + result.get('expires_in', 3600)
+    log.info('Graph token acquired.')
+    return _token['value']
+
+
+def _wb_url():
+    return (f'https://graph.microsoft.com/v1.0/sites/{SHAREPOINT_SITE_ID}'
+            f'/drive/root:/{WORKBOOK_FILENAME}:/workbook')
+
+
+def _open_session():
+    token = _get_token()
+    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    resp = _http.post(f'{_wb_url()}/createSession',
+                      headers=headers,
+                      json={'persistChanges': False},  # read-only migration
+                      timeout=30)
+    if resp.status_code not in (200, 201):
+        log.error(f'Could not open workbook session: {resp.text[:300]}')
+        sys.exit(1)
+    sid = resp.json()['id']
+    log.info(f'Workbook session opened: {sid[:20]}...')
+    return sid, {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+        'workbook-session-id': sid,
+    }
+
+
+def _close_session(sid):
+    try:
+        token = _get_token()
+        _http.post(f'{_wb_url()}/closeSession',
+                   headers={'Authorization': f'Bearer {token}', 'workbook-session-id': sid},
+                   timeout=10)
+        log.info('Workbook session closed.')
+    except Exception as e:
+        log.warning(f'Session close failed (non-fatal): {e}')
+
+
+def _read_sheet(sheet_name, session_headers):
+    """
+    Read entire used range from a worksheet.
+    Returns (headers: list[str], rows: list[list]).
+    """
+    url = f'{_wb_url()}/worksheets(\'{sheet_name}\')/usedRange'
+    resp = _http.get(url, headers=session_headers, timeout=60)
+    if resp.status_code == 404:
+        log.warning(f"Sheet '{sheet_name}' not found — skipping.")
+        return [], []
+    if resp.status_code != 200:
+        log.error(f"Failed to read '{sheet_name}': {resp.status_code} {resp.text[:200]}")
+        return [], []
+    values = resp.json().get('values', [])
+    if not values:
+        log.warning(f"Sheet '{sheet_name}' is empty.")
+        return [], []
+    headers = [str(v).strip() if v is not None else '' for v in values[0]]
+    rows = values[1:] if len(values) > 1 else []
+    log.info(f"Read {len(rows):,} data rows from '{sheet_name}'")
+    return headers, rows
+
+
+# ── Value helpers ─────────────────────────────────────────────────────────
+
+def _clean_str(val):
+    """Return stripped string or None."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    # Strip the leading apostrophe added by _safe_row() for long numeric strings
+    if s.startswith("'"):
+        s = s[1:]
+    return s if s else None
+
+
+def _clean_int(val):
+    """Return int or None."""
+    if val is None:
+        return None
+    try:
+        # Graph API may return large ints as floats
+        return int(float(str(val).strip()))
+    except (ValueError, TypeError):
+        return None
+
+
+# Timestamp formats written by the app (Dubai local time stored as display string)
+_TS_FORMATS = [
+    '%d/%m/%Y %I:%M:%S %p',   # 25/04/2026 12:30:04 PM  (primary format)
+    '%d/%m/%Y %H:%M:%S',      # 25/04/2026 12:30:04     (fallback)
+    '%Y-%m-%dT%H:%M:%S',      # ISO fallback
+    '%Y-%m-%d %H:%M:%S',
+]
+
+
+def _parse_timestamp(val):
+    """
+    Parse a Dubai-local display timestamp string into a timezone-aware UTC
+    datetime. Returns None on failure rather than raising.
+    """
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+
+    # Handle numeric Excel serial dates (shouldn’t occur but guard anyway)
+    try:
+        serial = float(s)
+        # Excel serial 0 = 1900-01-00 (bug), 1 = 1900-01-01
+        from datetime import timedelta
+        base = datetime(1899, 12, 30, tzinfo=timezone.utc)
+        dt_utc = base + timedelta(days=serial)
+        return dt_utc
+    except ValueError:
+        pass
+
+    for fmt in _TS_FORMATS:
+        try:
+            dt_naive = datetime.strptime(s, fmt)
+            # Timestamps are stored in Dubai local time (UTC+4)
+            # Subtract 4 hours to store as true UTC in Postgres
+            dt_utc = dt_naive.replace(tzinfo=timezone.utc) - __import__('datetime').timedelta(hours=4)
+            return dt_utc
+        except ValueError:
+            continue
+
+    log.warning(f"Could not parse timestamp: '{s}' — storing as NULL")
+    return None
+
+
+# ── Migration: Movement_Log → movements + pallet_status ──────────────────
+
+def migrate_movements(headers, rows, cur):
+    """
+    Bulk-insert all Movement_Log rows into `movements`.
+    Columns (from SCHEMA.md):
+        A  Event_ID          B  Timestamp_UTC     C  Handling_Unit
+        D  Indus_Part        E  Customer_Part     F  Pallet_Qty
+        G  Job_No            H  Movement_Type     I  Operator_ID
+        J  Device_ID         K  Sync_Status       L  Validation_Status
+        M  Location
+    """
+    COL = {h: i for i, h in enumerate(headers)}
+
+    required = ['Event_ID', 'Timestamp_UTC', 'Handling_Unit', 'Movement_Type']
+    missing = [c for c in required if c not in COL]
+    if missing:
+        log.error(f'Movement_Log is missing required columns: {missing}')
+        log.error(f'Columns found: {headers}')
+        sys.exit(1)
+
+    def g(row, col, default=None):
+        idx = COL.get(col)
+        if idx is None or idx >= len(row):
+            return default
+        return row[idx]
+
+    records = []
+    skipped = 0
+    for i, row in enumerate(rows, start=2):   # start=2: row 1 is header
+        event_id = _clean_str(g(row, 'Event_ID'))
+        if not event_id:
+            skipped += 1
+            continue
+
+        movement_type = _clean_str(g(row, 'Movement_Type'))
+        if movement_type not in ('STOCK_IN', 'STOCK_OUT'):
+            log.warning(f'Row {i}: unknown movement_type "{movement_type}" — skipping')
+            skipped += 1
+            continue
+
+        timestamp = _parse_timestamp(g(row, 'Timestamp_UTC'))
+        if timestamp is None:
+            # Fall back to epoch so the row still migrates
+            log.warning(f'Row {i} ({event_id}): NULL timestamp — using epoch fallback')
+            timestamp = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+        sync_status = _clean_str(g(row, 'Sync_Status')) or 'SYNCED'
+        if sync_status not in ('SYNCED', 'PENDING'):
+            sync_status = 'SYNCED'
+
+        validation_status = _clean_str(g(row, 'Validation_Status')) or 'VALID'
+        if validation_status not in ('VALID', 'OVERRIDE'):
+            validation_status = 'VALID'
+
+        records.append((
+            event_id,
+            timestamp,
+            _clean_str(g(row, 'Handling_Unit')),
+            _clean_str(g(row, 'Indus_Part')),
+            _clean_str(g(row, 'Customer_Part')),
+            _clean_int(g(row, 'Pallet_Qty')),
+            _clean_str(g(row, 'Job_No')),
+            movement_type,
+            _clean_str(g(row, 'Operator_ID')),
+            _clean_str(g(row, 'Device_ID')),
+            sync_status,
+            validation_status,
+            _clean_str(g(row, 'Location')),
+            None,   # destination — NULL for all historical rows
+        ))
+
+    log.info(f'Prepared {len(records):,} movement records ({skipped} skipped).')
+
+    psycopg2.extras.execute_values(
+        cur,
+        """
+        INSERT INTO movements
+            (event_id, timestamp_utc, handling_unit, indus_part, customer_part,
+             pallet_qty, job_no, movement_type, operator_id, device_id,
+             sync_status, validation_status, location, destination)
+        VALUES %s
+        ON CONFLICT (event_id) DO NOTHING
+        """,
+        records,
+        page_size=500
+    )
+    log.info(f'Inserted {len(records):,} rows into movements.')
+    return len(records)
+
+
+def derive_pallet_status(cur):
+    """
+    Derive pallet_status for every HU by selecting its latest movement.
+    Rules:
+        latest movement_type = STOCK_IN  → IN_WAREHOUSE
+        latest movement_type = STOCK_OUT → OUT_OF_WAREHOUSE
+    All OUT_OF_WAREHOUSE pallets are treated as out of Indus — no in-transit concept.
+    Edge cases (HU physically present but marked OUT) handled by supervisor override.
+    """
+    log.info('Deriving pallet_status from movements...')
+    cur.execute("""
+        INSERT INTO pallet_status
+            (handling_unit, current_status, last_event_id, last_movement_type,
+             last_movement_time, indus_part, pallet_qty, last_location)
+        SELECT
+            m.handling_unit,
+            CASE m.movement_type
+                WHEN 'STOCK_IN'  THEN 'IN_WAREHOUSE'
+                WHEN 'STOCK_OUT' THEN 'OUT_OF_WAREHOUSE'
+            END                         AS current_status,
+            m.event_id                  AS last_event_id,
+            m.movement_type             AS last_movement_type,
+            m.timestamp_utc             AS last_movement_time,
+            m.indus_part,
+            m.pallet_qty,
+            m.location                  AS last_location
+        FROM movements m
+        INNER JOIN (
+            SELECT handling_unit, MAX(timestamp_utc) AS latest_ts
+            FROM   movements
+            WHERE  handling_unit IS NOT NULL
+            GROUP  BY handling_unit
+        ) latest ON m.handling_unit = latest.handling_unit
+                 AND m.timestamp_utc = latest.latest_ts
+        ON CONFLICT (handling_unit) DO UPDATE SET
+            current_status     = EXCLUDED.current_status,
+            last_event_id      = EXCLUDED.last_event_id,
+            last_movement_type = EXCLUDED.last_movement_type,
+            last_movement_time = EXCLUDED.last_movement_time,
+            indus_part         = EXCLUDED.indus_part,
+            pallet_qty         = EXCLUDED.pallet_qty,
+            last_location      = EXCLUDED.last_location
+    """)
+    cur.execute('SELECT COUNT(*) FROM pallet_status')
+    count = cur.fetchone()[0]
+    log.info(f'pallet_status populated: {count:,} unique HUs.')
+    return count
+
+
+# ── Migration: IVT_Line → ivt_scans ───────────────────────────────────
+
+def migrate_ivt(headers, rows, cur):
+    """
+    Bulk-insert IVT_Line rows into `ivt_scans`.
+    Columns: A=Code  B=Scanned_Date  C=Location
+    """
+    if not headers:
+        log.info('IVT_Line empty — nothing to migrate.')
+        return 0
+
+    COL = {h: i for i, h in enumerate(headers)}
+
+    records = []
+    skipped = 0
+    for i, row in enumerate(rows, start=2):
+        code_idx = COL.get('Code', 0)
+        code = _clean_str(row[code_idx] if code_idx < len(row) else None)
+        if not code:
+            skipped += 1
+            continue
+
+        date_idx = COL.get('Scanned Date', COL.get('Scanned_Date', 1))
+        scanned_date = _parse_timestamp(row[date_idx] if date_idx < len(row) else None)
+        if scanned_date is None:
+            scanned_date = datetime.now(timezone.utc)
+
+        loc_idx = COL.get('Location', 2)
+        location = _clean_str(row[loc_idx] if loc_idx < len(row) else None)
+
+        records.append((code, scanned_date, location))
+
+    psycopg2.extras.execute_values(
+        cur,
+        """
+        INSERT INTO ivt_scans (code, scanned_date, location)
+        VALUES %s
+        ON CONFLICT (code) DO NOTHING
+        """,
+        records,
+        page_size=500
+    )
+    log.info(f'Inserted {len(records):,} rows into ivt_scans ({skipped} skipped).')
+    return len(records)
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description='Migrate Excel workbook to Postgres.')
+    parser.add_argument('--force', action='store_true',
+                        help='Skip the non-empty movements table guard and re-migrate.')
+    args = parser.parse_args()
+
+    # ─ Safety check ───────────────────────────────────────────────
+    pg = get_pg_conn()
+    cur = pg.cursor()
+    cur.execute('SELECT COUNT(*) FROM movements')
+    existing = cur.fetchone()[0]
+    if existing > 0 and not args.force:
+        log.error(
+            f'movements table already has {existing:,} rows. '
+            'Aborting to prevent double-migration. '
+            'Use --force to override.'
+        )
+        cur.close()
+        pg.close()
+        sys.exit(1)
+    cur.close()
+
+    # ─ Read from Excel via Graph API ────────────────────────────────
+    log.info('Connecting to SharePoint workbook...')
+    sid, session_headers = _open_session()
+
+    try:
+        ml_headers, ml_rows = _read_sheet(SHEET_MOVEMENT_LOG, session_headers)
+        ivt_headers, ivt_rows = _read_sheet(SHEET_IVT_LINE, session_headers)
+    finally:
+        _close_session(sid)
+
+    if not ml_rows:
+        log.error('Movement_Log returned no data rows. Aborting.')
+        pg.close()
+        sys.exit(1)
+
+    # ─ Write to Postgres in one transaction ────────────────────────────
+    log.info('Beginning Postgres transaction...')
+    try:
+        cur = pg.cursor()
+
+        mv_count = migrate_movements(ml_headers, ml_rows, cur)
+        ps_count = derive_pallet_status(cur)
+        ivt_count = migrate_ivt(ivt_headers, ivt_rows, cur)
+
+        pg.commit()
+        log.info('Transaction committed successfully.')
+
+    except Exception as e:
+        pg.rollback()
+        log.error(f'Transaction rolled back due to error: {e}')
+        raise
+    finally:
+        cur.close()
+        pg.close()
+
+    # ─ Summary ─────────────────────────────────────────────────────
+    print()
+    print('=' * 55)
+    print('  MIGRATION COMPLETE')
+    print('=' * 55)
+    print(f'  movements rows inserted : {mv_count:>8,}')
+    print(f'  pallet_status rows      : {ps_count:>8,}  (unique HUs)')
+    print(f'  ivt_scans rows inserted : {ivt_count:>8,}')
+    print('=' * 55)
+    print()
+    print('  Next step: deploy app code changes (Steps 4–9)')
+    print()
+
+
+if __name__ == '__main__':
+    main()
