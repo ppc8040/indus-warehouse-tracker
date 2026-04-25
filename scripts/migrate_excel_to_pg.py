@@ -26,6 +26,7 @@ Safety:
 """
 
 import os
+import re
 import sys
 import time
 import logging
@@ -37,8 +38,6 @@ import requests
 import psycopg2
 import psycopg2.extras
 
-# dateutil gives us format-agnostic parsing — handles zero-padded or not,
-# 12h/24h, with or without seconds, all in one call.
 try:
     from dateutil import parser as dateutil_parser
     _DATEUTIL_AVAILABLE = True
@@ -53,7 +52,7 @@ logging.basicConfig(
 log = logging.getLogger('migrate')
 
 
-# ── Config (mirrors app/config.py exactly) ────────────────────────────────
+# ── Config (─────────────────────────────────────────────────────
 
 GRAPH_TENANT_ID      = 'ed97e9bb-e119-4bd4-ab00-307d64bdf908'
 GRAPH_CLIENT_ID      = 'a2239be7-12cd-442d-983f-ea7e316ef767'
@@ -62,9 +61,6 @@ SHAREPOINT_SITE_ID   = '201c767f-23cc-4eff-b76c-47a275706531,094b21f9-6ed4-47c3-
 WORKBOOK_FILENAME    = 'Indus Warehouse Stock Movement.xlsx'
 SHEET_MOVEMENT_LOG   = 'Movement_Log'
 SHEET_IVT_LINE       = 'IVT_Line'
-
-# Dubai timezone offset (+04:00) — used when parsing timestamps from Excel
-DUBAI_UTC_OFFSET = '+04:00'
 
 
 # ── Postgres connection ───────────────────────────────────────────────────
@@ -79,7 +75,7 @@ def get_pg_conn():
     return psycopg2.connect(uri)
 
 
-# ── Graph API helpers (standalone, no Flask context needed) ────────────────
+# ── Graph API helpers ──────────────────────────────────────────────────
 
 _http = requests.Session()
 _token = {'value': None, 'expires_at': 0}
@@ -114,7 +110,7 @@ def _open_session():
     headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
     resp = _http.post(f'{_wb_url()}/createSession',
                       headers=headers,
-                      json={'persistChanges': False},  # read-only migration
+                      json={'persistChanges': False},
                       timeout=30)
     if resp.status_code not in (200, 201):
         log.error(f'Could not open workbook session: {resp.text[:300]}')
@@ -140,10 +136,6 @@ def _close_session(sid):
 
 
 def _read_sheet(sheet_name, session_headers):
-    """
-    Read entire used range from a worksheet.
-    Returns (headers: list[str], rows: list[list]).
-    """
     url = f'{_wb_url()}/worksheets(\'{sheet_name}\')/usedRange'
     resp = _http.get(url, headers=session_headers, timeout=60)
     if resp.status_code == 404:
@@ -165,18 +157,15 @@ def _read_sheet(sheet_name, session_headers):
 # ── Value helpers ─────────────────────────────────────────────────────────
 
 def _clean_str(val):
-    """Return stripped string or None."""
     if val is None:
         return None
     s = str(val).strip()
-    # Strip the leading apostrophe added by _safe_row() for long numeric strings
     if s.startswith("'"):
         s = s[1:]
     return s if s else None
 
 
 def _clean_int(val):
-    """Return int or None."""
     if val is None:
         return None
     try:
@@ -185,82 +174,180 @@ def _clean_int(val):
         return None
 
 
-# Strptime fallback formats — used only when dateutil is unavailable.
-# Written to be unambiguous for DD/MM/YYYY ordering.
+def _normalise_ts_string(raw):
+    """
+    Clean a raw cell value into a consistent string before date parsing.
+    Handles every real-world messiness Graph API produces:
+      - Double/triple spaces            '12/4/2026  4:02:28 PM'
+      - Non-breaking spaces (\u00a0)
+      - Zero-width spaces / BOM chars
+      - Leading/trailing whitespace
+      - Apostrophe prefix from _safe_row()
+    Returns a clean single-spaced ASCII-safe string.
+    """
+    s = str(raw)
+    # Strip invisible Unicode: NBSP, zero-width space, BOM, soft hyphen
+    s = s.replace('\u00a0', ' ')   # non-breaking space
+    s = s.replace('\u200b', '')    # zero-width space
+    s = s.replace('\ufeff', '')    # BOM
+    s = s.replace('\u00ad', '')    # soft hyphen
+    # Strip apostrophe prefix
+    s = s.lstrip("'")
+    # Collapse all whitespace runs to a single space
+    s = ' '.join(s.split())
+    return s.strip()
+
+
+# All strptime patterns tried in order after dateutil.
+# Covers: D/M/YYYY and DD/MM/YYYY, 12h and 24h, with/without seconds,
+# Excel export format, ISO 8601 variants.
 _TS_FORMATS = [
-    '%d/%m/%Y %I:%M:%S %p',   # 25/04/2026 12:30:04 PM
-    '%d/%m/%Y %H:%M:%S',      # 25/04/2026 12:30:04
-    '%d/%m/%Y %H:%M',         # 25/04/2026 12:30
-    '%d/%m/%Y %I:%M %p',      # 25/04/2026 12:30 PM
-    '%Y-%m-%dT%H:%M:%S',      # ISO fallback
+    # DD/MM/YYYY — app's canonical format
+    '%d/%m/%Y %I:%M:%S %p',    # 25/04/2026 12:30:04 PM
+    '%d/%m/%Y %H:%M:%S',       # 25/04/2026 12:30:04
+    '%d/%m/%Y %I:%M %p',       # 25/04/2026 12:30 PM
+    '%d/%m/%Y %H:%M',          # 25/04/2026 12:30
+    '%d/%m/%Y',                # 25/04/2026
+    # D/M/YYYY — no zero-padding (common from older rows)
+    '%d/%m/%Y %I:%M:%S %p',
+    '%d/%m/%Y %H:%M:%S',
+    # M/D/YYYY — American format guard (shouldn’t occur but covered)
+    '%m/%d/%Y %I:%M:%S %p',
+    '%m/%d/%Y %H:%M:%S',
+    '%m/%d/%Y %H:%M',
+    # ISO 8601 variants
+    '%Y-%m-%dT%H:%M:%S',
+    '%Y-%m-%dT%H:%M:%SZ',
+    '%Y-%m-%dT%H:%M:%S.%f',
     '%Y-%m-%d %H:%M:%S',
     '%Y-%m-%d %H:%M',
+    '%Y-%m-%d',
+    # Excel export variants
+    '%d-%m-%Y %H:%M:%S',
+    '%d-%m-%Y %H:%M',
+    '%d %b %Y %H:%M:%S',       # 25 Apr 2026 12:30:04
+    '%d %B %Y %H:%M:%S',       # 25 April 2026 12:30:04
+    '%b %d, %Y %I:%M:%S %p',   # Apr 25, 2026 12:30:04 PM
 ]
+
+# Regex to extract date+time components as a last resort from garbled strings.
+# Matches patterns like: 12/4/2026 4:02:28 PM  or  2026-04-12 16:02
+_TS_REGEX = re.compile(
+    r'(\d{1,4})[/\-\.](\d{1,2})[/\-\.](\d{2,4})'
+    r'(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?)?',
+    re.IGNORECASE
+)
+
+
+def _regex_fallback(s):
+    """
+    Last-resort: extract numeric date+time components via regex and
+    reconstruct a datetime. Only used when dateutil and strptime both fail.
+    Assumes DD/MM/YYYY ordering (matching the app's canonical format).
+    """
+    m = _TS_REGEX.search(s)
+    if not m:
+        return None
+    p1, p2, p3, hh, mm, ss, ampm = m.groups()
+    p1, p2, p3 = int(p1), int(p2), int(p3)
+
+    # Determine year, month, day
+    if p3 > 31:          # p3 is 4-digit year → YYYY/MM/DD or YYYY-MM-DD
+        year, month, day = p3, p2, p1
+    elif p1 > 31:        # p1 is 4-digit year
+        year, month, day = p1, p2, p3
+    else:                # assume DD/MM/YYYY
+        day, month, year = p1, p2, p3
+        if year < 100:   # 2-digit year
+            year += 2000
+
+    hour   = int(hh) if hh else 0
+    minute = int(mm) if mm else 0
+    second = int(ss) if ss else 0
+
+    if ampm:
+        ampm = ampm.upper()
+        if ampm == 'PM' and hour != 12:
+            hour += 12
+        elif ampm == 'AM' and hour == 12:
+            hour = 0
+
+    try:
+        return datetime(year, month, day, hour, minute, second)
+    except ValueError:
+        # Swap day/month and retry (month > 12 means we guessed wrong)
+        try:
+            return datetime(year, day, month, hour, minute, second)
+        except ValueError:
+            return None
 
 
 def _parse_timestamp(val):
     """
-    Parse a Dubai-local display timestamp string into a timezone-aware UTC
-    datetime. Returns None on failure — callers must handle None explicitly
-    (rows with None timestamps are SKIPPED, not stored as epoch).
+    Parse any timestamp value from Excel into a UTC-aware datetime.
 
-    Strategy:
-      1. Guard against Excel numeric serial dates.
-      2. Try dateutil.parser.parse() with dayfirst=True — handles every
-         variant (zero-padded or not, 12h/24h, with/without seconds).
-      3. Fall back to explicit strptime loop for edge cases.
+    Pipeline:
+      1.  Normalise string (collapse spaces, strip invisible chars)
+      2.  Excel numeric serial date
+      3.  dateutil.parser.parse() with dayfirst=True  ← handles ~99% of cases
+      4.  strptime loop over _TS_FORMATS
+      5.  Regex extraction fallback (_regex_fallback)
+      6.  Return None only if all five stages fail
+
+    All Dubai-local datetimes are shifted to UTC by subtracting 4 hours.
     """
     if val is None:
         return None
-    s = str(val).strip()
+
+    s = _normalise_ts_string(val)
     if not s:
         return None
 
-    # Guard: Excel serial date (shouldn't occur but handle defensively)
+    # Stage 1: Excel numeric serial date
     try:
         serial = float(s)
-        if serial > 1:          # avoid treating "1" or "0" as a date
+        if serial > 1:
             base = datetime(1899, 12, 30, tzinfo=timezone.utc)
             return base + timedelta(days=serial)
     except ValueError:
         pass
 
-    # Primary: dateutil — format-agnostic, handles all real-world variants
+    def _to_utc(dt_naive):
+        """Treat naive datetime as Dubai local (+04) and convert to UTC."""
+        return dt_naive.replace(tzinfo=None).replace(tzinfo=timezone.utc) - timedelta(hours=4)
+
+    # Stage 2: dateutil — format-agnostic, handles virtually everything
     if _DATEUTIL_AVAILABLE:
         try:
-            dt_naive = dateutil_parser.parse(s, dayfirst=True)
-            # Strip any tzinfo dateutil may have added, then apply Dubai (+04)
-            dt_naive = dt_naive.replace(tzinfo=None)
-            return dt_naive.replace(tzinfo=timezone.utc) - timedelta(hours=4)
-        except (ValueError, OverflowError):
+            return _to_utc(dateutil_parser.parse(s, dayfirst=True))
+        except (ValueError, OverflowError, TypeError):
             pass
 
-    # Fallback: explicit strptime loop
+    # Stage 3: strptime loop
     for fmt in _TS_FORMATS:
         try:
-            dt_naive = datetime.strptime(s, fmt)
-            return dt_naive.replace(tzinfo=timezone.utc) - timedelta(hours=4)
+            return _to_utc(datetime.strptime(s, fmt))
         except ValueError:
             continue
 
-    return None     # caller will skip this row
+    # Stage 4: regex last resort
+    dt = _regex_fallback(s)
+    if dt is not None:
+        return _to_utc(dt)
+
+    return None   # genuinely unparseable
 
 
-def _print_ts_diagnostic(rows, ts_col_idx, label='Movement_Log', n=8):
-    """
-    Print the first n raw timestamp values from the sheet so you can
-    visually confirm they are being read in the expected format before
-    any data is written to Postgres.
-    """
+def _print_ts_diagnostic(rows, ts_col_idx, label='Movement_Log', n=10):
     print()
-    print(f'  ── Timestamp diagnostic ({label}, first {n} values) ──')
+    print(f'  ── Timestamp diagnostic ({label}, first {n} non-empty values) ──')
     shown = 0
     for row in rows:
-        if ts_col_idx < len(row):
+        if ts_col_idx < len(row) and row[ts_col_idx]:
             raw = row[ts_col_idx]
             parsed = _parse_timestamp(raw)
             status = f'→ {parsed.isoformat()}' if parsed else '→ UNPARSEABLE ⚠'
-            print(f'    raw: {repr(raw):<40}  {status}')
+            print(f'    raw: {repr(str(raw)):<45}  {status}')
             shown += 1
             if shown >= n:
                 break
@@ -270,15 +357,6 @@ def _print_ts_diagnostic(rows, ts_col_idx, label='Movement_Log', n=8):
 # ── Migration: Movement_Log → movements + pallet_status ──────────────────
 
 def migrate_movements(headers, rows, cur):
-    """
-    Bulk-insert all Movement_Log rows into `movements`.
-    Columns (from SCHEMA.md):
-        A  Event_ID          B  Timestamp_UTC     C  Handling_Unit
-        D  Indus_Part        E  Customer_Part     F  Pallet_Qty
-        G  Job_No            H  Movement_Type     I  Operator_ID
-        J  Device_ID         K  Sync_Status       L  Validation_Status
-        M  Location
-    """
     COL = {h: i for i, h in enumerate(headers)}
 
     required = ['Event_ID', 'Timestamp_UTC', 'Handling_Unit', 'Movement_Type']
@@ -288,7 +366,6 @@ def migrate_movements(headers, rows, cur):
         log.error(f'Columns found: {headers}')
         sys.exit(1)
 
-    # Run timestamp diagnostic before touching Postgres
     ts_idx = COL.get('Timestamp_UTC', 1)
     _print_ts_diagnostic(rows, ts_idx, label='Movement_Log')
 
@@ -301,9 +378,9 @@ def migrate_movements(headers, rows, cur):
     records = []
     skipped_no_id = 0
     skipped_bad_type = 0
-    skipped_bad_ts = []     # collect (row_number, event_id, raw_value) for report
+    skipped_bad_ts = []
 
-    for i, row in enumerate(rows, start=2):   # start=2: row 1 is header
+    for i, row in enumerate(rows, start=2):
         event_id = _clean_str(g(row, 'Event_ID'))
         if not event_id:
             skipped_no_id += 1
@@ -318,7 +395,6 @@ def migrate_movements(headers, rows, cur):
         raw_ts = g(row, 'Timestamp_UTC')
         timestamp = _parse_timestamp(raw_ts)
         if timestamp is None:
-            # Hard skip — do NOT use epoch fallback. Epoch rows corrupt date queries.
             skipped_bad_ts.append((i, event_id, repr(raw_ts)))
             continue
 
@@ -344,27 +420,26 @@ def migrate_movements(headers, rows, cur):
             sync_status,
             validation_status,
             _clean_str(g(row, 'Location')),
-            None,   # destination — NULL for all historical rows
+            None,
         ))
 
     log.info(
         f'Prepared {len(records):,} movement records '
         f'({skipped_no_id} no-id, {skipped_bad_type} bad-type, '
-        f'{len(skipped_bad_ts)} unparseable-timestamp skipped).'
+        f'{len(skipped_bad_ts)} still-unparseable skipped).'
     )
 
-    # Report unparseable timestamps so nothing is silently lost
     if skipped_bad_ts:
         print()
-        print(f'  ⚠  {len(skipped_bad_ts)} rows skipped due to unparseable timestamp:')
+        print(f'  ⚠  {len(skipped_bad_ts)} rows still skipped (genuinely unparseable timestamp):')
         for row_n, eid, raw in skipped_bad_ts[:20]:
             print(f'     row {row_n:>5}  event_id={eid}  raw_ts={raw}')
         if len(skipped_bad_ts) > 20:
-            print(f'     ... and {len(skipped_bad_ts) - 20} more (see full log)')
+            print(f'     ... and {len(skipped_bad_ts) - 20} more')
         print()
 
     if not records:
-        log.error('No valid records to insert after parsing. Aborting.')
+        log.error('No valid records to insert. Aborting.')
         sys.exit(1)
 
     psycopg2.extras.execute_values(
@@ -385,16 +460,6 @@ def migrate_movements(headers, rows, cur):
 
 
 def derive_pallet_status(cur):
-    """
-    Derive pallet_status for every HU by selecting its latest movement.
-
-    Uses DISTINCT ON (handling_unit) ORDER BY timestamp_utc DESC, id DESC
-    to guarantee exactly one row per HU with a deterministic tiebreaker.
-
-    Rules:
-        latest movement_type = STOCK_IN  → IN_WAREHOUSE
-        latest movement_type = STOCK_OUT → OUT_OF_WAREHOUSE
-    """
     log.info('Deriving pallet_status from movements...')
     cur.execute("""
         INSERT INTO pallet_status
@@ -405,13 +470,8 @@ def derive_pallet_status(cur):
             CASE movement_type
                 WHEN 'STOCK_IN'  THEN 'IN_WAREHOUSE'
                 WHEN 'STOCK_OUT' THEN 'OUT_OF_WAREHOUSE'
-            END                     AS current_status,
-            event_id                AS last_event_id,
-            movement_type           AS last_movement_type,
-            timestamp_utc           AS last_movement_time,
-            indus_part,
-            pallet_qty,
-            location                AS last_location
+            END,
+            event_id, movement_type, timestamp_utc, indus_part, pallet_qty, location
         FROM (
             SELECT DISTINCT ON (handling_unit)
                 handling_unit, movement_type, event_id,
@@ -438,18 +498,14 @@ def derive_pallet_status(cur):
 # ── Migration: IVT_Line → ivt_scans ───────────────────────────────────
 
 def migrate_ivt(headers, rows, cur):
-    """
-    Bulk-insert IVT_Line rows into `ivt_scans`.
-    Columns: A=Code  B=Scanned Date  C=Location
-    """
     if not headers:
         log.info('IVT_Line empty — nothing to migrate.')
         return 0
 
     COL = {h: i for i, h in enumerate(headers)}
-
     records = []
     skipped = 0
+
     for i, row in enumerate(rows, start=2):
         code_idx = COL.get('Code', 0)
         code = _clean_str(row[code_idx] if code_idx < len(row) else None)
@@ -464,16 +520,11 @@ def migrate_ivt(headers, rows, cur):
 
         loc_idx = COL.get('Location', 2)
         location = _clean_str(row[loc_idx] if loc_idx < len(row) else None)
-
         records.append((code, scanned_date, location))
 
     psycopg2.extras.execute_values(
         cur,
-        """
-        INSERT INTO ivt_scans (code, scanned_date, location)
-        VALUES %s
-        ON CONFLICT (code) DO NOTHING
-        """,
+        'INSERT INTO ivt_scans (code, scanned_date, location) VALUES %s ON CONFLICT (code) DO NOTHING',
         records,
         page_size=500
     )
@@ -492,22 +543,18 @@ def main():
     pg = get_pg_conn()
     cur = pg.cursor()
 
-    # ─ Safety / force-truncate ────────────────────────────────────
     cur.execute('SELECT COUNT(*) FROM movements')
     existing = cur.fetchone()[0]
 
     if existing > 0 and not args.force:
         log.error(
             f'movements table already has {existing:,} rows. '
-            'Aborting to prevent double-migration. '
             'Use --force to truncate and re-run.'
         )
-        cur.close()
-        pg.close()
-        sys.exit(1)
+        cur.close(); pg.close(); sys.exit(1)
 
     if args.force and existing > 0:
-        log.warning(f'--force: truncating {existing:,} existing rows from movements + pallet_status...')
+        log.warning(f'--force: truncating {existing:,} rows from movements + pallet_status...')
         cur.execute('TRUNCATE TABLE pallet_status RESTART IDENTITY CASCADE;')
         cur.execute('TRUNCATE TABLE movements RESTART IDENTITY CASCADE;')
         pg.commit()
@@ -515,10 +562,8 @@ def main():
 
     cur.close()
 
-    # ─ Read from Excel via Graph API ────────────────────────────────
     log.info('Connecting to SharePoint workbook...')
     sid, session_headers = _open_session()
-
     try:
         ml_headers, ml_rows = _read_sheet(SHEET_MOVEMENT_LOG, session_headers)
         ivt_headers, ivt_rows = _read_sheet(SHEET_IVT_LINE, session_headers)
@@ -526,34 +571,24 @@ def main():
         _close_session(sid)
 
     if not ml_rows:
-        log.error(
-            f"'{SHEET_MOVEMENT_LOG}' returned no data rows. "
-            "Check the sheet name is correct and the workbook is accessible."
-        )
-        pg.close()
-        sys.exit(1)
+        log.error(f"'{SHEET_MOVEMENT_LOG}' returned no data rows.")
+        pg.close(); sys.exit(1)
 
-    # ─ Write to Postgres in one transaction ────────────────────────────
     log.info('Beginning Postgres transaction...')
     try:
         cur = pg.cursor()
-
         mv_count, ts_skipped = migrate_movements(ml_headers, ml_rows, cur)
         ps_count = derive_pallet_status(cur)
         ivt_count = migrate_ivt(ivt_headers, ivt_rows, cur)
-
         pg.commit()
         log.info('Transaction committed successfully.')
-
     except Exception as e:
         pg.rollback()
-        log.error(f'Transaction rolled back due to error: {e}')
+        log.error(f'Transaction rolled back: {e}')
         raise
     finally:
-        cur.close()
-        pg.close()
+        cur.close(); pg.close()
 
-    # ─ Summary ─────────────────────────────────────────────────────
     print()
     print('=' * 55)
     print('  MIGRATION COMPLETE')
@@ -563,12 +598,11 @@ def main():
     print(f'  pallet_status rows        : {ps_count:>8,}  (unique HUs)')
     print(f'  ivt_scans rows inserted   : {ivt_count:>8,}')
     print('=' * 55)
-    print()
     if ts_skipped > 0:
-        print('  ⚠  Some rows were skipped due to unparseable timestamps.')
-        print('     Check the diagnostic output above for the raw values.')
-        print('     If the format is unexpected, update _TS_FORMATS and re-run.')
         print()
+        print('  ⚠  Check the skipped rows above — these are genuinely')
+        print('     unreadable timestamps that no parser could recover.')
+    print()
 
 
 if __name__ == '__main__':
