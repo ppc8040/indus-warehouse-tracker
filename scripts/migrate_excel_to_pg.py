@@ -151,14 +151,8 @@ def _read_sheet(sheet_name, session_headers):
 # ══════════════════════════════════════════════════════════════════
  
 def _clean_str(val):
-    """
-    Clean a value to string.
-    FIX: Convert float scientific notation back to integer string.
-    """
     if val is None:
         return None
-    
-    # ← FIX: Handle float Handling_Units (e.g., 1.00000000000843e+17)
     if isinstance(val, float):
         if val > 1e16:
             try:
@@ -166,7 +160,6 @@ def _clean_str(val):
             except (ValueError, OverflowError):
                 log.warning(f"Float HU conversion failed for {val}, using str()")
                 return str(val)
-    
     s = str(val).strip()
     if s.startswith("'"):
         s = s[1:]
@@ -187,10 +180,6 @@ def _clean_int(val):
 # ══════════════════════════════════════════════════════════════════
  
 def _clean_customer_part(val):
-    """
-    Clean Customer_Part value.
-    FIX: Convert integers to strings explicitly.
-    """
     if val is None:
         return None
     if isinstance(val, (int, float)):
@@ -205,7 +194,6 @@ def _clean_customer_part(val):
 # ══════════════════════════════════════════════════════════════════
  
 def _normalise_ts_string(raw):
-    """Clean timestamp string (collapse spaces, strip invisible chars)."""
     s = str(raw)
     s = s.replace('\u00a0', ' ')
     s = s.replace('\u200b', '')
@@ -221,9 +209,6 @@ _TS_FORMATS = [
     '%d/%m/%Y %H:%M:%S',
     '%d/%m/%Y %H:%M',
     '%d/%m/%Y %I:%M %p',
-    '%d/%m/%Y %I:%M:%S %p',
-    '%d/%m/%Y %H:%M:%S',
-    '%d/%m/%Y %H:%M',
     '%m/%d/%Y %I:%M:%S %p',
     '%m/%d/%Y %H:%M:%S',
     '%m/%d/%Y %H:%M',
@@ -312,6 +297,45 @@ def _parse_timestamp(val):
     return datetime.now(timezone.utc)
  
  
+# ══════════════════════════════════════════════════════════════════
+#  Schema cleanup helpers  (run outside any transaction)
+# ══════════════════════════════════════════════════════════════════
+
+def _drop_event_id_unique_constraint(pg):
+    """
+    Drop the UNIQUE constraint on movements.event_id together with any
+    objects that depend on it (specifically the FK on pallet_status).
+
+    Steps:
+      1. Drop the FK on pallet_status (IF EXISTS) — safe no-op if already gone.
+      2. Drop the UNIQUE constraint with CASCADE — also safe no-op if already gone.
+
+    Both statements are auto-committed (autocommit=True) so that the DDL
+    cannot be rolled back and is visible immediately to the next transaction.
+    """
+    pg.autocommit = True
+    cur = pg.cursor()
+    try:
+        # Step 1: drop the dependent FK first (explicit is safer than relying on CASCADE alone)
+        log.info('Dropping FK pallet_status_last_event_id_fkey (if present)...')
+        cur.execute("""
+            ALTER TABLE pallet_status
+            DROP CONSTRAINT IF EXISTS pallet_status_last_event_id_fkey;
+        """)
+
+        # Step 2: drop the UNIQUE constraint with CASCADE for any other dependents
+        log.info('Dropping UNIQUE constraint movements_event_id_key (if present)...')
+        cur.execute("""
+            ALTER TABLE movements
+            DROP CONSTRAINT IF EXISTS movements_event_id_key CASCADE;
+        """)
+
+        log.info('Constraint cleanup complete.')
+    finally:
+        cur.close()
+        pg.autocommit = False   # restore transactional mode for the rest of the script
+
+
 # ══════════════════════════════════════════════════════════════════
 #  Migration Functions
 # ══════════════════════════════════════════════════════════════════
@@ -510,19 +534,12 @@ def main():
         cur.execute('TRUNCATE TABLE movements RESTART IDENTITY CASCADE;')
         pg.commit()
         log.info('Truncate complete.')
- 
-    # Drop the UNIQUE constraint on event_id so duplicate historical
-    # event_ids from Excel can be inserted. The app always generates
-    # unique event_ids going forward so this constraint is no longer needed.
-    log.info('Dropping UNIQUE constraint on movements.event_id (if present)...')
-    cur.execute("""
-        ALTER TABLE movements
-        DROP CONSTRAINT IF EXISTS movements_event_id_key;
-    """)
-    pg.commit()
-    log.info('Constraint drop complete.')
 
     cur.close()
+
+    # Remove the UNIQUE constraint (and its dependent FK) BEFORE the main
+    # transaction so the DDL auto-commits and cannot be rolled back with data.
+    _drop_event_id_unique_constraint(pg)
  
     log.info('Connecting to SharePoint workbook...')
     sid, session_headers = _open_session()
