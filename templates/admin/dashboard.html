@@ -245,11 +245,26 @@
 const charts = {};
 let filterTimer = null;
 
+// Map each tab name to the function that loads its data.
+// Analytics, IVT and Errors are lazy-loaded only when the tab is opened,
+// so they do not compete with the critical stock queries on page load.
+const TAB_LOADERS = {
+  movements:  () => loadMovements(),
+  statuses:   () => loadStatuses(),
+  stock:      () => loadStock(),
+  totalstock: () => loadTotalStock(),
+  analytics:  () => loadAnalytics(),
+  ivt:        () => loadIvt(),
+  errors:     () => loadErrors(),
+};
+
 function switchTab(name, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('on'));
   el.classList.add('on');
   document.getElementById('pane-' + name).classList.add('on');
+  // Always reload data for the active tab so it is never stale / empty.
+  if (TAB_LOADERS[name]) TAB_LOADERS[name]();
 }
 
 function getFilters() {
@@ -333,6 +348,7 @@ async function loadStats() {
 
 async function loadMovements() {
   const el = document.getElementById('tbl-movements');
+  el.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const d = await fetch('/admin/api/movements?limit=200&' + filterQS()).then(r => r.json());
     const rows = d.movements || [];
@@ -361,11 +377,12 @@ async function loadMovements() {
       </tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
-  } catch (e) { el.innerHTML = '<div class="empty">Failed to load movements.</div>'; }
+  } catch (e) { el.innerHTML = '<div class="empty">Failed to load movements.</div>'; console.error('loadMovements', e); }
 }
 
 async function loadStatuses() {
   const el = document.getElementById('tbl-statuses');
+  el.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const f = getFilters();
     const qs = new URLSearchParams(
@@ -392,20 +409,24 @@ async function loadStatuses() {
       </tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
-  } catch (e) { el.innerHTML = '<div class="empty">Failed to load statuses.</div>'; }
+  } catch (e) { el.innerHTML = '<div class="empty">Failed to load statuses.</div>'; console.error('loadStatuses', e); }
 }
 
 async function loadStock() {
   const el = document.getElementById('tbl-stock');
   const banner = document.getElementById('neg-stock-banner');
   const bannerTbl = document.getElementById('neg-stock-banner-tbl');
+  el.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const f = getFilters();
     const qs = new URLSearchParams(
       Object.fromEntries(Object.entries({ part: f.part, location: f.location })
         .filter(([, v]) => v && v !== 'ALL'))
     ).toString();
-    const d = await fetch('/admin/api/stock-summary?' + qs).then(r => r.json());
+    const resp = await fetch('/admin/api/stock-summary?' + qs);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error);
     const rows = d.rows || [];
     const negRows = d.negative_stock || [];
 
@@ -451,19 +472,24 @@ async function loadStock() {
     }
     el.innerHTML = h + '</tbody></table>';
   } catch (e) {
-    el.innerHTML = '<div class="empty">Failed to load stock summary.</div>';
+    el.innerHTML = `<div class="empty">Failed to load stock summary: ${e.message}</div>`;
     banner.classList.remove('visible');
+    console.error('loadStock', e);
   }
 }
 
 async function loadTotalStock() {
   const el = document.getElementById('tbl-totalstock');
+  el.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const f = getFilters();
     const qs = new URLSearchParams(
       Object.fromEntries(Object.entries({ part: f.part }).filter(([, v]) => v))
     ).toString();
-    const d = await fetch('/admin/api/total-stock?' + qs).then(r => r.json());
+    const resp = await fetch('/admin/api/total-stock?' + qs);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error);
     const rows = d.rows || [];
     if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found.</div>'; return; }
     let h = `<table><thead><tr>
@@ -489,12 +515,17 @@ async function loadTotalStock() {
       </tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
-  } catch (e) { el.innerHTML = '<div class="empty">Failed to load total stock.</div>'; }
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Failed to load total stock: ${e.message}</div>`;
+    console.error('loadTotalStock', e);
+  }
 }
 
 async function loadErrors() {
   const errEl = document.getElementById('tbl-errors');
   const negEl = document.getElementById('tbl-neg-stock');
+  errEl.innerHTML = '<div class="empty">Loading…</div>';
+  negEl.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const d = await fetch('/admin/api/errors').then(r => r.json());
     const negRows = d.negative_stock || [];
@@ -532,7 +563,7 @@ async function loadErrors() {
       </tr>`;
     }
     errEl.innerHTML = h + '</tbody></table>';
-  } catch (e) { errEl.innerHTML = '<div class="empty">Failed to load error log.</div>'; }
+  } catch (e) { errEl.innerHTML = '<div class="empty">Failed to load error log.</div>'; console.error('loadErrors', e); }
 }
 
 async function loadVelocity() {
@@ -610,7 +641,7 @@ async function loadOperators() {
       h += `<tr><td style="font-weight:600">${op}</td><td class="ok">${v.in}</td><td class="err">${v.out}</td><td>${v.in + v.out}</td><td>${fmtTime(v.last)}</td></tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
-  } catch (e) { el.innerHTML = '<div class="empty">Failed to load operators.</div>'; }
+  } catch (e) { el.innerHTML = '<div class="empty">Failed to load operators.</div>'; console.error('loadOperators', e); }
 }
 async function loadAnalytics() {
   await Promise.all([loadVelocity(), loadLocationChart(), loadPartsChart(), loadOperators()]);
@@ -645,6 +676,8 @@ async function loadIvt() {
   } catch (e) { console.error('IVT', e); }
 }
 
+// On page load: fetch only the critical data immediately (stats, movements, statuses,
+// stock, total-stock). Analytics/IVT/Errors are lazy-loaded on first tab click.
 function loadAll() {
   checkConn();
   loadStats();
@@ -652,9 +685,6 @@ function loadAll() {
   loadStatuses();
   loadStock();
   loadTotalStock();
-  loadErrors();
-  loadAnalytics();
-  loadIvt();
 }
 document.addEventListener('DOMContentLoaded', loadAll);
 </script>
