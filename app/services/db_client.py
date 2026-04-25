@@ -2,8 +2,6 @@
 db_client.py — PostgreSQL data access layer.
 
 Replaces graph_client.py as the primary data store interface.
-graph_client.py is kept dormant (not imported by any active path)
-until go-live is confirmed stable.
 
 Schema (created by scripts/create_schema.py):
 
@@ -16,19 +14,19 @@ Schema (created by scripts/create_schema.py):
       customer_part    TEXT,
       pallet_qty       TEXT,
       job_no           TEXT,
-      movement_type    TEXT NOT NULL,   -- STOCK_IN | STOCK_OUT
+      movement_type    TEXT NOT NULL,
       operator_id      TEXT,
       device_id        TEXT,
       sync_status      TEXT,
       validation_status TEXT,
       location         TEXT,
-      from_location    TEXT,            -- populated on STOCK_OUT
-      to_location      TEXT             -- destination, populated on STOCK_OUT
+      from_location    TEXT,
+      to_location      TEXT
   )
 
   pallet_status (
       handling_unit       TEXT PRIMARY KEY,
-      current_status      TEXT,         -- IN_WAREHOUSE | OUT_OF_WAREHOUSE
+      current_status      TEXT,
       last_event_id       TEXT,
       last_movement_type  TEXT,
       last_movement_time  TIMESTAMPTZ,
@@ -45,19 +43,12 @@ Schema (created by scripts/create_schema.py):
   )
 
 Connection strategy:
-  A module-level connection pool (psycopg2.pool.ThreadedConnectionPool)
-  is created once on first use and reused across requests.
-  Pool size: min=2, max=10 — min=2 matches gunicorn worker count so each
-  worker always has a connection available without blocking.
-  Heroku Postgres requires sslmode=require; this is passed via connect_kwargs
-  so the dyno never fails with SSL negotiation errors.
-  Every public function acquires a connection from the pool, uses it,
-  and returns it in a finally block so the pool is never exhausted.
-
-Error handling:
-  All public functions raise DbError (a thin wrapper around psycopg2
-  exceptions) so callers get a single exception type to catch.
-  DbError carries a human-readable .message and the original .cause.
+  A module-level ThreadedConnectionPool (min=1, max=10) is created once
+  on first use. Heroku Postgres DSN already contains sslmode=require in
+  the URL — we do NOT pass sslmode as a separate kwarg to avoid a
+  conflict that corrupts the connection.
+  Every public function acquires a connection, uses it, and always
+  returns it exactly once via a tracked flag in _get_conn().
 """
 
 import atexit
@@ -71,6 +62,7 @@ import psycopg2.extras
 from psycopg2 import pool as pg_pool
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Exception
@@ -95,14 +87,7 @@ _pool: pg_pool.ThreadedConnectionPool | None = None
 
 
 def _get_pool() -> pg_pool.ThreadedConnectionPool:
-    """
-    Return the module-level connection pool, creating it on first call.
-
-    minconn=2 matches the gunicorn worker count (--workers 2) so every
-    worker always has a ready connection and never blocks waiting for one.
-    Heroku Postgres mandates SSL; sslmode=require is passed explicitly so
-    the connection never fails with an SSL negotiation error.
-    """
+    """Return the module-level connection pool, creating it on first call."""
     global _pool
     if _pool is None:
         db_url = os.environ.get("DATABASE_URL", "")
@@ -111,19 +96,23 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
                 "DATABASE_URL environment variable is not set. "
                 "Add it to your Heroku config vars."
             )
-        # Heroku postgres URLs start with postgres:// but psycopg2 requires
-        # postgresql:// — fix it silently.
+        # Heroku Postgres URLs start with postgres:// but psycopg2
+        # requires postgresql:// — fix silently.
         if db_url.startswith("postgres://"):
             db_url = "postgresql://" + db_url[len("postgres://"):]
+
+        # NOTE: do NOT pass sslmode as a kwarg — Heroku’s DSN already
+        # contains sslmode=require in the query string. Passing it again
+        # as a keyword argument causes a libpq conflict that breaks every
+        # connection silently.
         try:
             _pool = pg_pool.ThreadedConnectionPool(
-                minconn=2,
+                minconn=1,
                 maxconn=10,
                 dsn=db_url,
                 cursor_factory=psycopg2.extras.RealDictCursor,
-                sslmode="require",
             )
-            logger.info("PostgreSQL connection pool created (min=2 max=10).")
+            logger.info("PostgreSQL connection pool created (min=1 max=10).")
             atexit.register(_close_pool)
         except psycopg2.Error as exc:
             raise DbError(f"Failed to create connection pool: {exc}", cause=exc) from exc
@@ -131,7 +120,7 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
 
 
 def _close_pool():
-    """Close all connections in the pool on dyno shutdown."""
+    """Close all connections on dyno shutdown."""
     global _pool
     if _pool is not None:
         try:
@@ -145,37 +134,19 @@ def _close_pool():
 @contextmanager
 def _get_conn():
     """
-    Context manager: borrow a connection from the pool, yield it,
-    commit on clean exit, rollback + re-raise on exception.
-    The connection is always returned to the pool in the finally block.
+    Borrow a connection from the pool, yield it, commit on clean exit.
 
-    If the borrowed connection has gone stale (e.g. Heroku killed it after
-    the 5-minute idle timeout), psycopg2 raises an OperationalError on the
-    first execute. We catch that, discard the bad connection, open a fresh
-    one, and retry once — transparent to the caller.
+    The connection is returned to the pool exactly once. A `_returned`
+    flag prevents the double-putconn bug where an exception handler and
+    the finally block both try to return the same connection, corrupting
+    the pool and causing every subsequent request to fail.
     """
     p = _get_pool()
     conn = p.getconn()
+    _returned = False
     try:
-        # Proactively reset the connection state so stale connections
-        # don't carry over uncommitted transactions from previous requests.
-        if conn.closed:
-            p.putconn(conn, close=True)
-            conn = p.getconn()
         yield conn
         conn.commit()
-    except psycopg2.OperationalError as exc:
-        # Connection may have been dropped by Heroku's 5-min idle timeout.
-        # Roll back, discard, and let the pool create a fresh one next call.
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        try:
-            p.putconn(conn, close=True)
-        except Exception:
-            pass
-        raise DbError(f"Database connection lost (will recover on retry): {exc}", cause=exc) from exc
     except psycopg2.Error as exc:
         try:
             conn.rollback()
@@ -189,10 +160,12 @@ def _get_conn():
             pass
         raise
     finally:
-        try:
-            p.putconn(conn)
-        except Exception:
-            pass
+        if not _returned:
+            _returned = True
+            try:
+                p.putconn(conn)
+            except Exception as e:
+                logger.warning("putconn failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
