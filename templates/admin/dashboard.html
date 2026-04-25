@@ -4,142 +4,454 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Indus Warehouse — Admin</title>
-  <link rel="stylesheet" href="/static/css/admin.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:#0f1117; --surface:#1a1d27; --surface2:#22263a;
+      --border:#2e3347; --text:#e2e8f0; --muted:#8892a4;
+      --ok:#22c55e; --err:#ef4444; --warn:#f59e0b;
+      --info:#60a5fa; --primary:#6366f1;
+      --font: 'Inter', system-ui, sans-serif;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
+    /* ── Header ── */
+    .hdr{display:flex;align-items:center;justify-content:space-between;
+         padding:14px 24px;background:var(--surface);border-bottom:1px solid var(--border);gap:12px;flex-wrap:wrap}
+    .hdr h1{font-size:16px;font-weight:600;letter-spacing:.02em}
+    .hdr-right{display:flex;align-items:center;gap:12px}
+    .conn{font-size:12px;font-weight:500;padding:4px 10px;border-radius:20px;
+          background:var(--surface2);border:1px solid var(--border)}
+    .conn.ok{color:var(--ok);border-color:#166534}
+    .conn.err{color:var(--err);border-color:#7f1d1d}
+    .refresh-btn{background:var(--primary);color:#fff;border:none;border-radius:6px;
+                 padding:6px 14px;font-size:13px;cursor:pointer;font-weight:500}
+    .refresh-btn:hover{opacity:.85}
+    /* ── KPI Grid ── */
+    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding:20px 24px 8px}
+    .kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
+    .kpi-num{font-size:28px;font-weight:700;line-height:1.1}
+    .kpi-lbl{font-size:11px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
+    .ok{color:var(--ok)} .err{color:var(--err)} .warn{color:var(--warn)} .info{color:var(--info)}
+    /* ── Tabs ── */
+    .tabs{display:flex;gap:4px;padding:16px 24px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+    .tab{background:none;border:none;color:var(--muted);padding:8px 16px;cursor:pointer;
+         font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px;font-weight:500}
+    .tab:hover{color:var(--text)}
+    .tab.on{color:var(--primary);border-bottom-color:var(--primary)}
+    .tab-pane{display:none;padding:20px 24px}
+    .tab-pane.on{display:block}
+    /* ── Tables ── */
+    .tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border)}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    thead tr{background:var(--surface2)}
+    th{padding:10px 12px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;
+       letter-spacing:.06em;color:var(--muted);white-space:nowrap;border-bottom:1px solid var(--border)}
+    td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+    tbody tr:hover{background:var(--surface2)}
+    tbody tr:last-child td{border-bottom:none}
+    td strong{color:var(--text)}
+    /* ── Tags ── */
+    .tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+    .tok{background:#14532d;color:#86efac} .terr{background:#7f1d1d;color:#fca5a5}
+    .twarn{background:#78350f;color:#fde68a} .tinfo{background:#1e3a5f;color:#93c5fd}
+    /* ── Charts ── */
+    .chart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:16px}
+    .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px}
+    .chart-card h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+    .chart-wrap{position:relative;height:220px}
+    /* ── Empty / Loading ── */
+    .empty{padding:40px;text-align:center;color:var(--muted);font-size:13px}
+    /* ── Operator table ── */
+    .op-name{font-weight:600;color:var(--text)}
+    .section-hdr{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+                 color:var(--muted);margin-bottom:10px}
+  </style>
 </head>
 <body>
-<header class="admin-hdr">
-  <h1>Indus Warehouse — Admin Dashboard</h1>
-  <div>
+
+<!-- Header -->
+<header class="hdr">
+  <h1>🏭 Indus Warehouse &mdash; Admin Dashboard</h1>
+  <div class="hdr-right">
     <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
-    <span class="conn-status" id="connStatus">checking...</span>
+    <span class="conn" id="connStatus">● checking...</span>
   </div>
 </header>
 
-<div class="admin-wrap">
-  <!-- Stats Cards -->
-  <div class="stats-grid" id="statsGrid">
-    <div class="stat-card"><div class="stat-num" id="sMov">—</div><div class="stat-lbl">Movements</div></div>
-    <div class="stat-card"><div class="stat-num ok" id="sIn">—</div><div class="stat-lbl">Pallets IN</div></div>
-    <div class="stat-card"><div class="stat-num err" id="sOut">—</div><div class="stat-lbl">Pallets OUT</div></div>
-    <div class="stat-card"><div class="stat-num warn" id="sOver">—</div><div class="stat-lbl">Overrides</div></div>
-    <div class="stat-card"><div class="stat-num err" id="sErr">—</div><div class="stat-lbl">Errors</div></div>
-    <div class="stat-card"><div class="stat-num warn" id="sPend">—</div><div class="stat-lbl">Pending Keys</div></div>
-  </div>
+<!-- KPI Strip -->
+<div class="kpi-grid">
+  <div class="kpi"><div class="kpi-num" id="kMov">—</div><div class="kpi-lbl">Total Movements</div></div>
+  <div class="kpi"><div class="kpi-num ok" id="kIn">—</div><div class="kpi-lbl">Pallets IN</div></div>
+  <div class="kpi"><div class="kpi-num err" id="kOut">—</div><div class="kpi-lbl">Pallets OUT</div></div>
+  <div class="kpi"><div class="kpi-num warn" id="kOver">—</div><div class="kpi-lbl">Overrides</div></div>
+  <div class="kpi"><div class="kpi-num err" id="kErr">—</div><div class="kpi-lbl">Errors</div></div>
+  <div class="kpi"><div class="kpi-num info" id="kIvtToday">—</div><div class="kpi-lbl">IVT Today</div></div>
+  <div class="kpi"><div class="kpi-num info" id="kIvtTotal">—</div><div class="kpi-lbl">IVT Total</div></div>
+  <div class="kpi"><div class="kpi-num warn" id="kPend">—</div><div class="kpi-lbl">Pending Sync</div></div>
+</div>
 
-  <!-- Tabs -->
-  <div class="tabs">
-    <button class="tab on" onclick="switchTab('movements',this)">Movements</button>
-    <button class="tab" onclick="switchTab('statuses',this)">Pallet Status</button>
-    <button class="tab" onclick="switchTab('errors',this)">Error Log</button>
-  </div>
+<!-- Tabs -->
+<div class="tabs">
+  <button class="tab on"  onclick="tab('movements',this)">📦 Movements</button>
+  <button class="tab"     onclick="tab('statuses',this)">🟢 Pallet Status</button>
+  <button class="tab"     onclick="tab('analytics',this)">📊 Analytics</button>
+  <button class="tab"     onclick="tab('ivt',this)">🔍 IVT Scans</button>
+  <button class="tab"     onclick="tab('errors',this)">⚠️ Errors</button>
+</div>
 
-  <div class="tab-content on" id="tab-movements"><div class="empty">Loading...</div></div>
-  <div class="tab-content" id="tab-statuses"><div class="empty">Loading...</div></div>
-  <div class="tab-content" id="tab-errors"><div class="empty">Loading...</div></div>
+<!-- Tab: Movements -->
+<div class="tab-pane on" id="pane-movements">
+  <div class="tbl-wrap" id="tbl-movements"><div class="empty">Loading…</div></div>
+</div>
+
+<!-- Tab: Pallet Status -->
+<div class="tab-pane" id="pane-statuses">
+  <div class="tbl-wrap" id="tbl-statuses"><div class="empty">Loading…</div></div>
+</div>
+
+<!-- Tab: Analytics -->
+<div class="tab-pane" id="pane-analytics">
+  <div class="chart-grid">
+    <div class="chart-card" style="grid-column:1/-1">
+      <h3>Daily Movement Volume — last 30 days</h3>
+      <div class="chart-wrap"><canvas id="cVelocity"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Pallets by Location (currently IN)</h3>
+      <div class="chart-wrap"><canvas id="cLocation"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Top Parts in Warehouse</h3>
+      <div class="chart-wrap"><canvas id="cParts"></canvas></div>
+    </div>
+    <div class="chart-card" style="grid-column:1/-1">
+      <h3>Operator Activity — last 30 days</h3>
+      <div id="tbl-operators"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Tab: IVT Scans -->
+<div class="tab-pane" id="pane-ivt">
+  <div class="chart-grid" style="margin-bottom:16px">
+    <div class="chart-card">
+      <h3>IVT Daily Scans — last 14 days</h3>
+      <div class="chart-wrap"><canvas id="cIvt"></canvas></div>
+    </div>
+  </div>
+  <div class="tbl-wrap" id="tbl-ivt"><div class="empty">Loading…</div></div>
+</div>
+
+<!-- Tab: Errors -->
+<div class="tab-pane" id="pane-errors">
+  <div class="tbl-wrap" id="tbl-errors"><div class="empty">Loading…</div></div>
 </div>
 
 <script>
-function switchTab(name, el) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('on'));
-  el.classList.add('on');
-  document.getElementById('tab-' + name).classList.add('on');
+// ── Chart instances (kept so we can destroy before redraw) ─────────────────
+const charts = {};
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
 }
 
+// ── Tab switching ──────────────────────────────────────────────────────────
+function tab(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('on'));
+  el.classList.add('on');
+  document.getElementById('pane-' + name).classList.add('on');
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 function tag(text, cls) {
   return `<span class="tag ${cls}">${text}</span>`;
 }
-
-async function loadStats() {
+function fmtTime(iso) {
+  if (!iso) return '—';
   try {
-    const r = await fetch('/admin/api/stats');
-    const d = await r.json();
-    document.getElementById('sMov').textContent = d.total_movements || 0;
-    document.getElementById('sIn').textContent = d.pallets_in || 0;
-    document.getElementById('sOut').textContent = d.pallets_out || 0;
-    document.getElementById('sOver').textContent = d.override_count || 0;
-    document.getElementById('sErr').textContent = d.total_errors || 0;
-    document.getElementById('sPend').textContent = d.pending_keys || 0;
-  } catch(e) { console.error('Stats failed:', e); }
+    const d = new Date(iso);
+    return d.toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',
+                                       hour:'2-digit',minute:'2-digit',hour12:false});
+  } catch { return iso; }
 }
 
-async function loadMovements() {
-  try {
-    const r = await fetch('/admin/api/movements?limit=100');
-    const d = await r.json();
-    const rows = d.movements || [];
-    if (!rows.length) { document.getElementById('tab-movements').innerHTML = '<div class="empty">No movements yet.</div>'; return; }
-    let html = '<table><thead><tr><th>Event ID</th><th>Time (UTC)</th><th>HU</th><th>Indus Part</th><th>Type</th><th>Location</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>';
-    for (const m of rows) {
-      const typeTag = m.Movement_Type === 'STOCK_IN' ? tag('IN','tag-ok') : tag('OUT','tag-err');
-      const syncTag = m.Sync_Status === 'SYNCED' ? tag('SYNCED','tag-ok') : tag(m.Sync_Status,'tag-warn');
-      let valTag = tag(m.Validation_Status || '—','tag-info');
-      if (m.Validation_Status === 'OVERRIDE') valTag = tag('OVERRIDE','tag-warn');
-      if (m.Validation_Status === 'REJECTED') valTag = tag('REJECTED','tag-err');
-      html += `<tr><td>${m.Event_ID||''}</td><td>${m.Timestamp_UTC||''}</td><td><strong>${m.Handling_Unit||''}</strong></td><td>${m.Indus_Part||''}</td><td>${typeTag}</td><td>${m.Location||'—'}</td><td>${m.Operator_ID||''}</td><td>${syncTag}</td><td>${valTag}</td></tr>`;
-    }
-    html += '</tbody></table>';
-    document.getElementById('tab-movements').innerHTML = html;
-  } catch(e) { document.getElementById('tab-movements').innerHTML = '<div class="empty">Failed to load.</div>'; }
-}
-
-async function loadStatuses() {
-  try {
-    const r = await fetch('/admin/api/pallet-statuses');
-    const d = await r.json();
-    const rows = d.statuses || [];
-    if (!rows.length) { document.getElementById('tab-statuses').innerHTML = '<div class="empty">No pallet statuses.</div>'; return; }
-    let html = '<table><thead><tr><th>HU</th><th>Status</th><th>Last Event</th><th>Last Movement</th><th>Last Time</th><th>Last Location</th></tr></thead><tbody>';
-    for (const s of rows) {
-      const stTag = s.Current_Status === 'IN_WAREHOUSE' ? tag('IN','tag-ok') : s.Current_Status === 'OUT_OF_WAREHOUSE' ? tag('OUT','tag-err') : tag(s.Current_Status||'—','tag-info');
-      html += `<tr><td><strong>${s.Handling_Unit||''}</strong></td><td>${stTag}</td><td>${s.Last_Event_ID||''}</td><td>${s.Last_Movement_Type||''}</td><td>${s.Last_Movement_Time||''}</td><td>${s.Last_Location||'—'}</td></tr>`;
-    }
-    html += '</tbody></table>';
-    document.getElementById('tab-statuses').innerHTML = html;
-  } catch(e) { document.getElementById('tab-statuses').innerHTML = '<div class="empty">Failed to load.</div>'; }
-}
-
-async function loadErrors() {
-  try {
-    const r = await fetch('/admin/api/errors');
-    const d = await r.json();
-    const rows = d.errors || [];
-    if (!rows.length) { document.getElementById('tab-errors').innerHTML = '<div class="empty">No errors logged.</div>'; return; }
-    let html = '<table><thead><tr><th>Error ID</th><th>Time (UTC)</th><th>HU</th><th>Stage</th><th>Code</th><th>Message</th><th>Resolved</th></tr></thead><tbody>';
-    for (const e of rows) {
-      const resTag = e.Resolved_Flag === 'YES' ? tag('YES','tag-ok') : tag('NO','tag-err');
-      html += `<tr><td>${e.Error_ID||''}</td><td>${e.Timestamp_UTC||''}</td><td>${e.Handling_Unit||''}</td><td>${e.Stage||''}</td><td>${e.Error_Code||''}</td><td title="${e.Error_Message||''}">${(e.Error_Message||'').substring(0,80)}</td><td>${resTag}</td></tr>`;
-    }
-    html += '</tbody></table>';
-    document.getElementById('tab-errors').innerHTML = html;
-  } catch(e) { document.getElementById('tab-errors').innerHTML = '<div class="empty">Failed to load.</div>'; }
-}
-
+// ── Connection test ────────────────────────────────────────────────────────
 async function checkConn() {
+  const el = document.getElementById('connStatus');
   try {
     const r = await fetch('/admin/api/connection-test');
     const d = await r.json();
-    const el = document.getElementById('connStatus');
-    if (d.status === 'connected') {
-      el.textContent = '● Connected';
-      el.className = 'conn-status ok';
+    if (d.status === 'ok' && d.db) {
+      el.textContent = '● DB Connected';
+      el.className = 'conn ok';
     } else {
-      el.textContent = '● ' + (d.message || 'Error');
-      el.className = 'conn-status err';
+      el.textContent = '● DB Error';
+      el.className = 'conn err';
     }
   } catch(e) {
-    const el = document.getElementById('connStatus');
     el.textContent = '● Offline';
-    el.className = 'conn-status err';
+    el.className = 'conn err';
   }
 }
 
+// ── Stats / KPIs ───────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const d = await fetch('/admin/api/stats').then(r => r.json());
+    document.getElementById('kMov').textContent      = d.total_movements  ?? '—';
+    document.getElementById('kIn').textContent       = d.pallets_in       ?? '—';
+    document.getElementById('kOut').textContent      = d.pallets_out      ?? '—';
+    document.getElementById('kOver').textContent     = d.override_count   ?? '—';
+    document.getElementById('kErr').textContent      = d.total_errors     ?? '—';
+    document.getElementById('kIvtToday').textContent = d.ivt_today        ?? '—';
+    document.getElementById('kIvtTotal').textContent = d.ivt_total        ?? '—';
+    document.getElementById('kPend').textContent     = d.pending_keys     ?? '—';
+  } catch(e) { console.error('Stats error', e); }
+}
+
+// ── Movements table ────────────────────────────────────────────────────────
+async function loadMovements() {
+  const el = document.getElementById('tbl-movements');
+  try {
+    const d = await fetch('/admin/api/movements?limit=100').then(r => r.json());
+    const rows = d.movements || [];
+    if (!rows.length) { el.innerHTML = '<div class="empty">No movements yet.</div>'; return; }
+    let h = `<table><thead><tr>
+      <th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Qty</th>
+      <th>Type</th><th>Location</th><th>Operator</th><th>Device</th><th>Sync</th><th>Validation</th>
+    </tr></thead><tbody>`;
+    for (const m of rows) {
+      const mt = (m.movement_type||'').toUpperCase();
+      const typeTag = mt==='STOCK_IN' ? tag('IN','tok') : mt==='STOCK_OUT' ? tag('OUT','terr') : tag(mt,'tinfo');
+      const sync = (m.sync_status||'').toUpperCase();
+      const syncTag = sync==='SYNCED' ? tag('SYNCED','tok') : tag(sync,'twarn');
+      const vs = (m.validation_status||'').toUpperCase();
+      const valTag = vs==='VALID' ? tag('VALID','tok') : vs==='OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs||'—','terr');
+      h += `<tr>
+        <td>${fmtTime(m.timestamp_dubai)}</td>
+        <td><strong>${m.handling_unit||''}</strong></td>
+        <td>${m.indus_part||'—'}</td>
+        <td>${m.pallet_qty||'—'}</td>
+        <td>${typeTag}</td>
+        <td>${m.location||'—'}</td>
+        <td>${m.operator_id||'—'}</td>
+        <td>${m.device_id||'—'}</td>
+        <td>${syncTag}</td>
+        <td>${valTag}</td>
+      </tr>`;
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { el.innerHTML = '<div class="empty">Failed to load movements.</div>'; }
+}
+
+// ── Pallet Status table ────────────────────────────────────────────────────
+async function loadStatuses() {
+  const el = document.getElementById('tbl-statuses');
+  try {
+    const d = await fetch('/admin/api/pallet-statuses').then(r => r.json());
+    const rows = d.statuses || [];
+    if (!rows.length) { el.innerHTML = '<div class="empty">No pallet statuses recorded yet.</div>'; return; }
+    let h = `<table><thead><tr>
+      <th>HU</th><th>Status</th><th>Last Movement</th><th>Last Time (Dubai)</th>
+      <th>Location</th><th>Indus Part</th><th>Qty</th>
+    </tr></thead><tbody>`;
+    for (const s of rows) {
+      const cs = (s.current_status||'').toUpperCase();
+      const stTag = cs==='IN_WAREHOUSE' ? tag('IN','tok') : cs==='OUT_OF_WAREHOUSE' ? tag('OUT','terr') : tag(cs||'—','tinfo');
+      const mt = (s.last_movement_type||'').toUpperCase();
+      const mtTag = mt==='STOCK_IN' ? tag('IN','tok') : mt==='STOCK_OUT' ? tag('OUT','terr') : tag(mt||'—','tinfo');
+      h += `<tr>
+        <td><strong>${s.handling_unit||''}</strong></td>
+        <td>${stTag}</td>
+        <td>${mtTag}</td>
+        <td>${fmtTime(s.last_movement_time_dubai)}</td>
+        <td>${s.last_location||'—'}</td>
+        <td>${s.indus_part||'—'}</td>
+        <td>${s.pallet_qty||'—'}</td>
+      </tr>`;
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { el.innerHTML = '<div class="empty">Failed to load statuses.</div>'; }
+}
+
+// ── Errors table ───────────────────────────────────────────────────────────
+async function loadErrors() {
+  const el = document.getElementById('tbl-errors');
+  try {
+    const d = await fetch('/admin/api/errors').then(r => r.json());
+    const rows = d.errors || [];
+    if (!rows.length) { el.innerHTML = '<div class="empty">No errors logged. 🎉</div>'; return; }
+    let h = `<table><thead><tr>
+      <th>Time (Dubai)</th><th>HU</th><th>Movement Type</th><th>Validation</th>
+      <th>Operator</th><th>Location</th><th>Sync</th>
+    </tr></thead><tbody>`;
+    for (const e of rows) {
+      const mt = (e.movement_type||'').toUpperCase();
+      const mtTag = mt==='ERROR' ? tag('ERROR','terr') : mt==='STOCK_IN' ? tag('IN','tok') : tag(mt||'—','tinfo');
+      const vs = (e.validation_status||'').toUpperCase();
+      const vsTag = vs==='VALID' ? tag('VALID','tok') : vs==='OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs||'—','terr');
+      h += `<tr>
+        <td>${fmtTime(e.timestamp_dubai)}</td>
+        <td><strong>${e.handling_unit||''}</strong></td>
+        <td>${mtTag}</td>
+        <td>${vsTag}</td>
+        <td>${e.operator_id||'—'}</td>
+        <td>${e.location||'—'}</td>
+        <td>${(e.sync_status||'—')}</td>
+      </tr>`;
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { el.innerHTML = '<div class="empty">Failed to load error log.</div>'; }
+}
+
+// ── Analytics charts ───────────────────────────────────────────────────────
+async function loadAnalytics() {
+  await Promise.all([loadVelocity(), loadLocationChart(), loadPartsChart(), loadOperators()]);
+}
+
+async function loadVelocity() {
+  try {
+    const d = await fetch('/admin/api/analytics/velocity').then(r => r.json());
+    const rows = d.rows || [];
+    const days = [...new Set(rows.map(r => r.day))].sort();
+    const inData  = days.map(day => { const r = rows.find(x => x.day===day && x.movement_type==='STOCK_IN');  return r ? parseInt(r.cnt) : 0; });
+    const outData = days.map(day => { const r = rows.find(x => x.day===day && x.movement_type==='STOCK_OUT'); return r ? parseInt(r.cnt) : 0; });
+    destroyChart('velocity');
+    const ctx = document.getElementById('cVelocity').getContext('2d');
+    charts['velocity'] = new Chart(ctx, {
+      type:'bar',
+      data:{ labels:days,
+        datasets:[
+          {label:'STOCK IN',  data:inData,  backgroundColor:'#22c55e80', borderColor:'#22c55e', borderWidth:1.5},
+          {label:'STOCK OUT', data:outData, backgroundColor:'#ef444480', borderColor:'#ef4444', borderWidth:1.5}
+        ]
+      },
+      options:{ responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{labels:{color:'#8892a4',font:{size:11}}}},
+        scales:{
+          x:{ticks:{color:'#8892a4',font:{size:10},maxRotation:45},grid:{color:'#2e3347'}},
+          y:{ticks:{color:'#8892a4',font:{size:11}},grid:{color:'#2e3347'},beginAtZero:true}
+        }
+      }
+    });
+  } catch(e) { console.error('velocity chart', e); }
+}
+
+async function loadLocationChart() {
+  try {
+    const d = await fetch('/admin/api/analytics/by-location').then(r => r.json());
+    const rows = d.rows || [];
+    if (!rows.length) return;
+    const colors = ['#6366f1','#22c55e','#f59e0b','#60a5fa','#ec4899','#14b8a6','#f97316'];
+    destroyChart('location');
+    const ctx = document.getElementById('cLocation').getContext('2d');
+    charts['location'] = new Chart(ctx, {
+      type:'doughnut',
+      data:{ labels:rows.map(r=>r.location),
+             datasets:[{data:rows.map(r=>parseInt(r.pallet_count)), backgroundColor:colors, borderWidth:0}] },
+      options:{ responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{position:'right', labels:{color:'#8892a4',font:{size:11},boxWidth:12}}}
+      }
+    });
+  } catch(e) { console.error('location chart', e); }
+}
+
+async function loadPartsChart() {
+  try {
+    const d = await fetch('/admin/api/analytics/by-part').then(r => r.json());
+    const rows = d.rows || [];
+    if (!rows.length) return;
+    destroyChart('parts');
+    const ctx = document.getElementById('cParts').getContext('2d');
+    charts['parts'] = new Chart(ctx, {
+      type:'bar',
+      data:{ labels:rows.map(r=>r.part),
+             datasets:[{label:'Pallets',data:rows.map(r=>parseInt(r.pallet_count)),
+                        backgroundColor:'#6366f180',borderColor:'#6366f1',borderWidth:1.5}] },
+      options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{display:false}},
+        scales:{
+          x:{ticks:{color:'#8892a4',font:{size:10}},grid:{color:'#2e3347'},beginAtZero:true},
+          y:{ticks:{color:'#8892a4',font:{size:10}},grid:{display:false}}
+        }
+      }
+    });
+  } catch(e) { console.error('parts chart', e); }
+}
+
+async function loadOperators() {
+  const el = document.getElementById('tbl-operators');
+  try {
+    const d = await fetch('/admin/api/analytics/operators').then(r => r.json());
+    const rows = d.rows || [];
+    if (!rows.length) { el.innerHTML = '<div class="empty">No operator activity in last 30 days.</div>'; return; }
+    // pivot: operator → {STOCK_IN, STOCK_OUT, last_active}
+    const ops = {};
+    for (const r of rows) {
+      if (!ops[r.operator]) ops[r.operator] = {in:0, out:0, last:r.last_active};
+      if (r.movement_type==='STOCK_IN')  ops[r.operator].in  = parseInt(r.cnt);
+      if (r.movement_type==='STOCK_OUT') ops[r.operator].out = parseInt(r.cnt);
+      if (r.last_active > ops[r.operator].last) ops[r.operator].last = r.last_active;
+    }
+    let h = `<table><thead><tr><th>Operator</th><th>IN</th><th>OUT</th><th>Total</th><th>Last Active (Dubai)</th></tr></thead><tbody>`;
+    for (const [op, v] of Object.entries(ops)) {
+      h += `<tr><td class="op-name">${op}</td><td class="ok">${v.in}</td><td class="err">${v.out}</td><td>${v.in+v.out}</td><td>${fmtTime(v.last)}</td></tr>`;
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { el.innerHTML = '<div class="empty">Failed to load operator data.</div>'; }
+}
+
+// ── IVT tab ────────────────────────────────────────────────────────────────
+async function loadIvt() {
+  try {
+    const d = await fetch('/admin/api/analytics/ivt').then(r => r.json());
+    // daily chart
+    const daily = d.daily || [];
+    destroyChart('ivt');
+    if (daily.length) {
+      const ctx = document.getElementById('cIvt').getContext('2d');
+      charts['ivt'] = new Chart(ctx, {
+        type:'line',
+        data:{ labels:daily.map(r=>r.day),
+               datasets:[{label:'Scans',data:daily.map(r=>parseInt(r.cnt)),
+                          borderColor:'#60a5fa',backgroundColor:'#60a5fa20',fill:true,tension:.35,pointRadius:4}] },
+        options:{ responsive:true, maintainAspectRatio:false,
+          plugins:{legend:{display:false}},
+          scales:{
+            x:{ticks:{color:'#8892a4',font:{size:10}},grid:{color:'#2e3347'}},
+            y:{ticks:{color:'#8892a4',font:{size:11}},grid:{color:'#2e3347'},beginAtZero:true}
+          }
+        }
+      });
+    }
+    // table
+    const el = document.getElementById('tbl-ivt');
+    const rows = d.recent || [];
+    if (!rows.length) { el.innerHTML = '<div class="empty">No IVT scans yet.</div>'; return; }
+    let h = `<table><thead><tr><th>Code</th><th>Scanned At</th><th>Location</th></tr></thead><tbody>`;
+    for (const r of rows) {
+      h += `<tr><td style="font-family:monospace;font-size:12px">${r.code}</td><td>${r.scanned_date||'—'}</td><td>${r.location||'—'}</td></tr>`;
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { console.error('IVT load error', e); }
+}
+
+// ── Master load ────────────────────────────────────────────────────────────
 function loadAll() {
   checkConn();
   loadStats();
   loadMovements();
   loadStatuses();
   loadErrors();
+  loadAnalytics();
+  loadIvt();
 }
 
 document.addEventListener('DOMContentLoaded', loadAll);
