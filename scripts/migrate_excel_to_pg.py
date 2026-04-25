@@ -528,6 +528,7 @@ def migrate_ivt(headers, rows, cur):
  
  
 def main():
+    print("Hello World")
     parser = argparse.ArgumentParser(description='Migrate Excel workbook to Postgres.')
     parser.add_argument('--force', action='store_true',
                         help='Truncate movements + pallet_status then re-migrate from scratch.')
