@@ -9,6 +9,11 @@
    manually enters the Indus Part and Qty. Movement is then posted
    normally with is_override=true and the raw supervisor PIN.
 
+   STOCK_OUT: after the worker taps STOCK OUT and selects a location,
+   a destination picker appears before the movement is posted. The
+   list of destinations is loaded once from GET /api/destinations on
+   DOMContentLoaded and cached in _destinations[].
+
    QR codes are no longer scanned. Camera is barcode-only.
    ═══════════════════════════════════════════════════════════ */
 'use strict';
@@ -42,6 +47,14 @@ let movementInFlight = false;
 // ── Location modal state ──
 let _pendingMovementType = '';   // 'STOCK_IN' or 'STOCK_OUT'
 let _selectedLocation = '';      // chosen location value
+
+// ── Destination picker state (STOCK_OUT only) ──
+let _destinations = [];          // loaded once from /api/destinations
+let _selectedDestination = '';   // chosen to_location value
+
+// ── Pallet status from lookup (used to pre-fill from_location display) ──
+let _lookupLastLocation = '';    // last_location returned by /api/lookup-hu
+let _lookupCurrentStatus = '';   // current_status returned by /api/lookup-hu
 
 // ── Device identity ──
 // deviceId is a stable random ID stored in localStorage.
@@ -105,8 +118,10 @@ function updateOnlineStatus() {
 }
 window.addEventListener('online', updateOnlineStatus);
 window.addEventListener('offline', updateOnlineStatus);
+
 document.addEventListener('DOMContentLoaded', () => {
   updateOnlineStatus();
+  _loadDestinations();
 });
 
 function updatePendingBadge() {
@@ -118,6 +133,40 @@ function updatePendingBadge() {
 }
 setInterval(updatePendingBadge, 5000);
 document.addEventListener('DOMContentLoaded', updatePendingBadge);
+
+
+// ═══════════════════════════════════════════════════════════
+//  DESTINATION LIST — loaded once on boot from /api/destinations
+// ═══════════════════════════════════════════════════════════
+
+function _loadDestinations() {
+  fetch('/api/destinations')
+    .then(r => r.json())
+    .then(data => {
+      if (data.destinations && data.destinations.length) {
+        _destinations = data.destinations;
+        _buildDestinationOptions();
+      }
+    })
+    .catch(err => {
+      // Non-fatal — destination list falls back to pre-rendered options in HTML
+      console.warn('Could not load destinations:', err);
+    });
+}
+
+function _buildDestinationOptions() {
+  const grid = document.getElementById('destGrid');
+  if (!grid || !_destinations.length) return;
+  grid.innerHTML = '';
+  _destinations.forEach(dest => {
+    const btn = document.createElement('button');
+    btn.className = 'dest-btn';
+    btn.dataset.dest = dest;
+    btn.textContent = dest;
+    btn.onclick = () => selectDestination(dest);
+    grid.appendChild(btn);
+  });
+}
 
 
 // ═══════════════════════════════════════════════════════════
@@ -245,7 +294,7 @@ async function _doSAPLookup(hu) {
   const btn = document.getElementById('btnLookupHU');
   if (btn) btn.disabled = true;
 
-  showSpinner('Looking up in SAP\u2026');
+  showSpinner('Looking up\u2026');
 
   try {
     const resp = await fetch('/api/lookup-hu', {
@@ -257,7 +306,7 @@ async function _doSAPLookup(hu) {
     const data = await resp.json();
 
     if (data.success) {
-      // ── Normal path: SAP found the HU ──
+      // ── Normal path: found in pallet_status or SAP ──
       scanned.handling_unit = data.handling_unit;
       scanned.indus_part    = data.indus_part;
       scanned.pallet_qty    = data.pallet_qty;
@@ -265,24 +314,32 @@ async function _doSAPLookup(hu) {
       _isNotFoundOverride   = false;
       _nfoSupervisorPin     = '';
 
+      // Store location/status for STOCK_OUT destination card pre-fill
+      _lookupLastLocation  = data.last_location    || '';
+      _lookupCurrentStatus = data.current_status   || '';
+
       updateScanDisplay();
-      toast(`Found: ${data.indus_part} \u00d7 ${data.pallet_qty}`, 'ok', 3000);
+
+      const sourceLabel = data.source === 'pallet_status' ? 'Warehouse record' : 'SAP';
+      toast(`Found (${sourceLabel}): ${data.indus_part} \u00d7 ${data.pallet_qty}`, 'ok', 3000);
 
       const proceedBtn = document.getElementById('btnProceed');
       if (proceedBtn) proceedBtn.disabled = false;
 
     } else if (data.error_code === 'HU_NOT_FOUND') {
-      // ── Override path: HU not in SAP but physically in warehouse ──
+      // ── Override path: HU not in SAP or pallet_status ──
+      _lookupLastLocation  = '';
+      _lookupCurrentStatus = '';
       _openNotFoundOverrideModal(hu);
 
     } else {
       // ── All other failures (network, auth, parse) ──
-      toast(data.message || 'SAP lookup failed. Try again.', 'fail', 6000);
+      toast(data.message || 'Lookup failed. Try again.', 'fail', 6000);
       _resetLookupState();
     }
 
   } catch (err) {
-    console.error('SAP lookup network error:', err);
+    console.error('Lookup network error:', err);
     toast('Cannot reach server. Check network and try again.', 'fail', 6000);
     _resetLookupState();
   } finally {
@@ -293,13 +350,14 @@ async function _doSAPLookup(hu) {
 }
 
 function _resetLookupState() {
-  // Do NOT clear the input so the user can try again without re-typing
   scanned.handling_unit = '';
   scanned.indus_part    = '';
   scanned.pallet_qty    = '';
   scanned.customer_part = '';
   _isNotFoundOverride   = false;
   _nfoSupervisorPin     = '';
+  _lookupLastLocation   = '';
+  _lookupCurrentStatus  = '';
   updateScanDisplay();
   const proceedBtn = document.getElementById('btnProceed');
   if (proceedBtn) proceedBtn.disabled = true;
@@ -308,30 +366,17 @@ function _resetLookupState() {
 
 // ═══════════════════════════════════════════════════════════
 //  SAP-NOT-FOUND SUPERVISOR OVERRIDE MODAL
-//
-//  Triggered only when error_code === 'HU_NOT_FOUND'.
-//  Flow:
-//    1. Show modal with HU number and explanation
-//    2. Supervisor enters PIN → validated against /api/validate-pin
-//       On success the PIN is stored in _nfoSupervisorPin.
-//    3. Worker fills Indus Part + Qty and taps CONFIRM.
-//    4. scanned state populated → PROCEED button enabled.
-//       Movement is posted with is_override=true and
-//       supervisor_pin = _nfoSupervisorPin.
 // ═══════════════════════════════════════════════════════════
 
 function _openNotFoundOverrideModal(hu) {
   _notFoundOverrideHU = hu;
-  _nfoSupervisorPin   = '';  // clear any stale PIN
+  _nfoSupervisorPin   = '';
 
-  // Populate the HU display inside the modal
   const huSpan = document.getElementById('nfoHUDisplay');
   if (huSpan) huSpan.textContent = hu;
 
-  // Reset the modal to step 1 (PIN entry)
   _showNFOStep('pin');
 
-  // Clear any previous inputs
   const pinInput  = document.getElementById('nfoPinInput');
   const partInput = document.getElementById('nfoIndusPart');
   const qtyInput  = document.getElementById('nfoQty');
@@ -339,7 +384,6 @@ function _openNotFoundOverrideModal(hu) {
   if (partInput) partInput.value = '';
   if (qtyInput)  qtyInput.value  = '';
 
-  // Clear any previous PIN error and re-enable verify button
   const pinErr    = document.getElementById('nfoPinError');
   const verifyBtn = document.getElementById('nfoBtnVerifyPin');
   if (pinErr)    pinErr.textContent = '';
@@ -349,14 +393,12 @@ function _openNotFoundOverrideModal(hu) {
 }
 
 function _showNFOStep(step) {
-  // step: 'pin' | 'fields'
   const pinStep    = document.getElementById('nfoStepPin');
   const fieldsStep = document.getElementById('nfoStepFields');
   if (pinStep)    pinStep.style.display    = (step === 'pin')    ? '' : 'none';
   if (fieldsStep) fieldsStep.style.display = (step === 'fields') ? '' : 'none';
 }
 
-// Called when supervisor taps VERIFY PIN in the not-found override modal
 async function nfoVerifyPin() {
   const pinInput  = document.getElementById('nfoPinInput');
   const pinErr    = document.getElementById('nfoPinError');
@@ -380,24 +422,19 @@ async function nfoVerifyPin() {
     const data = await resp.json();
 
     if (data.valid) {
-      // ── Correct PIN — store it and show the fields step ──
       _nfoSupervisorPin = pin;
       _showNFOStep('fields');
-
     } else {
-      // ── Wrong PIN ──
       if (pinErr) pinErr.textContent = data.message || 'Incorrect PIN. Please try again.';
       if (pinInput) { pinInput.value = ''; pinInput.focus(); }
       if (verifyBtn) verifyBtn.disabled = false;
     }
-
   } catch (e) {
     if (pinErr)    pinErr.textContent = 'Network error. Try again.';
     if (verifyBtn) verifyBtn.disabled = false;
   }
 }
 
-// Called when worker taps CONFIRM in the fields step of the not-found override modal
 function nfoConfirmFields() {
   const partInput = document.getElementById('nfoIndusPart');
   const qtyInput  = document.getElementById('nfoQty');
@@ -406,7 +443,6 @@ function nfoConfirmFields() {
   const rawPart = partInput ? partInput.value.trim().toUpperCase() : '';
   const rawQty  = qtyInput  ? qtyInput.value.trim()  : '';
 
-  // Basic validation
   if (!rawPart) {
     if (fieldsErr) fieldsErr.textContent = 'Indus Part (Material) is required.';
     return;
@@ -416,25 +452,20 @@ function nfoConfirmFields() {
     if (fieldsErr) fieldsErr.textContent = 'Enter a valid quantity (whole number, at least 1).';
     return;
   }
-
-  // PIN guard: must have a stored PIN before proceeding
   if (!_nfoSupervisorPin) {
     if (fieldsErr) fieldsErr.textContent = 'Session lost. Close this and re-enter the supervisor PIN.';
     return;
   }
 
-  // Populate scanned state — same as if SAP had returned this data
   scanned.handling_unit = _notFoundOverrideHU;
   scanned.indus_part    = rawPart;
   scanned.pallet_qty    = String(qtyNum);
   scanned.customer_part = '';
   _isNotFoundOverride   = true;
 
-  // Close the modal
   document.getElementById('sapNotFoundModal').classList.remove('on');
   _notFoundOverrideHU = '';
 
-  // Update the scan display and enable PROCEED
   updateScanDisplay();
 
   const proceedBtn = document.getElementById('btnProceed');
@@ -447,12 +478,10 @@ function nfoConfirmFields() {
   );
 }
 
-// Called when supervisor/worker taps Cancel in the not-found override modal
 function nfoCancelOverride() {
   document.getElementById('sapNotFoundModal').classList.remove('on');
   _notFoundOverrideHU = '';
   _nfoSupervisorPin   = '';
-  // Full reset so no stale override state lingers
   _resetLookupState();
 }
 
@@ -466,7 +495,6 @@ function updateScanDisplay() {
   _updateField('indus', scanned.indus_part);
   _updateField('qty',   scanned.pallet_qty);
 
-  // Show/hide the SAP result card
   const card = document.getElementById('sapResultCard');
   if (card) {
     const hasData = !!(scanned.handling_unit && scanned.indus_part && scanned.pallet_qty);
@@ -500,10 +528,13 @@ function _updateField(key, val) {
 
 function resetScans() {
   scanned = { handling_unit: '', indus_part: '', customer_part: '', pallet_qty: '' };
-  sapLookupInProgress = false;
-  _isNotFoundOverride = false;
-  _notFoundOverrideHU = '';
-  _nfoSupervisorPin   = '';
+  sapLookupInProgress  = false;
+  _isNotFoundOverride  = false;
+  _notFoundOverrideHU  = '';
+  _nfoSupervisorPin    = '';
+  _lookupLastLocation  = '';
+  _lookupCurrentStatus = '';
+  _selectedDestination = '';
 
   const inp = document.getElementById('huManualInput');
   if (inp) inp.value = '';
@@ -513,7 +544,7 @@ function resetScans() {
 
 
 // ═══════════════════════════════════════════════════════════
-//  MOVEMENT SUBMISSION
+//  LOCATION MODAL
 // ═══════════════════════════════════════════════════════════
 
 function promptLocation(type) {
@@ -522,7 +553,7 @@ function promptLocation(type) {
     return;
   }
   _pendingMovementType = type;
-  _selectedLocation = '';
+  _selectedLocation    = '';
   const modal = document.getElementById('locationModal');
   const title = document.getElementById('locationModalTitle');
   const opts  = document.querySelectorAll('.loc-btn');
@@ -543,7 +574,13 @@ function selectLocation(val) {
 function confirmLocation() {
   if (!_selectedLocation) return;
   document.getElementById('locationModal').classList.remove('on');
-  doMovement(_pendingMovementType, _selectedLocation);
+
+  if (_pendingMovementType === 'STOCK_OUT') {
+    // Show destination picker before posting
+    _openDestinationModal(_selectedLocation);
+  } else {
+    doMovement(_pendingMovementType, _selectedLocation, '');
+  }
 }
 
 function cancelLocation() {
@@ -552,7 +589,65 @@ function cancelLocation() {
   _selectedLocation    = '';
 }
 
-function doMovement(type, location) {
+
+// ═══════════════════════════════════════════════════════════
+//  DESTINATION MODAL — STOCK_OUT only
+//
+//  Opens after location is confirmed for a STOCK_OUT.
+//  The worker picks where the pallet is going before the
+//  movement is posted. Skipping (tapping POST WITHOUT DEST)
+//  is allowed so old habits aren't broken on day one.
+// ═══════════════════════════════════════════════════════════
+
+function _openDestinationModal(location) {
+  _selectedDestination = '';
+
+  // Pre-fill the "From" display badge
+  const fromBadge = document.getElementById('destFromBadge');
+  if (fromBadge) {
+    const from = _lookupLastLocation || location;
+    fromBadge.textContent = from || '\u2014';
+  }
+
+  // Clear previous selection
+  document.querySelectorAll('.dest-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('btnConfirmDestination').disabled = true;
+  document.getElementById('btnSkipDestination').dataset.location = location;
+  document.getElementById('destinationModal').classList.add('on');
+}
+
+function selectDestination(val) {
+  _selectedDestination = val;
+  document.querySelectorAll('.dest-btn').forEach(b => {
+    b.classList.toggle('selected', b.dataset.dest === val);
+  });
+  document.getElementById('btnConfirmDestination').disabled = false;
+}
+
+function confirmDestination() {
+  if (!_selectedDestination) return;
+  document.getElementById('destinationModal').classList.remove('on');
+  doMovement('STOCK_OUT', _selectedLocation, _selectedDestination);
+}
+
+function skipDestination() {
+  // Worker chooses not to specify a destination — still a valid movement
+  document.getElementById('destinationModal').classList.remove('on');
+  doMovement('STOCK_OUT', _selectedLocation, '');
+}
+
+function cancelDestination() {
+  document.getElementById('destinationModal').classList.remove('on');
+  _selectedDestination = '';
+  // Don't reset movement type / location — worker can re-tap STOCK OUT
+}
+
+
+// ═══════════════════════════════════════════════════════════
+//  MOVEMENT SUBMISSION
+// ═══════════════════════════════════════════════════════════
+
+function doMovement(type, location, toLocation) {
   if (movementInFlight) {
     toast('Movement already in progress. Please wait.', 'warn');
     return;
@@ -566,9 +661,7 @@ function doMovement(type, location) {
   showSpinner(type === 'STOCK_IN' ? 'Recording Stock IN\u2026' : 'Recording Stock OUT\u2026');
 
   const idempotencyKey = `${scanned.handling_unit}-${type}-${Date.now()}`;
-
-  // For SAP-not-found overrides, send the stored supervisor PIN.
-  const supervisorPin = _isNotFoundOverride ? _nfoSupervisorPin : '';
+  const supervisorPin  = _isNotFoundOverride ? _nfoSupervisorPin : '';
 
   const payload = {
     handling_unit:   scanned.handling_unit,
@@ -580,11 +673,12 @@ function doMovement(type, location) {
     operator_id:     deviceId,
     device_id:       deviceId,
     location:        location,
+    to_location:     toLocation || '',
     timestamp:       new Date().toISOString(),
     idempotency_key: idempotencyKey,
     is_override:     _isNotFoundOverride,
     override_reason: _isNotFoundOverride
-      ? 'SAP-not-found supervisor override — data entered manually'
+      ? 'SAP-not-found supervisor override \u2014 data entered manually'
       : '',
     supervisor_pin:  supervisorPin,
   };
@@ -605,26 +699,22 @@ function doMovement(type, location) {
     movementInFlight = false;
 
     if (data.success) {
-      // ── Happy path — full reset before next scan ──
-      toast(data.message || `${type} recorded.`, 'ok', 4000);
+      const destLabel = toLocation ? ` \u2192 ${toLocation}` : '';
+      toast((data.message || `${type} recorded.`) + destLabel, 'ok', 4500);
       setTimeout(goScan, 1800);
 
     } else if (data.status === 'rejected_duplicate') {
-      // ── Exact duplicate: already recorded, never offer override ──
       toast(data.message || 'Already recorded \u2014 this movement is a duplicate.', 'warn', 6000);
       setTimeout(goScan, 2500);
 
     } else if (data.status === 'rejected_transition') {
-      // ── Bad transition (e.g. STOCK_OUT when never stocked IN): supervisor can override ──
       _showOverrideOption(data.message, payload);
 
     } else if (data.status === 'rejected_validation') {
-      // ── Structural validation failure (missing fields, bad PIN) ──
       toast(data.message || 'Movement blocked \u2014 check the details and try again.', 'fail', 6000);
       setTimeout(goScan, 2500);
 
     } else {
-      // ── Write / server error — queue offline for retry ──
       toast(data.message || 'Server error. Saving offline.', 'fail', 5000);
       _queueOffline(payload);
     }
@@ -648,24 +738,20 @@ function _queueOffline(payload) {
 }
 
 // ── Movement-rejection supervisor override ──
-// Only triggered for rejected_transition — bad state machine transitions.
-
 function _showOverrideOption(serverMessage, originalPayload) {
   const modal = document.getElementById('overrideModal');
   const msg   = document.getElementById('overrideMessage');
   if (!modal) { toast(serverMessage, 'fail', 7000); return; }
   msg.textContent = serverMessage;
 
-  const pinInput = document.getElementById('overridePinInput');
+  const pinInput   = document.getElementById('overridePinInput');
   const confirmBtn = document.getElementById('btnConfirmOverride');
-  const ovErr = document.getElementById('overridePinError');
+  const ovErr      = document.getElementById('overridePinError');
   if (pinInput)   { pinInput.value = ''; pinInput.disabled = false; }
   if (confirmBtn) confirmBtn.disabled = false;
   if (ovErr)      ovErr.textContent = '';
 
   modal.classList.add('on');
-  // Store the original payload — override_reason and supervisor_pin
-  // will be set when the supervisor confirms.
   modal._overridePayload = {
     ...originalPayload,
     is_override:     false,
@@ -689,7 +775,6 @@ async function confirmOverride() {
 
   if (confirmBtn) confirmBtn.disabled = true;
 
-  // Build override payload — send numeric PIN directly.
   const payload = {
     ...modal._overridePayload,
     is_override:     true,
@@ -712,7 +797,6 @@ async function confirmOverride() {
     movementInFlight = false;
 
     if (data.success) {
-      // ── Correct PIN, override accepted — full reset ──
       modal.classList.remove('on');
       toast(data.message || 'Override accepted.', 'ok', 4000);
       setTimeout(goScan, 1800);
@@ -723,7 +807,6 @@ async function confirmOverride() {
       setTimeout(goScan, 2500);
 
     } else {
-      // ── Wrong PIN or other rejection ──
       const errMsg = data.message || 'Override failed. Check PIN and try again.';
       if (ovErr) ovErr.textContent = errMsg;
       else toast(errMsg, 'fail', 6000);
@@ -744,7 +827,6 @@ function cancelOverride() {
   const modal = document.getElementById('overrideModal');
   if (modal) modal.classList.remove('on');
   movementInFlight = false;
-  // Reset all override state so next scan starts clean
   _isNotFoundOverride = false;
   _nfoSupervisorPin   = '';
 }
@@ -770,8 +852,6 @@ async function syncPendingEvents() {
     const data = await resp.json();
     if (data.results) {
       for (const r of data.results) {
-        // Remove from queue on success OR if the server confirms it is a
-        // duplicate — both mean the movement is definitively handled.
         if (r.success || r.status === 'rejected_duplicate') {
           await OfflineQueue.removeByKey(r.idempotency_key);
         }
