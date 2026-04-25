@@ -57,6 +57,7 @@ Error handling:
   DbError carries a human-readable .message and the original .cause.
 """
 
+import atexit
 import logging
 import os
 from contextlib import contextmanager
@@ -112,9 +113,24 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
                 cursor_factory=psycopg2.extras.RealDictCursor,
             )
             logger.info("PostgreSQL connection pool created (min=1 max=10).")
+            # BUG FIX: register atexit so the pool is cleanly closed when
+            # the dyno shuts down, preventing connection leaks.
+            atexit.register(_close_pool)
         except psycopg2.Error as exc:
             raise DbError(f"Failed to create connection pool: {exc}", cause=exc) from exc
     return _pool
+
+
+def _close_pool():
+    """Close all connections in the pool on dyno shutdown."""
+    global _pool
+    if _pool is not None:
+        try:
+            _pool.closeall()
+            logger.info("PostgreSQL connection pool closed.")
+        except Exception as exc:
+            logger.warning("Error closing connection pool: %s", exc)
+        _pool = None
 
 
 @contextmanager
@@ -398,7 +414,7 @@ def ivt_insert(code: str, scanned_date: str, location: str) -> None:
 def ping() -> bool:
     """
     Return True if the database is reachable, False otherwise.
-    Used by the /health route to surface DB connectivity.
+    Used by /health and /admin/api/connection-test to surface DB connectivity.
     """
     try:
         with _get_conn() as conn:

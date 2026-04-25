@@ -1,25 +1,24 @@
 """
 Health check and keep-alive ping for Heroku / monitoring.
+
+BUG FIX: replaced graph_client.test_connection() (dormant, requires Graph
+credentials) with db_client.ping() so /health reflects actual system health.
 """
 from flask import Blueprint, jsonify, current_app
-from app.services.graph_client import test_connection
+from app.services.db_client import ping as db_ping
 
 health_bp = Blueprint('health', __name__)
 
 
 @health_bp.route('/health')
 def healthcheck():
-    graph = "not_checked"
-    try:
-        graph = test_connection().get('status', 'unknown')
-    except Exception:
-        graph = "error"
+    db_ok = db_ping()
     return jsonify({
-        "status": "healthy",
+        "status": "healthy" if db_ok else "degraded",
         "app": current_app.config.get('APP_NAME'),
         "version": current_app.config.get('APP_VERSION'),
-        "graph_api": graph,
-    }), 200
+        "db": "ok" if db_ok else "unreachable",
+    }), 200 if db_ok else 503
 
 
 @health_bp.route('/ping')

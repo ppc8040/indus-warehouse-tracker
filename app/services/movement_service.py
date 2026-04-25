@@ -382,6 +382,19 @@ def get_destinations() -> list:
 
 
 # ---------------------------------------------------------------------------
+# BUG FIX: un-suffixed aliases so admin.py can import without _service suffix.
+# Both names are valid — existing callers of the _service variants are unaffected.
+# ---------------------------------------------------------------------------
+
+def get_recent_movements_public(limit: int = 50) -> list:
+    return get_recent_movements_service(limit)
+
+
+# Direct re-exports for admin.py imports
+get_all_pallet_statuses = get_all_pallet_statuses_service  # noqa: E305
+
+
+# ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 

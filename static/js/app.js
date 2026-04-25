@@ -727,14 +727,26 @@ function doMovement(type, location, toLocation) {
   });
 }
 
+// BUG FIX: wrapped in try/finally to guarantee hideSpinner() and
+// movementInFlight reset even if OfflineQueue.add() throws (e.g.
+// IndexedDB unavailable on some browsers/PWA contexts).
 function _queueOffline(payload) {
-  hideSpinner();
-  movementInFlight = false;
-  OfflineQueue.add(payload).then(() => {
-    updatePendingBadge();
-    toast('Saved offline \u2014 will sync when back online.', 'warn', 5000);
-    setTimeout(goScan, 2000);
-  });
+  try {
+    OfflineQueue.add(payload).then(() => {
+      updatePendingBadge();
+      toast('Saved offline \u2014 will sync when back online.', 'warn', 5000);
+      setTimeout(goScan, 2000);
+    }).catch(err => {
+      console.error('OfflineQueue.add failed:', err);
+      toast('Could not save offline. Please retry when connected.', 'fail', 6000);
+    });
+  } catch (err) {
+    console.error('OfflineQueue.add threw synchronously:', err);
+    toast('Could not save offline. Please retry when connected.', 'fail', 6000);
+  } finally {
+    hideSpinner();
+    movementInFlight = false;
+  }
 }
 
 // ── Movement-rejection supervisor override ──
