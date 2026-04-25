@@ -355,23 +355,37 @@ def migrate_movements(headers, rows, cur):
         return row[idx]
  
     records = []
-    skipped_no_id = 0
-    skipped_bad_type = 0
+    # FIX 3: full skipped-row tracking with context
+    skipped_rows = []          # list of dicts — shown in final report
     fallback_timestamps = 0
  
     for i, row in enumerate(rows, start=2):
         event_id = _clean_str(g(row, 'Event_ID'))
-        if not event_id:
-            skipped_no_id += 1
-            continue
- 
-        movement_type = _clean_str(g(row, 'Movement_Type'))
-        if movement_type not in ('STOCK_IN', 'STOCK_OUT'):
-            log.warning(f'Row {i}: unknown movement_type "{movement_type}" — skipping')
-            skipped_bad_type += 1
-            continue
- 
         raw_ts = g(row, 'Timestamp_UTC')
+        movement_type = _clean_str(g(row, 'Movement_Type'))
+
+        # FIX 3 (no event_id)
+        if not event_id:
+            skipped_rows.append({
+                'row': i,
+                'event_id': '—',
+                'movement_type': str(movement_type) if movement_type else '—',
+                'raw_ts': str(raw_ts) if raw_ts is not None else '—',
+                'reason': 'Missing Event_ID',
+            })
+            continue
+ 
+        # FIX 2 (bad movement type)
+        if movement_type not in ('STOCK_IN', 'STOCK_OUT'):
+            skipped_rows.append({
+                'row': i,
+                'event_id': event_id,
+                'movement_type': str(movement_type) if movement_type else '—',
+                'raw_ts': str(raw_ts) if raw_ts is not None else '—',
+                'reason': f'Unknown movement_type "{movement_type}"',
+            })
+            continue
+ 
         timestamp = _parse_timestamp(raw_ts)
         if timestamp == datetime.now(timezone.utc):
             fallback_timestamps += 1
@@ -388,28 +402,42 @@ def migrate_movements(headers, rows, cur):
         validation_status = _clean_str(g(row, 'Validation_Status')) or 'VALID'
         if validation_status not in ('VALID', 'OVERRIDE'):
             validation_status = 'VALID'
- 
-        records.append((
-            event_id,
-            timestamp,
-            handling_unit,
-            _clean_str(g(row, 'Indus_Part')),
-            customer_part,
-            _clean_int(g(row, 'Pallet_Qty')),
-            _clean_str(g(row, 'Job_No')),
-            movement_type,
-            _clean_str(g(row, 'Operator_ID')),
-            _clean_str(g(row, 'Device_ID')),
-            sync_status,
-            validation_status,
-            _clean_str(g(row, 'Location')),
-            None,
-        ))
- 
+
+        # FIX 1: catch any unexpected DB/type error per row
+        try:
+            records.append((
+                event_id,
+                timestamp,
+                handling_unit,
+                _clean_str(g(row, 'Indus_Part')),
+                customer_part,
+                _clean_int(g(row, 'Pallet_Qty')),
+                _clean_str(g(row, 'Job_No')),
+                movement_type,
+                _clean_str(g(row, 'Operator_ID')),
+                _clean_str(g(row, 'Device_ID')),
+                sync_status,
+                validation_status,
+                _clean_str(g(row, 'Location')),
+                None,
+            ))
+        except Exception as e:
+            skipped_rows.append({
+                'row': i,
+                'event_id': event_id,
+                'movement_type': str(movement_type),
+                'raw_ts': str(raw_ts) if raw_ts is not None else '—',
+                'reason': f'Row build error: {e}',
+            })
+
+    skipped_no_id   = sum(1 for s in skipped_rows if s['reason'] == 'Missing Event_ID')
+    skipped_bad_type = sum(1 for s in skipped_rows if s['reason'].startswith('Unknown movement_type'))
+    skipped_other   = len(skipped_rows) - skipped_no_id - skipped_bad_type
+
     log.info(
         f'Prepared {len(records):,} movement records '
         f'({skipped_no_id} no-id, {skipped_bad_type} bad-type, '
-        f'{fallback_timestamps} fallback timestamps).'
+        f'{skipped_other} other errors, {fallback_timestamps} fallback timestamps).'
     )
  
     if not records:
@@ -432,7 +460,7 @@ def migrate_movements(headers, rows, cur):
         page_size=500
     )
     log.info(f'Inserted {len(records):,} rows into movements (all rows, no dedup).')
-    return len(records), 0
+    return len(records), skipped_rows
  
  
 def derive_pallet_status(cur):
@@ -474,17 +502,18 @@ def derive_pallet_status(cur):
 def migrate_ivt(headers, rows, cur):
     if not headers:
         log.info('IVT_Line empty — nothing to migrate.')
-        return 0
+        return 0, []
  
     COL = {h: i for i, h in enumerate(headers)}
     records = []
-    skipped = 0
+    # FIX 7: capture IVT skipped rows with row index
+    ivt_skipped = []
  
     for i, row in enumerate(rows, start=2):
         code_idx = COL.get('Code', 0)
         code = _clean_str(row[code_idx] if code_idx < len(row) else None)
         if not code:
-            skipped += 1
+            ivt_skipped.append({'row': i, 'reason': 'Missing Code'})
             continue
  
         date_idx = COL.get('Scanned Date', COL.get('Scanned_Date', 1))
@@ -502,9 +531,34 @@ def migrate_ivt(headers, rows, cur):
         records,
         page_size=500
     )
-    log.info(f'Inserted {len(records):,} rows into ivt_scans ({skipped} skipped).')
-    return len(records)
- 
+    log.info(f'Inserted {len(records):,} rows into ivt_scans ({len(ivt_skipped)} skipped).')
+    return len(records), ivt_skipped
+
+
+# ── FIX 6: columnar skipped-rows report ───────────────────────────
+
+def _print_skipped_report(skipped_rows, label='movements'):
+    if not skipped_rows:
+        print(f'\n  ✅  All {label} rows migrated — 0 skipped.')
+        return
+    print(f'\n  ⚠   {len(skipped_rows)} {label} row(s) NOT migrated:')
+    w_row  = max(5,  max(len(str(r['row']))           for r in skipped_rows))
+    w_eid  = max(10, max(len(str(r.get('event_id','—')))  for r in skipped_rows))
+    w_mt   = max(13, max(len(str(r.get('movement_type','—'))) for r in skipped_rows))
+    w_ts   = max(20, max(len(str(r.get('raw_ts','—')))    for r in skipped_rows))
+    header = (f"  {'ROW':<{w_row}}  {'EVENT_ID':<{w_eid}}  "
+              f"{'MOVEMENT_TYPE':<{w_mt}}  {'RAW_TS':<{w_ts}}  REASON")
+    print(header)
+    print('  ' + '-' * (len(header) - 2))
+    for r in skipped_rows:
+        print(
+            f"  {str(r['row']):<{w_row}}  "
+            f"{str(r.get('event_id','—')):<{w_eid}}  "
+            f"{str(r.get('movement_type','—')):<{w_mt}}  "
+            f"{str(r.get('raw_ts','—')):<{w_ts}}  "
+            f"{r['reason']}"
+        )
+
  
 def main():
     print("Hello World")
@@ -533,18 +587,13 @@ def main():
         pg.commit()
         log.info('Truncate complete.')
     else:
-        # No truncation needed but we must commit the SELECT to close
-        # the implicit transaction before the DDL step below.
         pg.commit()
 
     cur.close()
     pg.close()
 
-    # Drop the UNIQUE constraint (+ dependent FK) using a dedicated
-    # autocommit connection so there is no open transaction to interfere.
     _drop_event_id_unique_constraint(pg)
  
-    # Re-open main connection for data migration
     pg = get_pg_conn()
 
     log.info('Connecting to SharePoint workbook...')
@@ -562,9 +611,11 @@ def main():
     log.info('Beginning Postgres transaction...')
     try:
         cur = pg.cursor()
-        mv_count, ts_skipped = migrate_movements(ml_headers, ml_rows, cur)
+        # FIX 8: migrate_movements now returns skipped_rows list
+        mv_count, mv_skipped = migrate_movements(ml_headers, ml_rows, cur)
         ps_count = derive_pallet_status(cur)
-        ivt_count = migrate_ivt(ivt_headers, ivt_rows, cur)
+        # FIX 7: migrate_ivt now returns ivt_skipped list
+        ivt_count, ivt_skipped = migrate_ivt(ivt_headers, ivt_rows, cur)
         pg.commit()
         log.info('Transaction committed successfully.')
     except Exception as e:
@@ -573,15 +624,30 @@ def main():
         raise
     finally:
         cur.close(); pg.close()
- 
+
+    # FIX 6: print skipped-rows reports
+    _print_skipped_report(mv_skipped, label='movements')
+    if ivt_skipped:
+        _print_skipped_report(
+            [{'row': r['row'], 'event_id': '—', 'movement_type': '—',
+              'raw_ts': '—', 'reason': r['reason']} for r in ivt_skipped],
+            label='IVT'
+        )
+
+    # FIX 5: summary includes skipped counts
     print()
-    print('=' * 55)
+    print('=' * 60)
     print('  MIGRATION COMPLETE')
-    print('=' * 55)
+    print('=' * 60)
     print(f'  movements rows inserted   : {mv_count:>8,}')
+    print(f'  movements rows skipped    : {len(mv_skipped):>8,}')
+    print(f'    └─ no event_id          : {sum(1 for s in mv_skipped if s["reason"] == "Missing Event_ID"):>8,}')
+    print(f'    └─ bad movement_type    : {sum(1 for s in mv_skipped if s["reason"].startswith("Unknown movement_type")):>8,}')
+    print(f'    └─ other errors         : {sum(1 for s in mv_skipped if not s["reason"].startswith(("Missing Event_ID","Unknown movement_type"))):>8,}')
     print(f'  pallet_status rows        : {ps_count:>8,}  (unique HUs)')
     print(f'  ivt_scans rows inserted   : {ivt_count:>8,}')
-    print('=' * 55)
+    print(f'  ivt_scans rows skipped    : {len(ivt_skipped):>8,}')
+    print('=' * 60)
     print()
  
  
