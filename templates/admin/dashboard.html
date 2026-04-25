@@ -6,75 +6,79 @@
   <title>Indus Warehouse — Admin</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
-    :root {
-      --bg:#0f1117; --surface:#1a1d27; --surface2:#22263a;
-      --border:#2e3347; --text:#e2e8f0; --muted:#8892a4;
-      --ok:#22c55e; --err:#ef4444; --warn:#f59e0b;
-      --info:#60a5fa; --primary:#6366f1;
-      --font: 'Inter', system-ui, sans-serif;
+    :root{
+      --bg:#0f1117;--surface:#1a1d27;--surface2:#22263a;--border:#2e3347;
+      --text:#e2e8f0;--muted:#8892a4;--ok:#22c55e;--err:#ef4444;
+      --warn:#f59e0b;--info:#60a5fa;--primary:#6366f1;--neg:#fca5a5;
     }
     *{box-sizing:border-box;margin:0;padding:0}
-    body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
-    /* ── Header ── */
+    body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;min-height:100vh}
+    /* Header */
     .hdr{display:flex;align-items:center;justify-content:space-between;
-         padding:14px 24px;background:var(--surface);border-bottom:1px solid var(--border);gap:12px;flex-wrap:wrap}
-    .hdr h1{font-size:16px;font-weight:600;letter-spacing:.02em}
-    .hdr-right{display:flex;align-items:center;gap:12px}
+         padding:12px 24px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;gap:8px}
+    .hdr h1{font-size:15px;font-weight:600}
+    .hdr-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
     .conn{font-size:12px;font-weight:500;padding:4px 10px;border-radius:20px;
           background:var(--surface2);border:1px solid var(--border)}
-    .conn.ok{color:var(--ok);border-color:#166534}
-    .conn.err{color:var(--err);border-color:#7f1d1d}
-    .refresh-btn{background:var(--primary);color:#fff;border:none;border-radius:6px;
-                 padding:6px 14px;font-size:13px;cursor:pointer;font-weight:500}
-    .refresh-btn:hover{opacity:.85}
-    /* ── KPI Grid ── */
-    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding:20px 24px 8px}
-    .kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
-    .kpi-num{font-size:28px;font-weight:700;line-height:1.1}
-    .kpi-lbl{font-size:11px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
-    .ok{color:var(--ok)} .err{color:var(--err)} .warn{color:var(--warn)} .info{color:var(--info)}
-    /* ── Tabs ── */
-    .tabs{display:flex;gap:4px;padding:16px 24px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+    .conn.ok{color:var(--ok);border-color:#166534}.conn.err{color:var(--err);border-color:#7f1d1d}
+    .btn{border:none;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;font-weight:500}
+    .btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{opacity:.85}
+    .btn-green{background:#166534;color:#86efac}.btn-green:hover{background:#14532d}
+    /* KPI */
+    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;padding:16px 24px 6px}
+    .kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
+    .kpi-num{font-size:26px;font-weight:700;line-height:1.1}
+    .kpi-lbl{font-size:10px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
+    .ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}.info{color:var(--info)}.neg{color:var(--neg)}
+    /* Filter bar */
+    .filter-bar{display:flex;gap:8px;padding:10px 24px;background:var(--surface);
+                border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:flex-end}
+    .filter-bar label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
+    .filter-bar input,.filter-bar select{
+      background:var(--surface2);border:1px solid var(--border);color:var(--text);
+      border-radius:5px;padding:5px 8px;font-size:12px;min-width:120px}
+    .filter-bar input:focus,.filter-bar select:focus{outline:1px solid var(--primary)}
+    .filter-actions{display:flex;gap:6px;align-items:flex-end}
+    /* Tabs */
+    .tabs{display:flex;gap:2px;padding:12px 24px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
     .tab{background:none;border:none;color:var(--muted);padding:8px 16px;cursor:pointer;
          font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px;font-weight:500}
-    .tab:hover{color:var(--text)}
-    .tab.on{color:var(--primary);border-bottom-color:var(--primary)}
-    .tab-pane{display:none;padding:20px 24px}
-    .tab-pane.on{display:block}
-    /* ── Tables ── */
+    .tab:hover{color:var(--text)}.tab.on{color:var(--primary);border-bottom-color:var(--primary)}
+    .tab-pane{display:none;padding:16px 24px}.tab-pane.on{display:block}
+    /* Tables */
     .tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border)}
-    table{width:100%;border-collapse:collapse;font-size:13px}
+    table{width:100%;border-collapse:collapse;font-size:12px}
     thead tr{background:var(--surface2)}
-    th{padding:10px 12px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;
+    th{padding:9px 12px;text-align:left;font-weight:600;font-size:10px;text-transform:uppercase;
        letter-spacing:.06em;color:var(--muted);white-space:nowrap;border-bottom:1px solid var(--border)}
-    td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+    td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
     tbody tr:hover{background:var(--surface2)}
     tbody tr:last-child td{border-bottom:none}
-    td strong{color:var(--text)}
-    /* ── Tags ── */
-    .tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
-    .tok{background:#14532d;color:#86efac} .terr{background:#7f1d1d;color:#fca5a5}
-    .twarn{background:#78350f;color:#fde68a} .tinfo{background:#1e3a5f;color:#93c5fd}
-    /* ── Charts ── */
-    .chart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:16px}
-    .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px}
-    .chart-card h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-    .chart-wrap{position:relative;height:220px}
-    /* ── Empty / Loading ── */
-    .empty{padding:40px;text-align:center;color:var(--muted);font-size:13px}
-    /* ── Operator table ── */
-    .op-name{font-weight:600;color:var(--text)}
-    .section-hdr{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
-                 color:var(--muted);margin-bottom:10px}
+    /* Tags */
+    .tag{display:inline-block;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600}
+    .tok{background:#14532d;color:#86efac}.terr{background:#7f1d1d;color:#fca5a5}
+    .twarn{background:#78350f;color:#fde68a}.tinfo{background:#1e3a5f;color:#93c5fd}
+    .tneg{background:#7f1d1d;color:#fca5a5;border:1px solid #ef4444}
+    /* Charts */
+    .chart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px}
+    .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px}
+    .chart-card h3{font-size:11px;font-weight:600;margin-bottom:10px;color:var(--muted);
+                   text-transform:uppercase;letter-spacing:.05em}
+    .chart-wrap{position:relative;height:200px}
+    /* Stock summary: negative rows */
+    tr.neg-row td{color:var(--neg)!important;background:#2d0a0a!important}
+    .empty{padding:36px;text-align:center;color:var(--muted);font-size:13px}
+    .tab-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+    .tab-hdr h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
   </style>
 </head>
 <body>
 
 <!-- Header -->
 <header class="hdr">
-  <h1>🏭 Indus Warehouse &mdash; Admin Dashboard</h1>
+  <h1>🏭 Indus Warehouse — Admin Dashboard</h1>
   <div class="hdr-right">
-    <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
+    <button class="btn btn-primary" onclick="loadAll()">⟳ Refresh</button>
     <span class="conn" id="connStatus">● checking...</span>
   </div>
 </header>
@@ -86,31 +90,86 @@
   <div class="kpi"><div class="kpi-num err" id="kOut">—</div><div class="kpi-lbl">Pallets OUT</div></div>
   <div class="kpi"><div class="kpi-num warn" id="kOver">—</div><div class="kpi-lbl">Overrides</div></div>
   <div class="kpi"><div class="kpi-num err" id="kErr">—</div><div class="kpi-lbl">Errors</div></div>
+  <div class="kpi"><div class="kpi-num neg" id="kNeg">—</div><div class="kpi-lbl">Neg. Stock Alerts</div></div>
   <div class="kpi"><div class="kpi-num info" id="kIvtToday">—</div><div class="kpi-lbl">IVT Today</div></div>
   <div class="kpi"><div class="kpi-num info" id="kIvtTotal">—</div><div class="kpi-lbl">IVT Total</div></div>
   <div class="kpi"><div class="kpi-num warn" id="kPend">—</div><div class="kpi-lbl">Pending Sync</div></div>
 </div>
 
-<!-- Tabs -->
-<div class="tabs">
-  <button class="tab on"  onclick="tab('movements',this)">📦 Movements</button>
-  <button class="tab"     onclick="tab('statuses',this)">🟢 Pallet Status</button>
-  <button class="tab"     onclick="tab('analytics',this)">📊 Analytics</button>
-  <button class="tab"     onclick="tab('ivt',this)">🔍 IVT Scans</button>
-  <button class="tab"     onclick="tab('errors',this)">⚠️ Errors</button>
+<!-- Filter Bar -->
+<div class="filter-bar" id="filterBar">
+  <label>HU Number
+    <input type="text" id="fHu" placeholder="e.g. 003000..." oninput="scheduleFilter()">
+  </label>
+  <label>Indus Part
+    <input type="text" id="fPart" placeholder="e.g. 1000234" oninput="scheduleFilter()">
+  </label>
+  <label>Date From
+    <input type="date" id="fDateFrom" onchange="scheduleFilter()">
+  </label>
+  <label>Date To
+    <input type="date" id="fDateTo" onchange="scheduleFilter()">
+  </label>
+  <label>Type
+    <select id="fType" onchange="scheduleFilter()">
+      <option value="ALL">All Types</option>
+      <option value="STOCK_IN">STOCK IN</option>
+      <option value="STOCK_OUT">STOCK OUT</option>
+      <option value="ERROR">ERROR</option>
+    </select>
+  </label>
+  <label>Location
+    <select id="fLocation" onchange="scheduleFilter()">
+      <option value="ALL">All Locations</option>
+      <option>M4</option><option>M5</option><option>M6</option>
+      <option>M4_STORE</option><option>M16_STORE</option>
+    </select>
+  </label>
+  <div class="filter-actions">
+    <button class="btn btn-primary" onclick="applyFilters()">Apply</button>
+    <button class="btn" style="background:var(--surface2);color:var(--muted)" onclick="clearFilters()">Clear</button>
+  </div>
 </div>
 
-<!-- Tab: Movements -->
+<!-- Tabs -->
+<div class="tabs">
+  <button class="tab on"  onclick="switchTab('movements',this)">📦 Movements</button>
+  <button class="tab"     onclick="switchTab('statuses',this)">🟢 Pallet Status</button>
+  <button class="tab"     onclick="switchTab('stock',this)">📈 Stock Summary</button>
+  <button class="tab"     onclick="switchTab('analytics',this)">📊 Analytics</button>
+  <button class="tab"     onclick="switchTab('ivt',this)">🔍 IVT Scans</button>
+  <button class="tab"     onclick="switchTab('errors',this)">⚠️ Errors</button>
+</div>
+
+<!-- Movements -->
 <div class="tab-pane on" id="pane-movements">
+  <div class="tab-hdr">
+    <h2>Movement Log</h2>
+    <button class="btn btn-green" onclick="exportSheet('movements')">&#8659; Export Excel</button>
+  </div>
   <div class="tbl-wrap" id="tbl-movements"><div class="empty">Loading…</div></div>
 </div>
 
-<!-- Tab: Pallet Status -->
+<!-- Pallet Status -->
 <div class="tab-pane" id="pane-statuses">
+  <div class="tab-hdr">
+    <h2>Pallet Status</h2>
+    <button class="btn btn-green" onclick="exportSheet('statuses')">&#8659; Export Excel</button>
+  </div>
   <div class="tbl-wrap" id="tbl-statuses"><div class="empty">Loading…</div></div>
 </div>
 
-<!-- Tab: Analytics -->
+<!-- Stock Summary -->
+<div class="tab-pane" id="pane-stock">
+  <div class="tab-hdr">
+    <h2>Stock Summary by Material &amp; Location</h2>
+    <button class="btn btn-green" onclick="exportSheet('stock')">&#8659; Export Excel</button>
+  </div>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Net Qty = total IN qty − total OUT qty. <span style="color:var(--neg)">Red rows = negative stock (needs investigation).</span> Filters (Part, Location) apply.</p>
+  <div class="tbl-wrap" id="tbl-stock"><div class="empty">Loading…</div></div>
+</div>
+
+<!-- Analytics -->
 <div class="tab-pane" id="pane-analytics">
   <div class="chart-grid">
     <div class="chart-card" style="grid-column:1/-1">
@@ -132,9 +191,13 @@
   </div>
 </div>
 
-<!-- Tab: IVT Scans -->
+<!-- IVT -->
 <div class="tab-pane" id="pane-ivt">
-  <div class="chart-grid" style="margin-bottom:16px">
+  <div class="tab-hdr">
+    <h2>IVT Scans</h2>
+    <button class="btn btn-green" onclick="exportSheet('ivt')">&#8659; Export Excel</button>
+  </div>
+  <div class="chart-grid" style="margin-bottom:14px">
     <div class="chart-card">
       <h3>IVT Daily Scans — last 14 days</h3>
       <div class="chart-wrap"><canvas id="cIvt"></canvas></div>
@@ -143,317 +206,331 @@
   <div class="tbl-wrap" id="tbl-ivt"><div class="empty">Loading…</div></div>
 </div>
 
-<!-- Tab: Errors -->
+<!-- Errors -->
 <div class="tab-pane" id="pane-errors">
+  <div class="tab-hdr">
+    <h2>Error Log</h2>
+    <button class="btn btn-green" onclick="exportSheet('errors')">&#8659; Export Excel</button>
+  </div>
+
+  <!-- Negative Stock Alerts -->
+  <div style="margin-bottom:16px">
+    <p style="font-size:11px;font-weight:600;color:var(--neg);text-transform:uppercase;
+              letter-spacing:.05em;margin-bottom:8px">⚠ Negative Stock Alerts</p>
+    <div class="tbl-wrap" id="tbl-neg-stock"><div class="empty">Loading…</div></div>
+  </div>
+
+  <!-- Movement Errors -->
+  <p style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
+            letter-spacing:.05em;margin-bottom:8px">Movement Errors &amp; Validation Failures</p>
   <div class="tbl-wrap" id="tbl-errors"><div class="empty">Loading…</div></div>
 </div>
 
 <script>
-// ── Chart instances (kept so we can destroy before redraw) ─────────────────
 const charts = {};
-
-function destroyChart(id) {
-  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
-}
+let filterTimer = null;
 
 // ── Tab switching ──────────────────────────────────────────────────────────
-function tab(name, el) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
-  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('on'));
+function switchTab(name, el) {
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  document.querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('on'));
   el.classList.add('on');
-  document.getElementById('pane-' + name).classList.add('on');
+  document.getElementById('pane-'+name).classList.add('on');
+}
+
+// ── Filter helpers ────────────────────────────────────────────────────────
+function getFilters() {
+  return {
+    hu:            document.getElementById('fHu').value.trim(),
+    part:          document.getElementById('fPart').value.trim(),
+    date_from:     document.getElementById('fDateFrom').value,
+    date_to:       document.getElementById('fDateTo').value,
+    movement_type: document.getElementById('fType').value,
+    location:      document.getElementById('fLocation').value,
+  };
+}
+function filterQS(extra={}) {
+  const f = {...getFilters(), ...extra};
+  return new URLSearchParams(Object.fromEntries(Object.entries(f).filter(([,v])=>v&&v!=='ALL'))).toString();
+}
+function scheduleFilter() {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(applyFilters, 600);
+}
+function applyFilters() {
+  loadMovements(); loadStatuses(); loadStock();
+}
+function clearFilters() {
+  ['fHu','fPart','fDateFrom','fDateTo'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('fType').value='ALL';
+  document.getElementById('fLocation').value='ALL';
+  applyFilters();
+}
+
+// ── Export ──────────────────────────────────────────────────────────────────
+function exportSheet(sheet) {
+  const qs = filterQS({sheet});
+  window.location.href = `/admin/api/export?${qs}`;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function tag(text, cls) {
-  return `<span class="tag ${cls}">${text}</span>`;
+function tag(t,c){return `<span class="tag ${c}">${t}</span>`;}
+function fmtTime(iso){
+  if(!iso)return'—';
+  try{
+    return new Date(iso).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',
+                                                  hour:'2-digit',minute:'2-digit',hour12:false});
+  }catch{return iso;}
 }
-function fmtTime(iso) {
-  if (!iso) return '—';
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',
-                                       hour:'2-digit',minute:'2-digit',hour12:false});
-  } catch { return iso; }
+function destroyChart(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
+
+// ── Connection ──────────────────────────────────────────────────────────────
+async function checkConn(){
+  const el=document.getElementById('connStatus');
+  try{
+    const d=await fetch('/admin/api/connection-test').then(r=>r.json());
+    el.textContent=d.status==='ok'&&d.db?'● DB Connected':'● DB Error';
+    el.className='conn '+(d.status==='ok'&&d.db?'ok':'err');
+  }catch{el.textContent='● Offline';el.className='conn err';}
 }
 
-// ── Connection test ────────────────────────────────────────────────────────
-async function checkConn() {
-  const el = document.getElementById('connStatus');
-  try {
-    const r = await fetch('/admin/api/connection-test');
-    const d = await r.json();
-    if (d.status === 'ok' && d.db) {
-      el.textContent = '● DB Connected';
-      el.className = 'conn ok';
+// ── Stats ───────────────────────────────────────────────────────────────────
+async function loadStats(){
+  try{
+    const d=await fetch('/admin/api/stats').then(r=>r.json());
+    document.getElementById('kMov').textContent      = d.total_movements  ??'—';
+    document.getElementById('kIn').textContent       = d.pallets_in       ??'—';
+    document.getElementById('kOut').textContent      = d.pallets_out      ??'—';
+    document.getElementById('kOver').textContent     = d.override_count   ??'—';
+    document.getElementById('kErr').textContent      = d.total_errors     ??'—';
+    document.getElementById('kNeg').textContent      = d.neg_alerts       ??'—';
+    document.getElementById('kIvtToday').textContent = d.ivt_today        ??'—';
+    document.getElementById('kIvtTotal').textContent = d.ivt_total        ??'—';
+    document.getElementById('kPend').textContent     = d.pending_keys     ??'—';
+  }catch(e){console.error('Stats',e);}
+}
+
+// ── Movements ──────────────────────────────────────────────────────────────
+async function loadMovements(){
+  const el=document.getElementById('tbl-movements');
+  try{
+    const d=await fetch('/admin/api/movements?limit=200&'+filterQS()).then(r=>r.json());
+    const rows=d.movements||[];
+    if(!rows.length){el.innerHTML='<div class="empty">No movements match filters.</div>';return;}
+    let h=`<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Qty</th>
+      <th>Type</th><th>Location</th><th>From</th><th>To</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>`;
+    for(const m of rows){
+      const mt=(m.movement_type||'').toUpperCase();
+      const typeTag=mt==='STOCK_IN'?tag('IN','tok'):mt==='STOCK_OUT'?tag('OUT','terr'):tag(mt,'tinfo');
+      const sync=(m.sync_status||'').toUpperCase();
+      const syncTag=sync==='SYNCED'?tag('SYNCED','tok'):tag(sync,'twarn');
+      const vs=(m.validation_status||'').toUpperCase();
+      const valTag=vs==='VALID'?tag('VALID','tok'):vs==='OVERRIDE'?tag('OVERRIDE','twarn'):tag(vs||'—','terr');
+      h+=`<tr><td>${fmtTime(m.timestamp_dubai)}</td><td><strong>${m.handling_unit||''}</strong></td>
+        <td>${m.indus_part||'—'}</td><td>${m.pallet_qty||'—'}</td><td>${typeTag}</td>
+        <td>${m.location||'—'}</td><td>${m.from_location||'—'}</td><td>${m.to_location||'—'}</td>
+        <td>${m.operator_id||'—'}</td><td>${syncTag}</td><td>${valTag}</td></tr>`;
+    }
+    el.innerHTML=h+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="empty">Failed to load movements.</div>';}
+}
+
+// ── Pallet Status ──────────────────────────────────────────────────────────
+async function loadStatuses(){
+  const el=document.getElementById('tbl-statuses');
+  try{
+    const f=getFilters();
+    const qs=new URLSearchParams(Object.fromEntries(Object.entries({hu:f.hu,part:f.part,location:f.location}).filter(([,v])=>v&&v!=='ALL'))).toString();
+    const d=await fetch('/admin/api/pallet-statuses?'+qs).then(r=>r.json());
+    const rows=d.statuses||[];
+    if(!rows.length){el.innerHTML='<div class="empty">No pallet statuses match filters.</div>';return;}
+    let h=`<table><thead><tr><th>HU</th><th>Status</th><th>Last Move</th><th>Last Time (Dubai)</th>
+      <th>Location</th><th>Indus Part</th><th>Qty</th></tr></thead><tbody>`;
+    for(const s of rows){
+      const cs=(s.current_status||'').toUpperCase();
+      const stTag=cs==='IN_WAREHOUSE'?tag('IN','tok'):cs==='OUT_OF_WAREHOUSE'?tag('OUT','terr'):tag(cs||'—','tinfo');
+      const mt=(s.last_movement_type||'').toUpperCase();
+      const mtTag=mt==='STOCK_IN'?tag('IN','tok'):mt==='STOCK_OUT'?tag('OUT','terr'):tag(mt||'—','tinfo');
+      h+=`<tr><td><strong>${s.handling_unit||''}</strong></td><td>${stTag}</td><td>${mtTag}</td>
+        <td>${fmtTime(s.last_movement_time_dubai)}</td><td>${s.last_location||'—'}</td>
+        <td>${s.indus_part||'—'}</td><td>${s.pallet_qty||'—'}</td></tr>`;
+    }
+    el.innerHTML=h+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="empty">Failed to load statuses.</div>';}
+}
+
+// ── Stock Summary ──────────────────────────────────────────────────────────
+async function loadStock(){
+  const el=document.getElementById('tbl-stock');
+  try{
+    const f=getFilters();
+    const qs=new URLSearchParams(Object.fromEntries(Object.entries({part:f.part,location:f.location}).filter(([,v])=>v&&v!=='ALL'))).toString();
+    const d=await fetch('/admin/api/stock-summary?'+qs).then(r=>r.json());
+    const rows=d.rows||[];
+    if(!rows.length){el.innerHTML='<div class="empty">No stock data found.</div>';return;}
+    let h=`<table><thead><tr><th>Indus Part</th><th>Customer Part</th><th>Location</th>
+      <th>Total IN Qty</th><th>Total OUT Qty</th><th>Net Qty</th><th>Pallets IN</th><th>Pallets OUT</th></tr></thead><tbody>`;
+    for(const r of rows){
+      const net=parseInt(r.net_qty||0);
+      const negCls=net<0?'neg-row':'';
+      const netDisplay=net<0?`<span style="color:var(--neg);font-weight:700">${net} ⚠</span>`:net;
+      h+=`<tr class="${negCls}"><td><strong>${r.indus_part}</strong></td><td>${r.customer_part||'—'}</td>
+        <td>${r.location}</td><td class="ok">${r.total_in_qty}</td><td class="err">${r.total_out_qty}</td>
+        <td>${netDisplay}</td><td>${r.pallets_in}</td><td>${r.pallets_out}</td></tr>`;
+    }
+    el.innerHTML=h+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="empty">Failed to load stock summary.</div>';}
+}
+
+// ── Errors ──────────────────────────────────────────────────────────────────
+async function loadErrors(){
+  const errEl=document.getElementById('tbl-errors');
+  const negEl=document.getElementById('tbl-neg-stock');
+  try{
+    const d=await fetch('/admin/api/errors').then(r=>r.json());
+
+    // Negative Stock
+    const negRows=d.negative_stock||[];
+    if(!negRows.length){
+      negEl.innerHTML='<div class="empty" style="color:var(--ok)">✅ No negative stock detected.</div>';
     } else {
-      el.textContent = '● DB Error';
-      el.className = 'conn err';
+      let h=`<table><thead><tr><th>Indus Part</th><th>Location</th><th>Total IN Qty</th><th>Total OUT Qty</th><th>Net Qty (deficit)</th></tr></thead><tbody>`;
+      for(const r of negRows){
+        h+=`<tr><td><strong style="color:var(--neg)">${r.indus_part||'—'}</strong></td>
+          <td>${r.location||'—'}</td>
+          <td class="ok">${r.total_in||0}</td>
+          <td class="err">${r.total_out||0}</td>
+          <td><span style="color:var(--neg);font-weight:700">${r.net_qty} ⚠</span></td></tr>`;
+      }
+      negEl.innerHTML=h+'</tbody></table>';
     }
-  } catch(e) {
-    el.textContent = '● Offline';
-    el.className = 'conn err';
-  }
-}
 
-// ── Stats / KPIs ───────────────────────────────────────────────────────────
-async function loadStats() {
-  try {
-    const d = await fetch('/admin/api/stats').then(r => r.json());
-    document.getElementById('kMov').textContent      = d.total_movements  ?? '—';
-    document.getElementById('kIn').textContent       = d.pallets_in       ?? '—';
-    document.getElementById('kOut').textContent      = d.pallets_out      ?? '—';
-    document.getElementById('kOver').textContent     = d.override_count   ?? '—';
-    document.getElementById('kErr').textContent      = d.total_errors     ?? '—';
-    document.getElementById('kIvtToday').textContent = d.ivt_today        ?? '—';
-    document.getElementById('kIvtTotal').textContent = d.ivt_total        ?? '—';
-    document.getElementById('kPend').textContent     = d.pending_keys     ?? '—';
-  } catch(e) { console.error('Stats error', e); }
-}
-
-// ── Movements table ────────────────────────────────────────────────────────
-async function loadMovements() {
-  const el = document.getElementById('tbl-movements');
-  try {
-    const d = await fetch('/admin/api/movements?limit=100').then(r => r.json());
-    const rows = d.movements || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty">No movements yet.</div>'; return; }
-    let h = `<table><thead><tr>
-      <th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Qty</th>
-      <th>Type</th><th>Location</th><th>Operator</th><th>Device</th><th>Sync</th><th>Validation</th>
-    </tr></thead><tbody>`;
-    for (const m of rows) {
-      const mt = (m.movement_type||'').toUpperCase();
-      const typeTag = mt==='STOCK_IN' ? tag('IN','tok') : mt==='STOCK_OUT' ? tag('OUT','terr') : tag(mt,'tinfo');
-      const sync = (m.sync_status||'').toUpperCase();
-      const syncTag = sync==='SYNCED' ? tag('SYNCED','tok') : tag(sync,'twarn');
-      const vs = (m.validation_status||'').toUpperCase();
-      const valTag = vs==='VALID' ? tag('VALID','tok') : vs==='OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs||'—','terr');
-      h += `<tr>
-        <td>${fmtTime(m.timestamp_dubai)}</td>
-        <td><strong>${m.handling_unit||''}</strong></td>
-        <td>${m.indus_part||'—'}</td>
-        <td>${m.pallet_qty||'—'}</td>
-        <td>${typeTag}</td>
-        <td>${m.location||'—'}</td>
-        <td>${m.operator_id||'—'}</td>
-        <td>${m.device_id||'—'}</td>
-        <td>${syncTag}</td>
-        <td>${valTag}</td>
-      </tr>`;
+    // Movement Errors
+    const rows=d.errors||[];
+    if(!rows.length){errEl.innerHTML='<div class="empty">🎉 No movement errors logged.</div>';return;}
+    let h=`<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Movement Type</th>
+      <th>Validation</th><th>Operator</th><th>Location</th><th>Sync</th></tr></thead><tbody>`;
+    for(const e of rows){
+      const mt=(e.movement_type||'').toUpperCase();
+      const mtTag=mt==='ERROR'?tag('ERROR','terr'):mt==='STOCK_IN'?tag('IN','tok'):tag(mt||'—','tinfo');
+      const vs=(e.validation_status||'').toUpperCase();
+      const vsTag=vs==='VALID'?tag('VALID','tok'):vs==='OVERRIDE'?tag('OVERRIDE','twarn'):tag(vs||'—','terr');
+      h+=`<tr><td>${fmtTime(e.timestamp_dubai)}</td><td><strong>${e.handling_unit||''}</strong></td>
+        <td>${mtTag}</td><td>${vsTag}</td><td>${e.operator_id||'—'}</td>
+        <td>${e.location||'—'}</td><td>${e.sync_status||'—'}</td></tr>`;
     }
-    h += '</tbody></table>';
-    el.innerHTML = h;
-  } catch(e) { el.innerHTML = '<div class="empty">Failed to load movements.</div>'; }
+    errEl.innerHTML=h+'</tbody></table>';
+  }catch(e){errEl.innerHTML='<div class="empty">Failed to load error log.</div>';}
 }
 
-// ── Pallet Status table ────────────────────────────────────────────────────
-async function loadStatuses() {
-  const el = document.getElementById('tbl-statuses');
-  try {
-    const d = await fetch('/admin/api/pallet-statuses').then(r => r.json());
-    const rows = d.statuses || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty">No pallet statuses recorded yet.</div>'; return; }
-    let h = `<table><thead><tr>
-      <th>HU</th><th>Status</th><th>Last Movement</th><th>Last Time (Dubai)</th>
-      <th>Location</th><th>Indus Part</th><th>Qty</th>
-    </tr></thead><tbody>`;
-    for (const s of rows) {
-      const cs = (s.current_status||'').toUpperCase();
-      const stTag = cs==='IN_WAREHOUSE' ? tag('IN','tok') : cs==='OUT_OF_WAREHOUSE' ? tag('OUT','terr') : tag(cs||'—','tinfo');
-      const mt = (s.last_movement_type||'').toUpperCase();
-      const mtTag = mt==='STOCK_IN' ? tag('IN','tok') : mt==='STOCK_OUT' ? tag('OUT','terr') : tag(mt||'—','tinfo');
-      h += `<tr>
-        <td><strong>${s.handling_unit||''}</strong></td>
-        <td>${stTag}</td>
-        <td>${mtTag}</td>
-        <td>${fmtTime(s.last_movement_time_dubai)}</td>
-        <td>${s.last_location||'—'}</td>
-        <td>${s.indus_part||'—'}</td>
-        <td>${s.pallet_qty||'—'}</td>
-      </tr>`;
-    }
-    h += '</tbody></table>';
-    el.innerHTML = h;
-  } catch(e) { el.innerHTML = '<div class="empty">Failed to load statuses.</div>'; }
-}
-
-// ── Errors table ───────────────────────────────────────────────────────────
-async function loadErrors() {
-  const el = document.getElementById('tbl-errors');
-  try {
-    const d = await fetch('/admin/api/errors').then(r => r.json());
-    const rows = d.errors || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty">No errors logged. 🎉</div>'; return; }
-    let h = `<table><thead><tr>
-      <th>Time (Dubai)</th><th>HU</th><th>Movement Type</th><th>Validation</th>
-      <th>Operator</th><th>Location</th><th>Sync</th>
-    </tr></thead><tbody>`;
-    for (const e of rows) {
-      const mt = (e.movement_type||'').toUpperCase();
-      const mtTag = mt==='ERROR' ? tag('ERROR','terr') : mt==='STOCK_IN' ? tag('IN','tok') : tag(mt||'—','tinfo');
-      const vs = (e.validation_status||'').toUpperCase();
-      const vsTag = vs==='VALID' ? tag('VALID','tok') : vs==='OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs||'—','terr');
-      h += `<tr>
-        <td>${fmtTime(e.timestamp_dubai)}</td>
-        <td><strong>${e.handling_unit||''}</strong></td>
-        <td>${mtTag}</td>
-        <td>${vsTag}</td>
-        <td>${e.operator_id||'—'}</td>
-        <td>${e.location||'—'}</td>
-        <td>${(e.sync_status||'—')}</td>
-      </tr>`;
-    }
-    h += '</tbody></table>';
-    el.innerHTML = h;
-  } catch(e) { el.innerHTML = '<div class="empty">Failed to load error log.</div>'; }
-}
-
-// ── Analytics charts ───────────────────────────────────────────────────────
-async function loadAnalytics() {
-  await Promise.all([loadVelocity(), loadLocationChart(), loadPartsChart(), loadOperators()]);
-}
-
-async function loadVelocity() {
-  try {
-    const d = await fetch('/admin/api/analytics/velocity').then(r => r.json());
-    const rows = d.rows || [];
-    const days = [...new Set(rows.map(r => r.day))].sort();
-    const inData  = days.map(day => { const r = rows.find(x => x.day===day && x.movement_type==='STOCK_IN');  return r ? parseInt(r.cnt) : 0; });
-    const outData = days.map(day => { const r = rows.find(x => x.day===day && x.movement_type==='STOCK_OUT'); return r ? parseInt(r.cnt) : 0; });
+// ── Analytics charts ──────────────────────────────────────────────────────
+async function loadVelocity(){
+  try{
+    const d=await fetch('/admin/api/analytics/velocity').then(r=>r.json());
+    const rows=d.rows||[];
+    const days=[...new Set(rows.map(r=>r.day))].sort();
+    const inData =days.map(day=>{const r=rows.find(x=>x.day===day&&x.movement_type==='STOCK_IN'); return r?parseInt(r.cnt):0;});
+    const outData=days.map(day=>{const r=rows.find(x=>x.day===day&&x.movement_type==='STOCK_OUT');return r?parseInt(r.cnt):0;});
     destroyChart('velocity');
-    const ctx = document.getElementById('cVelocity').getContext('2d');
-    charts['velocity'] = new Chart(ctx, {
+    charts['velocity']=new Chart(document.getElementById('cVelocity'),{
       type:'bar',
-      data:{ labels:days,
-        datasets:[
-          {label:'STOCK IN',  data:inData,  backgroundColor:'#22c55e80', borderColor:'#22c55e', borderWidth:1.5},
-          {label:'STOCK OUT', data:outData, backgroundColor:'#ef444480', borderColor:'#ef4444', borderWidth:1.5}
-        ]
-      },
-      options:{ responsive:true, maintainAspectRatio:false,
+      data:{labels:days,datasets:[
+        {label:'STOCK IN', data:inData, backgroundColor:'#22c55e80',borderColor:'#22c55e',borderWidth:1.5},
+        {label:'STOCK OUT',data:outData,backgroundColor:'#ef444480',borderColor:'#ef4444',borderWidth:1.5}
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,
         plugins:{legend:{labels:{color:'#8892a4',font:{size:11}}}},
-        scales:{
-          x:{ticks:{color:'#8892a4',font:{size:10},maxRotation:45},grid:{color:'#2e3347'}},
-          y:{ticks:{color:'#8892a4',font:{size:11}},grid:{color:'#2e3347'},beginAtZero:true}
-        }
-      }
+        scales:{x:{ticks:{color:'#8892a4',font:{size:10},maxRotation:45},grid:{color:'#2e3347'}},
+                y:{ticks:{color:'#8892a4'},grid:{color:'#2e3347'},beginAtZero:true}}}
     });
-  } catch(e) { console.error('velocity chart', e); }
+  }catch(e){console.error('velocity',e);}
 }
-
-async function loadLocationChart() {
-  try {
-    const d = await fetch('/admin/api/analytics/by-location').then(r => r.json());
-    const rows = d.rows || [];
-    if (!rows.length) return;
-    const colors = ['#6366f1','#22c55e','#f59e0b','#60a5fa','#ec4899','#14b8a6','#f97316'];
+async function loadLocationChart(){
+  try{
+    const d=await fetch('/admin/api/analytics/by-location').then(r=>r.json());
+    const rows=d.rows||[];
+    if(!rows.length)return;
+    const colors=['#6366f1','#22c55e','#f59e0b','#60a5fa','#ec4899','#14b8a6','#f97316'];
     destroyChart('location');
-    const ctx = document.getElementById('cLocation').getContext('2d');
-    charts['location'] = new Chart(ctx, {
+    charts['location']=new Chart(document.getElementById('cLocation'),{
       type:'doughnut',
-      data:{ labels:rows.map(r=>r.location),
-             datasets:[{data:rows.map(r=>parseInt(r.pallet_count)), backgroundColor:colors, borderWidth:0}] },
-      options:{ responsive:true, maintainAspectRatio:false,
-        plugins:{legend:{position:'right', labels:{color:'#8892a4',font:{size:11},boxWidth:12}}}
-      }
+      data:{labels:rows.map(r=>r.location),datasets:[{data:rows.map(r=>parseInt(r.pallet_count)),backgroundColor:colors,borderWidth:0}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{color:'#8892a4',font:{size:11},boxWidth:12}}}}
     });
-  } catch(e) { console.error('location chart', e); }
+  }catch(e){console.error('location',e);}
 }
-
-async function loadPartsChart() {
-  try {
-    const d = await fetch('/admin/api/analytics/by-part').then(r => r.json());
-    const rows = d.rows || [];
-    if (!rows.length) return;
+async function loadPartsChart(){
+  try{
+    const d=await fetch('/admin/api/analytics/by-part').then(r=>r.json());
+    const rows=d.rows||[];
+    if(!rows.length)return;
     destroyChart('parts');
-    const ctx = document.getElementById('cParts').getContext('2d');
-    charts['parts'] = new Chart(ctx, {
+    charts['parts']=new Chart(document.getElementById('cParts'),{
       type:'bar',
-      data:{ labels:rows.map(r=>r.part),
-             datasets:[{label:'Pallets',data:rows.map(r=>parseInt(r.pallet_count)),
-                        backgroundColor:'#6366f180',borderColor:'#6366f1',borderWidth:1.5}] },
-      options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      data:{labels:rows.map(r=>r.part),datasets:[{label:'Pallets',data:rows.map(r=>parseInt(r.pallet_count)),backgroundColor:'#6366f180',borderColor:'#6366f1',borderWidth:1.5}]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
         plugins:{legend:{display:false}},
-        scales:{
-          x:{ticks:{color:'#8892a4',font:{size:10}},grid:{color:'#2e3347'},beginAtZero:true},
-          y:{ticks:{color:'#8892a4',font:{size:10}},grid:{display:false}}
-        }
-      }
+        scales:{x:{ticks:{color:'#8892a4',font:{size:10}},grid:{color:'#2e3347'},beginAtZero:true},
+                y:{ticks:{color:'#8892a4',font:{size:10}},grid:{display:false}}}}
     });
-  } catch(e) { console.error('parts chart', e); }
+  }catch(e){console.error('parts',e);}
+}
+async function loadOperators(){
+  const el=document.getElementById('tbl-operators');
+  try{
+    const d=await fetch('/admin/api/analytics/operators').then(r=>r.json());
+    const rows=d.rows||[];
+    if(!rows.length){el.innerHTML='<div class="empty">No operator activity in last 30 days.</div>';return;}
+    const ops={};
+    for(const r of rows){
+      if(!ops[r.operator])ops[r.operator]={in:0,out:0,last:r.last_active};
+      if(r.movement_type==='STOCK_IN') ops[r.operator].in=parseInt(r.cnt);
+      if(r.movement_type==='STOCK_OUT')ops[r.operator].out=parseInt(r.cnt);
+      if(r.last_active>ops[r.operator].last)ops[r.operator].last=r.last_active;
+    }
+    let h=`<table><thead><tr><th>Operator</th><th>IN</th><th>OUT</th><th>Total</th><th>Last Active (Dubai)</th></tr></thead><tbody>`;
+    for(const [op,v] of Object.entries(ops)){
+      h+=`<tr><td style="font-weight:600">${op}</td><td class="ok">${v.in}</td><td class="err">${v.out}</td><td>${v.in+v.out}</td><td>${fmtTime(v.last)}</td></tr>`;
+    }
+    el.innerHTML=h+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="empty">Failed to load operators.</div>';}
+}
+async function loadAnalytics(){
+  await Promise.all([loadVelocity(),loadLocationChart(),loadPartsChart(),loadOperators()]);
 }
 
-async function loadOperators() {
-  const el = document.getElementById('tbl-operators');
-  try {
-    const d = await fetch('/admin/api/analytics/operators').then(r => r.json());
-    const rows = d.rows || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty">No operator activity in last 30 days.</div>'; return; }
-    // pivot: operator → {STOCK_IN, STOCK_OUT, last_active}
-    const ops = {};
-    for (const r of rows) {
-      if (!ops[r.operator]) ops[r.operator] = {in:0, out:0, last:r.last_active};
-      if (r.movement_type==='STOCK_IN')  ops[r.operator].in  = parseInt(r.cnt);
-      if (r.movement_type==='STOCK_OUT') ops[r.operator].out = parseInt(r.cnt);
-      if (r.last_active > ops[r.operator].last) ops[r.operator].last = r.last_active;
-    }
-    let h = `<table><thead><tr><th>Operator</th><th>IN</th><th>OUT</th><th>Total</th><th>Last Active (Dubai)</th></tr></thead><tbody>`;
-    for (const [op, v] of Object.entries(ops)) {
-      h += `<tr><td class="op-name">${op}</td><td class="ok">${v.in}</td><td class="err">${v.out}</td><td>${v.in+v.out}</td><td>${fmtTime(v.last)}</td></tr>`;
-    }
-    h += '</tbody></table>';
-    el.innerHTML = h;
-  } catch(e) { el.innerHTML = '<div class="empty">Failed to load operator data.</div>'; }
-}
-
-// ── IVT tab ────────────────────────────────────────────────────────────────
-async function loadIvt() {
-  try {
-    const d = await fetch('/admin/api/analytics/ivt').then(r => r.json());
-    // daily chart
-    const daily = d.daily || [];
+// ── IVT ────────────────────────────────────────────────────────────────────
+async function loadIvt(){
+  try{
+    const d=await fetch('/admin/api/analytics/ivt').then(r=>r.json());
+    const daily=d.daily||[];
     destroyChart('ivt');
-    if (daily.length) {
-      const ctx = document.getElementById('cIvt').getContext('2d');
-      charts['ivt'] = new Chart(ctx, {
+    if(daily.length){
+      charts['ivt']=new Chart(document.getElementById('cIvt'),{
         type:'line',
-        data:{ labels:daily.map(r=>r.day),
-               datasets:[{label:'Scans',data:daily.map(r=>parseInt(r.cnt)),
-                          borderColor:'#60a5fa',backgroundColor:'#60a5fa20',fill:true,tension:.35,pointRadius:4}] },
-        options:{ responsive:true, maintainAspectRatio:false,
-          plugins:{legend:{display:false}},
-          scales:{
-            x:{ticks:{color:'#8892a4',font:{size:10}},grid:{color:'#2e3347'}},
-            y:{ticks:{color:'#8892a4',font:{size:11}},grid:{color:'#2e3347'},beginAtZero:true}
-          }
-        }
+        data:{labels:daily.map(r=>r.day),datasets:[{label:'Scans',data:daily.map(r=>parseInt(r.cnt)),
+              borderColor:'#60a5fa',backgroundColor:'#60a5fa20',fill:true,tension:.35,pointRadius:4}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+          scales:{x:{ticks:{color:'#8892a4',font:{size:10}},grid:{color:'#2e3347'}},
+                  y:{ticks:{color:'#8892a4'},grid:{color:'#2e3347'},beginAtZero:true}}}
       });
     }
-    // table
-    const el = document.getElementById('tbl-ivt');
-    const rows = d.recent || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty">No IVT scans yet.</div>'; return; }
-    let h = `<table><thead><tr><th>Code</th><th>Scanned At</th><th>Location</th></tr></thead><tbody>`;
-    for (const r of rows) {
-      h += `<tr><td style="font-family:monospace;font-size:12px">${r.code}</td><td>${r.scanned_date||'—'}</td><td>${r.location||'—'}</td></tr>`;
+    const el=document.getElementById('tbl-ivt');
+    const rows=d.recent||[];
+    if(!rows.length){el.innerHTML='<div class="empty">No IVT scans yet.</div>';return;}
+    let h=`<table><thead><tr><th>Code</th><th>Scanned At</th><th>Location</th></tr></thead><tbody>`;
+    for(const r of rows){
+      h+=`<tr><td style="font-family:monospace;font-size:11px">${r.code}</td><td>${r.scanned_date||'—'}</td><td>${r.location||'—'}</td></tr>`;
     }
-    h += '</tbody></table>';
-    el.innerHTML = h;
-  } catch(e) { console.error('IVT load error', e); }
+    el.innerHTML=h+'</tbody></table>';
+  }catch(e){console.error('IVT',e);}
 }
 
 // ── Master load ────────────────────────────────────────────────────────────
-function loadAll() {
-  checkConn();
-  loadStats();
-  loadMovements();
-  loadStatuses();
-  loadErrors();
-  loadAnalytics();
-  loadIvt();
+function loadAll(){
+  checkConn(); loadStats(); loadMovements(); loadStatuses();
+  loadStock(); loadErrors(); loadAnalytics(); loadIvt();
 }
-
 document.addEventListener('DOMContentLoaded', loadAll);
 </script>
 </body>
