@@ -16,6 +16,9 @@ Security:
   instead of SAP values (handles label vs SAP discrepancies).
 
   Offline sync — /sync is capped at 50 events per request.
+
+  IVT Line — /api/ivt-check and /api/ivt-enter are completely isolated
+  from the warehouse movement flow. They only touch the IVT_Line worksheet.
 """
 import logging
 from datetime import datetime, timezone
@@ -219,3 +222,82 @@ def validate_pin():
         return jsonify({"valid": True}), 200
 
     return jsonify({"valid": False, "message": "Invalid PIN."}), 403
+
+
+# ===========================================================================
+# IVT LINE ROUTES
+# Completely isolated from warehouse movement flow.
+# Only touches the IVT_Line worksheet (Column A = Code, Column B = Scanned Date).
+# ===========================================================================
+
+@api_bp.route('/ivt-check', methods=['POST'])
+def ivt_check():
+    """
+    Check whether a scanned code already exists in the IVT_Line worksheet.
+
+    Reads Column A (header: Code) of the IVT_Line sheet and searches
+    for an exact case-insensitive match.
+
+    Returns:
+      { "duplicate": false }                          — code is unique, safe to enter
+      { "duplicate": true, "scanned_date": "..." }   — duplicate found, date from col B
+      400 — missing code
+      502 — Graph/Excel read failure
+    """
+    data = request.get_json(silent=True) or {}
+    code = str(data.get('code', '')).strip()
+
+    if not code:
+        return jsonify({"success": False, "message": "Code is required."}), 400
+
+    try:
+        from app.services.graph_client import find_row_as_dict
+        sheet = current_app.config['SHEET_IVT_LINE']
+        existing = find_row_as_dict(sheet, 'Code', code)
+
+        if existing:
+            # Code already exists — return the date stored in column B
+            raw_date = str(existing.get('Scanned Date', '') or '').strip()
+            return jsonify({"duplicate": True, "scanned_date": raw_date}), 200
+
+        return jsonify({"duplicate": False}), 200
+
+    except Exception as exc:
+        logger.error("IVT check failed for code %s: %s", code, exc)
+        return jsonify({"success": False, "message": "Could not read IVT_Line sheet. Try again."}), 502
+
+
+@api_bp.route('/ivt-enter', methods=['POST'])
+def ivt_enter():
+    """
+    Append a unique code to the IVT_Line worksheet.
+
+    Writes:
+      Column A: the scanned code
+      Column B: current timestamp in Dubai time (DD/MM/YYYY HH:MM:SS AM/PM)
+
+    The caller is expected to have already called /api/ivt-check and confirmed
+    the code is not a duplicate before calling this endpoint.
+
+    Returns:
+      { "success": true, "scanned_date": "DD/MM/YYYY HH:MM:SS AM/PM" }
+      400 — missing code
+      502 — Graph/Excel write failure
+    """
+    data = request.get_json(silent=True) or {}
+    code = str(data.get('code', '')).strip()
+
+    if not code:
+        return jsonify({"success": False, "message": "Code is required."}), 400
+
+    try:
+        from app.services.graph_client import append_row
+        sheet = current_app.config['SHEET_IVT_LINE']
+        scanned_date = _fmt_dubai(datetime.now(timezone.utc))
+        append_row(sheet, [code, scanned_date], num_cols=2)
+        logger.info("IVT_Line: appended code=%s date=%s", code, scanned_date)
+        return jsonify({"success": True, "scanned_date": scanned_date}), 200
+
+    except Exception as exc:
+        logger.error("IVT enter failed for code %s: %s", code, exc)
+        return jsonify({"success": False, "message": "Could not write to IVT_Line sheet. Try again."}), 502
