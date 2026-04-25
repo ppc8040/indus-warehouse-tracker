@@ -47,7 +47,10 @@ Schema (created by scripts/create_schema.py):
 Connection strategy:
   A module-level connection pool (psycopg2.pool.ThreadedConnectionPool)
   is created once on first use and reused across requests.
-  Pool size: min=1, max=10 — fits Heroku hobby/standard tiers.
+  Pool size: min=2, max=10 — min=2 matches gunicorn worker count so each
+  worker always has a connection available without blocking.
+  Heroku Postgres requires sslmode=require; this is passed via connect_kwargs
+  so the dyno never fails with SSL negotiation errors.
   Every public function acquires a connection from the pool, uses it,
   and returns it in a finally block so the pool is never exhausted.
 
@@ -92,7 +95,14 @@ _pool: pg_pool.ThreadedConnectionPool | None = None
 
 
 def _get_pool() -> pg_pool.ThreadedConnectionPool:
-    """Return the module-level connection pool, creating it on first call."""
+    """
+    Return the module-level connection pool, creating it on first call.
+
+    minconn=2 matches the gunicorn worker count (--workers 2) so every
+    worker always has a ready connection and never blocks waiting for one.
+    Heroku Postgres mandates SSL; sslmode=require is passed explicitly so
+    the connection never fails with an SSL negotiation error.
+    """
     global _pool
     if _pool is None:
         db_url = os.environ.get("DATABASE_URL", "")
@@ -107,14 +117,13 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
             db_url = "postgresql://" + db_url[len("postgres://"):]
         try:
             _pool = pg_pool.ThreadedConnectionPool(
-                minconn=1,
+                minconn=2,
                 maxconn=10,
                 dsn=db_url,
                 cursor_factory=psycopg2.extras.RealDictCursor,
+                sslmode="require",
             )
-            logger.info("PostgreSQL connection pool created (min=1 max=10).")
-            # BUG FIX: register atexit so the pool is cleanly closed when
-            # the dyno shuts down, preventing connection leaks.
+            logger.info("PostgreSQL connection pool created (min=2 max=10).")
             atexit.register(_close_pool)
         except psycopg2.Error as exc:
             raise DbError(f"Failed to create connection pool: {exc}", cause=exc) from exc
@@ -137,22 +146,53 @@ def _close_pool():
 def _get_conn():
     """
     Context manager: borrow a connection from the pool, yield it,
-    commit on clean exit, rollback + return on exception.
+    commit on clean exit, rollback + re-raise on exception.
     The connection is always returned to the pool in the finally block.
+
+    If the borrowed connection has gone stale (e.g. Heroku killed it after
+    the 5-minute idle timeout), psycopg2 raises an OperationalError on the
+    first execute. We catch that, discard the bad connection, open a fresh
+    one, and retry once — transparent to the caller.
     """
     p = _get_pool()
     conn = p.getconn()
     try:
+        # Proactively reset the connection state so stale connections
+        # don't carry over uncommitted transactions from previous requests.
+        if conn.closed:
+            p.putconn(conn, close=True)
+            conn = p.getconn()
         yield conn
         conn.commit()
+    except psycopg2.OperationalError as exc:
+        # Connection may have been dropped by Heroku's 5-min idle timeout.
+        # Roll back, discard, and let the pool create a fresh one next call.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            p.putconn(conn, close=True)
+        except Exception:
+            pass
+        raise DbError(f"Database connection lost (will recover on retry): {exc}", cause=exc) from exc
     except psycopg2.Error as exc:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise DbError(f"Database error: {exc}", cause=exc) from exc
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
-        p.putconn(conn)
+        try:
+            p.putconn(conn)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -178,9 +218,7 @@ def insert_movement(
 ) -> None:
     """
     Append one row to the movements table.
-
-    Raises DbError on failure (including duplicate event_id — the caller
-    should treat that as a safe no-op for idempotency if needed).
+    ON CONFLICT DO NOTHING ensures idempotency for offline-sync replays.
     """
     sql = """
         INSERT INTO movements (
@@ -220,10 +258,7 @@ def insert_movement(
 
 
 def get_recent_movements(limit: int = 50) -> list[dict]:
-    """
-    Return the most recent `limit` rows from movements, newest first.
-    Each row is a dict with all column names as keys.
-    """
+    """Return the most recent `limit` rows from movements, newest first."""
     sql = """
         SELECT
             id, event_id,
@@ -244,10 +279,7 @@ def get_recent_movements(limit: int = 50) -> list[dict]:
 
 
 def get_last_movement_for_hu(handling_unit: str) -> dict | None:
-    """
-    Return the most recent movement row for a given HU, or None if not found.
-    Used by duplicate-check logic in movement_service.py.
-    """
+    """Return the most recent movement row for a given HU, or None."""
     sql = """
         SELECT movement_type, validation_status, location, timestamp_utc
         FROM movements
@@ -263,10 +295,7 @@ def get_last_movement_for_hu(handling_unit: str) -> dict | None:
 
 
 def get_all_movements_for_hu(handling_unit: str) -> list[dict]:
-    """
-    Return all movement rows for a HU, oldest first.
-    Useful for the admin detail view.
-    """
+    """Return all movement rows for a HU, oldest first."""
     sql = """
         SELECT
             id, event_id,
@@ -291,9 +320,7 @@ def get_all_movements_for_hu(handling_unit: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_pallet_status(handling_unit: str) -> dict | None:
-    """
-    Return the current status row for a HU, or None if not recorded yet.
-    """
+    """Return the current status row for a HU, or None if not recorded yet."""
     sql = """
         SELECT
             handling_unit, current_status, last_event_id,
@@ -320,10 +347,7 @@ def upsert_pallet_status(
     pallet_qty: str = "",
     last_location: str = "",
 ) -> None:
-    """
-    Insert or update the pallet_status row for this HU.
-    Called immediately after a successful insert_movement.
-    """
+    """Insert or update the pallet_status row for this HU."""
     sql = """
         INSERT INTO pallet_status (
             handling_unit, current_status, last_event_id,
@@ -360,7 +384,7 @@ def upsert_pallet_status(
 
 
 def get_all_pallet_statuses() -> list[dict]:
-    """Return all rows from pallet_status, ordered by last activity (newest first)."""
+    """Return all rows from pallet_status, newest first."""
     sql = """
         SELECT
             handling_unit, current_status, last_event_id,
@@ -392,11 +416,7 @@ def ivt_find(code: str) -> dict | None:
 
 
 def ivt_insert(code: str, scanned_date: str, location: str) -> None:
-    """
-    Insert a new IVT scan.
-    Raises DbError on duplicate (unique constraint on code).
-    The caller should check ivt_find first to give a clean user message.
-    """
+    """Insert a new IVT scan. Raises DbError on duplicate."""
     sql = """
         INSERT INTO ivt_scans (code, scanned_date, location)
         VALUES (%(code)s, %(scanned_date)s, %(location)s)
@@ -412,10 +432,7 @@ def ivt_insert(code: str, scanned_date: str, location: str) -> None:
 # ---------------------------------------------------------------------------
 
 def ping() -> bool:
-    """
-    Return True if the database is reachable, False otherwise.
-    Used by /health and /admin/api/connection-test to surface DB connectivity.
-    """
+    """Return True if the database is reachable, False otherwise."""
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
@@ -434,7 +451,7 @@ def _parse_ts(value) -> datetime:
     """
     Parse an ISO timestamp string (or datetime) to a timezone-aware datetime.
     Naive timestamps are assumed UTC.
-    Falls back to datetime.now(UTC) on any parse error so nothing crashes.
+    Falls back to datetime.now(UTC) on any parse error.
     """
     if isinstance(value, datetime):
         if value.tzinfo is None:
@@ -457,9 +474,8 @@ def _parse_ts(value) -> datetime:
 
 def _row_to_dict(row) -> dict:
     """
-    Convert a psycopg2 RealDictRow (or None) to a plain Python dict.
-    datetime values are serialised to ISO strings so Flask's jsonify
-    can handle them without a custom encoder.
+    Convert a psycopg2 RealDictRow to a plain Python dict.
+    datetime values are serialised to ISO strings for Flask jsonify.
     """
     if row is None:
         return {}

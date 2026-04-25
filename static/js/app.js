@@ -149,7 +149,6 @@ function _loadDestinations() {
       }
     })
     .catch(err => {
-      // Non-fatal — destination list falls back to pre-rendered options in HTML
       console.warn('Could not load destinations:', err);
     });
 }
@@ -186,7 +185,6 @@ function startScanner() {
     return;
   }
 
-  // Barcode formats ONLY — QR_CODE is intentionally excluded
   const formats = [
     Html5QrcodeSupportedFormats.CODE_128,
     Html5QrcodeSupportedFormats.CODE_39,
@@ -235,18 +233,15 @@ function stopScanner() {
   }
 }
 
-// Called when camera successfully reads a barcode
 function onBarcodeScanSuccess(decodedText) {
   const val = decodedText.trim();
   if (!val) return;
 
-  // Only accept values that look like an HU (18-20 digits, starts with 10 or 11)
   if (!HU_PATTERN.test(val) || (!val.startsWith('10') && !val.startsWith('11'))) {
     toast('Scanned code is not a valid HU barcode. Point at the barcode only.', 'warn', 3000);
     return;
   }
 
-  // If an HU is already loaded, do not overwrite without reset
   if (scanned.handling_unit) {
     toast('HU already loaded. Tap RESET to scan a different one.', 'warn', 3000);
     return;
@@ -255,11 +250,9 @@ function onBarcodeScanSuccess(decodedText) {
   stopScanner();
   if (navigator.vibrate) navigator.vibrate(100);
 
-  // Populate the manual input field so the user can see what was scanned
   const inp = document.getElementById('huManualInput');
   if (inp) inp.value = val;
 
-  // Auto-trigger the SAP lookup
   _doSAPLookup(val);
 }
 
@@ -268,7 +261,6 @@ function onBarcodeScanSuccess(decodedText) {
 //  HU LOOKUP — manual entry + SAP fetch
 // ═══════════════════════════════════════════════════════════
 
-// Called by the LOOKUP button (manual entry path)
 function confirmHULookup() {
   const raw = document.getElementById('huManualInput').value.trim();
   if (!raw) {
@@ -286,7 +278,6 @@ function confirmHULookup() {
   _doSAPLookup(raw);
 }
 
-// Core SAP lookup — shared by both camera scan and manual entry paths
 async function _doSAPLookup(hu) {
   if (sapLookupInProgress) return;
   sapLookupInProgress = true;
@@ -306,7 +297,6 @@ async function _doSAPLookup(hu) {
     const data = await resp.json();
 
     if (data.success) {
-      // ── Normal path: found in pallet_status or SAP ──
       scanned.handling_unit = data.handling_unit;
       scanned.indus_part    = data.indus_part;
       scanned.pallet_qty    = data.pallet_qty;
@@ -314,7 +304,6 @@ async function _doSAPLookup(hu) {
       _isNotFoundOverride   = false;
       _nfoSupervisorPin     = '';
 
-      // Store location/status for STOCK_OUT destination card pre-fill
       _lookupLastLocation  = data.last_location    || '';
       _lookupCurrentStatus = data.current_status   || '';
 
@@ -327,13 +316,11 @@ async function _doSAPLookup(hu) {
       if (proceedBtn) proceedBtn.disabled = false;
 
     } else if (data.error_code === 'HU_NOT_FOUND') {
-      // ── Override path: HU not in SAP or pallet_status ──
       _lookupLastLocation  = '';
       _lookupCurrentStatus = '';
       _openNotFoundOverrideModal(hu);
 
     } else {
-      // ── All other failures (network, auth, parse) ──
       toast(data.message || 'Lookup failed. Try again.', 'fail', 6000);
       _resetLookupState();
     }
@@ -576,7 +563,6 @@ function confirmLocation() {
   document.getElementById('locationModal').classList.remove('on');
 
   if (_pendingMovementType === 'STOCK_OUT') {
-    // Show destination picker before posting
     _openDestinationModal(_selectedLocation);
   } else {
     doMovement(_pendingMovementType, _selectedLocation, '');
@@ -592,24 +578,17 @@ function cancelLocation() {
 
 // ═══════════════════════════════════════════════════════════
 //  DESTINATION MODAL — STOCK_OUT only
-//
-//  Opens after location is confirmed for a STOCK_OUT.
-//  The worker picks where the pallet is going before the
-//  movement is posted. Skipping (tapping POST WITHOUT DEST)
-//  is allowed so old habits aren't broken on day one.
 // ═══════════════════════════════════════════════════════════
 
 function _openDestinationModal(location) {
   _selectedDestination = '';
 
-  // Pre-fill the "From" display badge
   const fromBadge = document.getElementById('destFromBadge');
   if (fromBadge) {
     const from = _lookupLastLocation || location;
     fromBadge.textContent = from || '\u2014';
   }
 
-  // Clear previous selection
   document.querySelectorAll('.dest-btn').forEach(b => b.classList.remove('selected'));
   document.getElementById('btnConfirmDestination').disabled = true;
   document.getElementById('btnSkipDestination').dataset.location = location;
@@ -631,7 +610,6 @@ function confirmDestination() {
 }
 
 function skipDestination() {
-  // Worker chooses not to specify a destination — still a valid movement
   document.getElementById('destinationModal').classList.remove('on');
   doMovement('STOCK_OUT', _selectedLocation, '');
 }
@@ -639,7 +617,6 @@ function skipDestination() {
 function cancelDestination() {
   document.getElementById('destinationModal').classList.remove('on');
   _selectedDestination = '';
-  // Don't reset movement type / location — worker can re-tap STOCK OUT
 }
 
 
@@ -647,7 +624,7 @@ function cancelDestination() {
 //  MOVEMENT SUBMISSION
 // ═══════════════════════════════════════════════════════════
 
-function doMovement(type, location, toLocation) {
+async function doMovement(type, location, toLocation) {
   if (movementInFlight) {
     toast('Movement already in progress. Please wait.', 'warn');
     return;
@@ -657,44 +634,44 @@ function doMovement(type, location, toLocation) {
     return;
   }
 
-  movementInFlight = true;
-  showSpinner(type === 'STOCK_IN' ? 'Recording Stock IN\u2026' : 'Recording Stock OUT\u2026');
-
-  const idempotencyKey = `${scanned.handling_unit}-${type}-${Date.now()}`;
-  const supervisorPin  = _isNotFoundOverride ? _nfoSupervisorPin : '';
-
-  const payload = {
-    handling_unit:   scanned.handling_unit,
-    movement_type:   type,
-    indus_part:      scanned.indus_part,
-    customer_part:   '',
-    pallet_qty:      scanned.pallet_qty,
-    job_no:          '',
-    operator_id:     deviceId,
-    device_id:       deviceId,
-    location:        location,
-    to_location:     toLocation || '',
-    timestamp:       new Date().toISOString(),
-    idempotency_key: idempotencyKey,
-    is_override:     _isNotFoundOverride,
-    override_reason: _isNotFoundOverride
-      ? 'SAP-not-found supervisor override \u2014 data entered manually'
-      : '',
-    supervisor_pin:  supervisorPin,
-  };
-
+  // Gate: do not attempt server call when offline
   if (!navigator.onLine) {
+    movementInFlight = true;
+    const idempotencyKey = `${scanned.handling_unit}-${type}-${Date.now()}`;
+    const payload = _buildPayload(type, location, toLocation, idempotencyKey);
     _queueOffline(payload);
     return;
   }
 
-  fetch('/api/movement', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  .then(r => r.json())
-  .then(data => {
+  movementInFlight = true;
+  showSpinner(type === 'STOCK_IN' ? 'Recording Stock IN\u2026' : 'Recording Stock OUT\u2026');
+
+  const idempotencyKey = `${scanned.handling_unit}-${type}-${Date.now()}`;
+  const payload = _buildPayload(type, location, toLocation, idempotencyKey);
+
+  try {
+    const resp = await fetch('/api/movement', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    // Guard: if the server returns a non-JSON body (e.g. Heroku 503 HTML
+    // error page), r.json() would throw and previously caused a silent
+    // fall-through to _queueOffline. We parse safely here instead.
+    let data;
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      data = await resp.json();
+    } else {
+      // Non-JSON response — treat as a transient server error, show message,
+      // do NOT queue offline (the server received the request, it just failed).
+      hideSpinner();
+      movementInFlight = false;
+      toast(`Server error (HTTP ${resp.status}). Please try again.`, 'fail', 6000);
+      return;
+    }
+
     hideSpinner();
     movementInFlight = false;
 
@@ -714,22 +691,51 @@ function doMovement(type, location, toLocation) {
       toast(data.message || 'Movement blocked \u2014 check the details and try again.', 'fail', 6000);
       setTimeout(goScan, 2500);
 
+    } else if (data.status === 'failed_write_logged') {
+      // Transient DB error — server received the request but could not write.
+      // Do NOT queue offline (it would cause a duplicate when the DB recovers).
+      // Show the error and let the worker retry.
+      toast(data.message || 'Database write failed. Please try again in a moment.', 'fail', 7000);
+
     } else {
-      toast(data.message || 'Server error. Saving offline.', 'fail', 5000);
-      _queueOffline(payload);
+      // Unknown status — show what the server said, do not queue offline.
+      toast(data.message || 'Unexpected server response. Please try again.', 'fail', 6000);
     }
-  })
-  .catch(() => {
+
+  } catch (networkErr) {
+    // True network failure (fetch itself threw — no response at all).
+    // Safe to queue offline because the server never received the request.
     hideSpinner();
     movementInFlight = false;
-    toast('Network error. Movement saved for later sync.', 'warn', 5000);
+    console.error('Movement network error:', networkErr);
+    toast('No connection. Movement saved for later sync.', 'warn', 5000);
     _queueOffline(payload);
-  });
+  }
 }
 
-// BUG FIX: wrapped in try/finally to guarantee hideSpinner() and
-// movementInFlight reset even if OfflineQueue.add() throws (e.g.
-// IndexedDB unavailable on some browsers/PWA contexts).
+// Builds the movement payload object from current state.
+function _buildPayload(type, location, toLocation, idempotencyKey) {
+  return {
+    handling_unit:   scanned.handling_unit,
+    movement_type:   type,
+    indus_part:      scanned.indus_part,
+    customer_part:   '',
+    pallet_qty:      scanned.pallet_qty,
+    job_no:          '',
+    operator_id:     deviceId,
+    device_id:       deviceId,
+    location:        location,
+    to_location:     toLocation || '',
+    timestamp:       new Date().toISOString(),
+    idempotency_key: idempotencyKey,
+    is_override:     _isNotFoundOverride,
+    override_reason: _isNotFoundOverride
+      ? 'SAP-not-found supervisor override \u2014 data entered manually'
+      : '',
+    supervisor_pin:  _isNotFoundOverride ? _nfoSupervisorPin : '',
+  };
+}
+
 function _queueOffline(payload) {
   try {
     OfflineQueue.add(payload).then(() => {
@@ -803,7 +809,18 @@ async function confirmOverride() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const data = await resp.json();
+
+    let data;
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      data = await resp.json();
+    } else {
+      hideSpinner();
+      movementInFlight = false;
+      if (ovErr) ovErr.textContent = `Server error (HTTP ${resp.status}). Please try again.`;
+      if (confirmBtn) confirmBtn.disabled = false;
+      return;
+    }
 
     hideSpinner();
     movementInFlight = false;
