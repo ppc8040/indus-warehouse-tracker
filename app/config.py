@@ -23,6 +23,7 @@ class Config:
     SHEET_PALLET_STATUS = 'Pallet_Status'
     SHEET_ERROR_LOG = 'Error_Log'
     SHEET_DEVICE_NAMES = 'Device_Names'
+    SHEET_IVT_LINE = 'IVT_Line'
     # Master_Parts sheet exists but is NOT used — all data comes from scanning the label
 
     # Factory floor auth
