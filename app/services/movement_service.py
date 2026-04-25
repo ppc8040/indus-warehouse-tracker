@@ -30,8 +30,8 @@ Movement rules (unchanged from Excel era):
       from_location — auto-derived from pallet_status.last_location;
                       the caller may pass it explicitly or leave it empty
                       (the service fills it from pallet_status).
-      to_location   — where the pallet is going (Customer, Port Jebel Ali,
-                      Zone M2, Quarantine, Production, …).
+      to_location   — where the pallet is going (M4, M5, M6, M4_STORE,
+                      M16_STORE, LOADING).
     Both are stored in the movements row. Neither field affects existing
     validation logic — they are purely informational/audit fields.
 
@@ -81,19 +81,12 @@ VALID_LOCATIONS = {'M4', 'M5', 'M6', 'M4_STORE', 'M16_STORE'}
 
 # to_location options surfaced to the frontend via /api/destinations
 VALID_DESTINATIONS = [
-    'Customer',
-    'Port Jebel Ali',
-    'Port Khalifa',
-    'Zone M2',
-    'Zone M4',
-    'Zone M5',
-    'Zone M6',
+    'M4',
+    'M5',
+    'M6',
     'M4_STORE',
     'M16_STORE',
-    'Quarantine',
-    'Production',
-    'Return to Supplier',
-    'Other',
+    'LOADING',
 ]
 
 
@@ -157,7 +150,7 @@ def process_movement(
     client_timestamp  : ISO timestamp from the device (falls back to server time)
     idempotency_key   : Client-generated key for offline dedup (logged only)
     location          : Physical zone being operated on (M4, M5, M6, …)
-    to_location       : Destination for STOCK_OUT (Customer, Port JXB, …)
+    to_location       : Destination for STOCK_OUT (M4, M5, M6, M4_STORE, M16_STORE, LOADING)
     """
 
     # ── 1. Validate inputs ────────────────────────────────────────────────
