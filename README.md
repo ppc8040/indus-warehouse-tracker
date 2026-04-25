@@ -1,6 +1,6 @@
 # Indus Warehouse Tracker
 
-The production warehouse management web application for **Indus International FZC**. A Flask-based Progressive Web App (PWA) that tracks all stock movements and IVT line scans — backed by **Microsoft SharePoint Excel** (via Graph API) and deployed on **Heroku**.
+The production warehouse management web application for **Indus International FZC**. A Flask-based Progressive Web App (PWA) that tracks all stock movements and IVT line scans — backed by a **PostgreSQL** database (Heroku Postgres) and deployed on **Heroku**.
 
 ---
 
@@ -12,19 +12,19 @@ The app has two completely independent operating modes accessible from the same 
 Handles all pallet-level stock movement at the factory floor.
 
 - **Barcode scanning** — camera-based Code 128 barcode scanner using `html5-qrcode`
-- **HU Lookup** — scans or manually enters an 18–20 digit Handling Unit number; checks `Pallet_Status` sheet first, falls back to SAP if the HU hasn't been recorded before
+- **HU Lookup** — scans or manually enters an 18–20 digit Handling Unit number; checks `pallet_status` table first, falls back to SAP if the HU hasn't been recorded before
 - **SAP Integration** — retrieves Indus Part (Material) and Pallet Quantity from SAP automatically
-- **Stock IN / Stock OUT** — posts movements to the `Movement_Log` worksheet via Microsoft Graph API
+- **Stock IN / Stock OUT** — posts movements to the `movements` table via `db_client.insert_movement()`
 - **Location selection** — operator picks from M4, M5, M6, M4_STORE, M16_STORE before posting
 - **Supervisor Override** — two separate PIN-gated overrides:
   - *SAP-not-found override* — allows manual entry of part + quantity when the HU doesn't exist in SAP
   - *Movement-rejection override* — bypasses a validation rejection with supervisor authorisation
-- **Duplicate guard** — all movements are checked against `Movement_Log` before posting; duplicates are blocked with no override option
+- **Duplicate guard** — all movements are checked against `movements` before posting; duplicates are blocked with no override option (`ON CONFLICT (event_id) DO NOTHING`)
 - **Offline queue** — movements queued in-browser when offline, synced automatically on reconnection via `/api/sync` (capped at 50 events per batch)
-- **Device name display** — device ID resolved to a friendly name from the `Device_Names` worksheet
+- **Device name display** — device ID resolved to a friendly name from config
 
 ### 2. IVT Line Mode
-Dedicated QR code scanning mode for the IVT assembly line. Completely isolated from the warehouse movement flow — shares the Excel workbook but writes to a separate worksheet (`IVT_Line`).
+Dedicated QR code scanning mode for the IVT assembly line. Completely isolated from the warehouse movement flow — writes to the `ivt_scans` table.
 
 - **QR code scanning** — same `html5-qrcode` camera, separate scanner instance, reads QR / Data Matrix / Code 128 / Code 39
 - **5-rule code validation** (client-side instant check + server-side safety net):
@@ -33,26 +33,55 @@ Dedicated QR code scanning mode for the IVT assembly line. Completely isolated f
   3. Positions 0–8 must equal `561469490` (customer code)
   4. Positions 9–16 must be a valid `00DDMMYY` date segment (day 01–31, month 01–12)
   5. Positions 23–32 must be `8750722699` or `8750722840` (customer part code)
-- **Duplicate check** — Column A of `IVT_Line` is searched for an exact match before allowing entry
+- **Duplicate check** — `ivt_scans` table is searched for an exact match before allowing entry
 - **Unique code** → green card shown; operator selects location (M4 or M5) and taps **ENTER** to record
-- **Duplicate code** → orange card shown with the original scan date from Column B; no entry possible
+- **Duplicate code** → orange card shown with the original scan date; no entry possible
 - **Invalid code** → red card shown with the specific validation error; operator taps **SCAN AGAIN**
-- **Three-column write** — each accepted entry writes `[Code, Scanned Date, Location]` to `IVT_Line`
-- **Date format** — Dubai local time, `DD/MM/YYYY HH:MM:SS AM/PM` (same format as Warehouse Mode)
+- **Three-column write** — each accepted entry writes `[code, scanned_date, location]` to `ivt_scans`
+- **Date format** — Dubai local time, ISO 8601 stored in Postgres as `TIMESTAMPTZ`
 
 ---
 
-## Excel Workbook Structure
+## Database Schema
 
-All data lives in **`Indus Warehouse Stock Movement.xlsx`** on SharePoint (`Indus_USA` site).
+All data lives in **Heroku Postgres**. Schema is created by `scripts/create_schema.py`.
 
-| Worksheet | Used by | Purpose |
-|-----------|---------|---------|
-| `Movement_Log` | Warehouse Mode | All STOCK_IN / STOCK_OUT records |
-| `Pallet_Status` | Warehouse Mode | Current status per HU (checked before SAP) |
-| `Error_Log` | Warehouse Mode | Failed movement attempts |
-| `Device_Names` | Warehouse Mode | Device ID → friendly name mapping |
-| `IVT_Line` | IVT Line Mode | QR scan log (Code, Scanned Date, Location) |
+| Table | Purpose |
+|-------|---------|
+| `movements` | All STOCK_IN / STOCK_OUT records + error rows |
+| `pallet_status` | Current status per HU (upserted on every movement) |
+| `ivt_scans` | IVT QR scan log (code, scanned_date, location) |
+| `error_log` | Failed movement attempts with stage and error code |
+
+### Views
+
+| View | Purpose |
+|------|---------|
+| `v_stock_summary` | All pallet statuses ordered by last movement time |
+| `v_stock_by_location` | Pallet count + total qty grouped by location and part |
+| `v_movement_velocity` | Daily movement counts by type (Dubai timezone) |
+| `v_operator_activity` | Movement totals and last-active time per operator |
+
+### movements columns
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | BIGSERIAL | Primary key |
+| `event_id` | TEXT UNIQUE | UUID per movement, used for idempotency |
+| `timestamp_utc` | TIMESTAMPTZ | UTC time of movement |
+| `handling_unit` | TEXT | 18–20 digit HU barcode |
+| `indus_part` | TEXT | SAP material number |
+| `customer_part` | TEXT | Customer part reference |
+| `pallet_qty` | TEXT | Quantity on pallet |
+| `job_no` | TEXT | Job / work order number |
+| `movement_type` | TEXT | `STOCK_IN`, `STOCK_OUT`, or `ERROR` |
+| `operator_id` | TEXT | PIN-resolved operator identity |
+| `device_id` | TEXT | Device identifier |
+| `sync_status` | TEXT | `SYNCED` or `PENDING` |
+| `validation_status` | TEXT | `VALID`, `OVERRIDE`, `VALIDATION_FAIL`, `DUPLICATE`, etc. |
+| `location` | TEXT | Current / destination location |
+| `from_location` | TEXT | Origin location (transfers) |
+| `to_location` | TEXT | Destination location (transfers) |
 
 ---
 
@@ -62,14 +91,18 @@ All data lives in **`Indus Warehouse Stock Movement.xlsx`** on SharePoint (`Indu
 Worker (Browser / PWA)
     ↓ PIN auth / no SSO
 Flask App (Heroku)
-    ↓ Microsoft Graph API
-SharePoint Excel (Indus_USA site)
-└── Indus Warehouse Stock Movement.xlsx
-    ├── Movement_Log
-    ├── Pallet_Status
-    ├── Error_Log
-    ├── Device_Names
-    └── IVT_Line
+    ↓ db_client.py (psycopg2 ThreadedConnectionPool)
+Heroku Postgres
+    ├── movements
+    ├── pallet_status
+    ├── ivt_scans
+    └── error_log
+```
+
+```
+Flask App (Heroku)
+    ↓ sap_client.py
+SAP S/4HANA Public Cloud (HU lookup only)
 ```
 
 ```
@@ -87,7 +120,7 @@ Flask App (Heroku)
 | Method | Route | Purpose |
 |--------|-------|---------|
 | `POST` | `/api/movement` | Post a STOCK_IN or STOCK_OUT movement |
-| `POST` | `/api/lookup-hu` | Look up HU from Pallet_Status or SAP |
+| `POST` | `/api/lookup-hu` | Look up HU from pallet_status or SAP |
 | `POST` | `/api/sync` | Sync offline-queued events (max 50/batch) |
 | `POST` | `/api/validate-pin` | Validate supervisor PIN |
 
@@ -95,7 +128,7 @@ Flask App (Heroku)
 | Method | Route | Purpose |
 |--------|-------|---------|
 | `POST` | `/api/ivt-check` | Validate + duplicate-check a QR code |
-| `POST` | `/api/ivt-enter` | Write a confirmed unique code to `IVT_Line` |
+| `POST` | `/api/ivt-enter` | Write a confirmed unique code to `ivt_scans` |
 
 ---
 
@@ -104,8 +137,9 @@ Flask App (Heroku)
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python 3.11, Flask |
+| Database | PostgreSQL (Heroku Postgres), psycopg2 |
 | Auth | Static PIN (workers), username/password (admin) |
-| Excel backend | Microsoft Graph API — workbook sessions, `append_row`, `find_row_as_dict` |
+| SAP Integration | SAP S/4HANA Public Cloud API (HU lookup) |
 | Scanner | `html5-qrcode` v2.3.8 |
 | Deployment | Heroku (Procfile + `requirements.txt`) |
 | PWA | Service Worker + Web App Manifest |
@@ -118,26 +152,32 @@ Flask App (Heroku)
 ```
 indus-warehouse-tracker/
 ├── app/
-│   ├── config.py              # All config — credentials, sheet names, PINs
+│   ├── config.py                  # All config — credentials, PINs
 │   ├── routes/
-│   │   ├── api.py             # All JSON API routes (warehouse + IVT)
-│   │   ├── admin.py           # Admin dashboard routes
-│   │   └── worker.py          # Worker-facing page routes
+│   │   ├── api.py                 # All JSON API routes (warehouse + IVT)
+│   │   ├── admin.py               # Admin dashboard routes
+│   │   └── worker.py              # Worker-facing page routes
 │   ├── services/
-│   │   ├── graph_client.py    # MS Graph — Excel read/write helpers
-│   │   ├── movement_service.py# Warehouse movement business logic
-│   │   └── sap_client.py      # SAP HU lookup
+│   │   ├── db_client.py           # PostgreSQL data access layer
+│   │   ├── movement_service.py    # Warehouse movement business logic
+│   │   └── sap_client.py         # SAP HU lookup
 │   └── utils/
-│       └── validators.py      # PIN and HU validation helpers
+│       └── validators.py          # PIN and HU validation helpers
+├── scripts/
+│   ├── create_schema.py           # One-time schema creation (tables + views)
+│   ├── add_event_id_constraint.py # Adds UNIQUE constraint on event_id
+│   ├── fix_duplicate_event_ids.py # Deduplicates event_ids before constraint
+│   ├── fix_schema_columns.py      # Adds from_location/to_location, fixes CHECKs
+│   └── migrate_excel_to_pg.py    # One-time Excel → Postgres data migration
 ├── static/
 │   ├── css/worker.css
 │   ├── js/
-│   │   ├── app.js             # Warehouse mode JS
-│   │   └── offline.js         # Offline queue logic
+│   │   ├── app.js                 # Warehouse mode JS
+│   │   └── offline.js             # Offline queue logic
 │   └── icons/
 ├── templates/
-│   ├── worker/index.html      # Worker PWA (Warehouse + IVT Line)
-│   └── admin/                 # Admin templates
+│   ├── worker/index.html          # Worker PWA (Warehouse + IVT Line)
+│   └── admin/                     # Admin templates
 ├── Procfile
 ├── requirements.txt
 └── run.py
@@ -149,10 +189,33 @@ indus-warehouse-tracker/
 
 ```bash
 pip install -r requirements.txt
+export DATABASE_URL=postgresql://...
 python run.py
 ```
 
-Configuration is hardcoded in `app/config.py` (same pattern as `Indus-Open-Order-Report-CUST.py`). No environment variable file needed for local runs.
+`DATABASE_URL` must be set to a valid PostgreSQL connection string. On Heroku this is set automatically by the Postgres add-on.
+
+---
+
+## Database Setup (fresh environment)
+
+Run these scripts **in order** once:
+
+```bash
+# 1. Create all tables, indexes, and views
+heroku run python scripts/create_schema.py --app indus-warehouse-tracker
+
+# 2. Fix schema columns (from_location, to_location, CHECK constraints)
+heroku run python scripts/fix_schema_columns.py --app indus-warehouse-tracker
+
+# 3. Add UNIQUE constraint on event_id for idempotency
+heroku run python scripts/add_event_id_constraint.py --app indus-warehouse-tracker
+
+# 4. (Optional) Migrate historical data from Excel
+heroku run python scripts/migrate_excel_to_pg.py --app indus-warehouse-tracker
+```
+
+All scripts are idempotent — safe to re-run.
 
 ---
 
@@ -162,8 +225,8 @@ Configuration is hardcoded in `app/config.py` (same pattern as `Indus-Open-Order
 |------|------|
 | `indus-warehouse-tracker` | ✅ **This repo** — production warehouse + IVT line app |
 | `new_try` | Portal Release Tracker — FG release management with PO allocation |
-| `fg-variance-email` | Automated variance email reporter (reads same SharePoint workbook) |
-| `indus-inventory-deprecated` | ❌ Deprecated predecessor (Heroku + PostgreSQL) |
+| `fg-variance-email` | Automated variance email reporter |
+| `indus-inventory-deprecated` | ❌ Deprecated predecessor |
 | `try1` | ❌ Archived prototype |
 
 ---
@@ -172,11 +235,11 @@ Configuration is hardcoded in `app/config.py` (same pattern as `Indus-Open-Order
 
 | Date | Change |
 |------|--------|
-| April 2026 | **IVT Line mode** — new fully isolated QR scanning mode with 5-rule code validation, duplicate detection, M4/M5 location tagging, and writes to the `IVT_Line` worksheet |
-| April 2026 | **IVT Location Modal** — separate M4/M5 location picker for IVT mode (independent from the warehouse location modal) |
-| April 2026 | **Server-side IVT validation** — `_ivt_validate_code()` in `api.py` mirrors client-side checks as a safety net |
-| April 2026 | **Pallet_Status priority lookup** — `/api/lookup-hu` checks `Pallet_Status` before calling SAP to handle label vs SAP quantity discrepancies |
-| April 2026 | Dubai timezone formatting (`_fmt_dubai`) — all timestamps stored as `DD/MM/YYYY HH:MM:SS AM/PM` |
+| April 2026 | **Schema fix** — added `from_location` and `to_location` columns; loosened `validation_status` and `movement_type` CHECK constraints to allow error rows (`fix_schema_columns.py`) |
+| April 2026 | **PostgreSQL migration** — replaced Microsoft Graph API / SharePoint Excel backend with Heroku Postgres (`db_client.py`); all movements, pallet statuses, IVT scans, and error logs now stored in Postgres |
+| April 2026 | **IVT Line mode** — new fully isolated QR scanning mode with 5-rule code validation, duplicate detection, M4/M5 location tagging, writes to `ivt_scans` table |
+| April 2026 | **Pallet_Status priority lookup** — `/api/lookup-hu` checks `pallet_status` table before calling SAP |
+| April 2026 | Dubai timezone formatting (`_fmt_dubai`) — all timestamps stored as `TIMESTAMPTZ` in UTC, displayed in Asia/Dubai |
 
 ---
 

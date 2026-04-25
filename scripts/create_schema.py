@@ -2,13 +2,23 @@
 scripts/create_schema.py
 
 One-time Postgres schema creation script.
-Run ONCE before migration and before any app code changes go live.
+Run ONCE on a fresh database before the app goes live.
 
 Usage:
     heroku run python scripts/create_schema.py --app indus-warehouse-tracker
     OR locally with DATABASE_URL set in your .env
 
 Safe to re-run — all statements use IF NOT EXISTS / CREATE OR REPLACE.
+
+NOTE: After running this script, also run fix_schema_columns.py to add
+the from_location / to_location columns and loosen the CHECK constraints
+that db_client.py requires.
+
+Recommended order for a fresh environment:
+    1. python scripts/create_schema.py
+    2. python scripts/fix_schema_columns.py
+    3. python scripts/add_event_id_constraint.py
+    4. python scripts/migrate_excel_to_pg.py  (optional, historical data)
 """
 
 import os
@@ -16,7 +26,7 @@ import sys
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-# ── Connection ───────────────────────────────────────────────────────────────────
+# ── Connection ─────────────────────────────────────────────────────────────────────────────────
 
 def get_connection():
     uri = os.environ.get("DATABASE_URL")
@@ -28,8 +38,16 @@ def get_connection():
     return psycopg2.connect(uri)
 
 
-# ── DDL Statements ─────────────────────────────────────────────────────────────
+# ── DDL Statements ───────────────────────────────────────────────────────────────────
 
+# NOTE ON COLUMN CHOICES:
+# - movement_type has no CHECK constraint here so that db_client._log_error()
+#   can write 'ERROR' rows alongside normal 'STOCK_IN'/'STOCK_OUT' rows.
+# - validation_status has no CHECK constraint here; the field is an audit
+#   trail that accepts values such as 'VALID', 'OVERRIDE', 'VALIDATION_FAIL',
+#   'DUPLICATE', 'INVALID_TRANSITION', 'TYPE_INVALID', etc.
+# - from_location / to_location support transfer movements.
+# - destination column is intentionally omitted (superseded by to_location).
 CREATE_MOVEMENTS = """
 CREATE TABLE IF NOT EXISTS movements (
     id                BIGSERIAL       PRIMARY KEY,
@@ -38,20 +56,22 @@ CREATE TABLE IF NOT EXISTS movements (
     handling_unit     TEXT            NOT NULL,
     indus_part        TEXT,
     customer_part     TEXT,
-    pallet_qty        INTEGER,
+    pallet_qty        TEXT,
     job_no            TEXT,
-    movement_type     TEXT            NOT NULL CHECK (movement_type IN ('STOCK_IN', 'STOCK_OUT')),
+    movement_type     TEXT            NOT NULL,
     operator_id       TEXT,
     device_id         TEXT,
-    sync_status       TEXT            NOT NULL DEFAULT 'SYNCED' CHECK (sync_status IN ('SYNCED', 'PENDING')),
-    validation_status TEXT            NOT NULL DEFAULT 'VALID'  CHECK (validation_status IN ('VALID', 'OVERRIDE')),
+    sync_status       TEXT            NOT NULL DEFAULT 'SYNCED'
+                                      CHECK (sync_status IN ('SYNCED', 'PENDING')),
+    validation_status TEXT            NOT NULL DEFAULT 'VALID',
     location          TEXT,
-    destination       TEXT
+    from_location     TEXT            DEFAULT '',
+    to_location       TEXT            DEFAULT ''
 );
 """
 
 CREATE_MOVEMENTS_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_movements_event_id    ON movements (event_id);
+CREATE INDEX IF NOT EXISTS idx_movements_event_id      ON movements (event_id);
 CREATE INDEX IF NOT EXISTS idx_movements_handling_unit ON movements (handling_unit);
 CREATE INDEX IF NOT EXISTS idx_movements_timestamp     ON movements (timestamp_utc DESC);
 CREATE INDEX IF NOT EXISTS idx_movements_movement_type ON movements (movement_type);
@@ -66,7 +86,7 @@ CREATE TABLE IF NOT EXISTS pallet_status (
     last_movement_type  TEXT        NOT NULL CHECK (last_movement_type IN ('STOCK_IN', 'STOCK_OUT')),
     last_movement_time  TIMESTAMPTZ NOT NULL,
     indus_part          TEXT,
-    pallet_qty          INTEGER,
+    pallet_qty          TEXT,
     last_location       TEXT
 );
 """
@@ -95,7 +115,7 @@ CREATE TABLE IF NOT EXISTS error_log (
 );
 """
 
-# ── SQL Views (replace all Excel formula/pivot sheets) ────────────────────────
+# ── SQL Views ─────────────────────────────────────────────────────────────────────────
 
 CREATE_VIEW_STOCK_SUMMARY = """
 CREATE OR REPLACE VIEW v_stock_summary AS
@@ -118,7 +138,7 @@ SELECT
     ps.last_location          AS location,
     ps.indus_part,
     COUNT(*)                  AS pallet_count,
-    SUM(ps.pallet_qty)        AS total_qty
+    SUM(ps.pallet_qty::int)   AS total_qty
 FROM pallet_status ps
 WHERE ps.current_status = 'IN_WAREHOUSE'
 GROUP BY ps.last_location, ps.indus_part
@@ -150,7 +170,7 @@ ORDER BY last_active DESC;
 """
 
 
-# ── Runner ───────────────────────────────────────────────────────────────────
+# ── Runner ───────────────────────────────────────────────────────────────────────────
 
 def run():
     print("Connecting to Postgres...")
@@ -184,7 +204,9 @@ def run():
 
     if all_ok:
         print("\nSchema creation complete. All tables and views are ready.")
-        print("Next step: run scripts/migrate_excel_to_pg.py")
+        print("Next step: run scripts/fix_schema_columns.py (if upgrading existing DB)")
+        print("Then:       run scripts/add_event_id_constraint.py")
+        print("Optional:   run scripts/migrate_excel_to_pg.py (historical data)")
     else:
         print("\nOne or more steps failed. Fix errors above before running the migration.")
         sys.exit(1)
