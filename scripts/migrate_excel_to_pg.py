@@ -14,10 +14,14 @@ Usage:
     heroku run --app indus-warehouse-tracker python scripts/migrate_excel_to_pg.py
     OR locally with both DATABASE_URL and Graph credentials set in your .env
 
+Re-run (clean slate):
+    heroku run --app indus-warehouse-tracker python scripts/migrate_excel_to_pg.py --force
+    (--force truncates movements + pallet_status before re-inserting)
+
 Safety:
     - Checks for existing rows in `movements` before inserting.
     - Will abort if movements table is non-empty to prevent double-migration.
-    - Use --force flag to bypass this check if you need to re-run.
+    - Use --force flag to bypass this check and get a clean re-run.
     - All inserts are wrapped in a single transaction; rolls back fully on error.
 """
 
@@ -32,6 +36,14 @@ import msal
 import requests
 import psycopg2
 import psycopg2.extras
+
+# dateutil gives us format-agnostic parsing — handles zero-padded or not,
+# 12h/24h, with or without seconds, all in one call.
+try:
+    from dateutil import parser as dateutil_parser
+    _DATEUTIL_AVAILABLE = True
+except ImportError:
+    _DATEUTIL_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -168,31 +180,35 @@ def _clean_int(val):
     if val is None:
         return None
     try:
-        # Graph API may return large ints as floats
         return int(float(str(val).strip()))
     except (ValueError, TypeError):
         return None
 
 
-# Timestamp formats written by the app (Dubai local time stored as display string)
-# FIX: Added short formats '%d/%m/%Y %H:%M' and '%-d/%m/%Y %H:%M' to handle
-# entries like '13/4/2026 12:57' that lack seconds and use single-digit day/month.
+# Strptime fallback formats — used only when dateutil is unavailable.
+# Written to be unambiguous for DD/MM/YYYY ordering.
 _TS_FORMATS = [
-    '%d/%m/%Y %I:%M:%S %p',   # 25/04/2026 12:30:04 PM  (primary format)
-    '%d/%m/%Y %H:%M:%S',      # 25/04/2026 12:30:04     (24h with seconds)
-    '%d/%m/%Y %H:%M',         # 25/04/2026 12:30        (24h, no seconds)
-    '%-d/%-m/%Y %H:%M:%S',    # 13/4/2026 12:30:04      (no zero-padding, Linux)
-    '%-d/%-m/%Y %H:%M',       # 13/4/2026 12:30         (no zero-padding, no seconds)
-    '%d/%m/%Y %I:%M %p',      # 25/04/2026 12:30 PM     (12h, no seconds)
+    '%d/%m/%Y %I:%M:%S %p',   # 25/04/2026 12:30:04 PM
+    '%d/%m/%Y %H:%M:%S',      # 25/04/2026 12:30:04
+    '%d/%m/%Y %H:%M',         # 25/04/2026 12:30
+    '%d/%m/%Y %I:%M %p',      # 25/04/2026 12:30 PM
     '%Y-%m-%dT%H:%M:%S',      # ISO fallback
     '%Y-%m-%d %H:%M:%S',
+    '%Y-%m-%d %H:%M',
 ]
 
 
 def _parse_timestamp(val):
     """
     Parse a Dubai-local display timestamp string into a timezone-aware UTC
-    datetime. Returns None on failure rather than raising.
+    datetime. Returns None on failure — callers must handle None explicitly
+    (rows with None timestamps are SKIPPED, not stored as epoch).
+
+    Strategy:
+      1. Guard against Excel numeric serial dates.
+      2. Try dateutil.parser.parse() with dayfirst=True — handles every
+         variant (zero-padded or not, 12h/24h, with/without seconds).
+      3. Fall back to explicit strptime loop for edge cases.
     """
     if val is None:
         return None
@@ -200,27 +216,55 @@ def _parse_timestamp(val):
     if not s:
         return None
 
-    # Handle numeric Excel serial dates (shouldn't occur but guard anyway)
+    # Guard: Excel serial date (shouldn't occur but handle defensively)
     try:
         serial = float(s)
-        base = datetime(1899, 12, 30, tzinfo=timezone.utc)
-        dt_utc = base + timedelta(days=serial)
-        return dt_utc
+        if serial > 1:          # avoid treating "1" or "0" as a date
+            base = datetime(1899, 12, 30, tzinfo=timezone.utc)
+            return base + timedelta(days=serial)
     except ValueError:
         pass
 
+    # Primary: dateutil — format-agnostic, handles all real-world variants
+    if _DATEUTIL_AVAILABLE:
+        try:
+            dt_naive = dateutil_parser.parse(s, dayfirst=True)
+            # Strip any tzinfo dateutil may have added, then apply Dubai (+04)
+            dt_naive = dt_naive.replace(tzinfo=None)
+            return dt_naive.replace(tzinfo=timezone.utc) - timedelta(hours=4)
+        except (ValueError, OverflowError):
+            pass
+
+    # Fallback: explicit strptime loop
     for fmt in _TS_FORMATS:
         try:
             dt_naive = datetime.strptime(s, fmt)
-            # Timestamps are stored in Dubai local time (UTC+4)
-            # Subtract 4 hours to store as true UTC in Postgres
-            dt_utc = dt_naive.replace(tzinfo=timezone.utc) - timedelta(hours=4)
-            return dt_utc
+            return dt_naive.replace(tzinfo=timezone.utc) - timedelta(hours=4)
         except ValueError:
             continue
 
-    log.warning(f"Could not parse timestamp: '{s}' — storing as NULL")
-    return None
+    return None     # caller will skip this row
+
+
+def _print_ts_diagnostic(rows, ts_col_idx, label='Movement_Log', n=8):
+    """
+    Print the first n raw timestamp values from the sheet so you can
+    visually confirm they are being read in the expected format before
+    any data is written to Postgres.
+    """
+    print()
+    print(f'  ── Timestamp diagnostic ({label}, first {n} values) ──')
+    shown = 0
+    for row in rows:
+        if ts_col_idx < len(row):
+            raw = row[ts_col_idx]
+            parsed = _parse_timestamp(raw)
+            status = f'→ {parsed.isoformat()}' if parsed else '→ UNPARSEABLE ⚠'
+            print(f'    raw: {repr(raw):<40}  {status}')
+            shown += 1
+            if shown >= n:
+                break
+    print()
 
 
 # ── Migration: Movement_Log → movements + pallet_status ──────────────────
@@ -244,6 +288,10 @@ def migrate_movements(headers, rows, cur):
         log.error(f'Columns found: {headers}')
         sys.exit(1)
 
+    # Run timestamp diagnostic before touching Postgres
+    ts_idx = COL.get('Timestamp_UTC', 1)
+    _print_ts_diagnostic(rows, ts_idx, label='Movement_Log')
+
     def g(row, col, default=None):
         idx = COL.get(col)
         if idx is None or idx >= len(row):
@@ -251,24 +299,28 @@ def migrate_movements(headers, rows, cur):
         return row[idx]
 
     records = []
-    skipped = 0
+    skipped_no_id = 0
+    skipped_bad_type = 0
+    skipped_bad_ts = []     # collect (row_number, event_id, raw_value) for report
+
     for i, row in enumerate(rows, start=2):   # start=2: row 1 is header
         event_id = _clean_str(g(row, 'Event_ID'))
         if not event_id:
-            skipped += 1
+            skipped_no_id += 1
             continue
 
         movement_type = _clean_str(g(row, 'Movement_Type'))
         if movement_type not in ('STOCK_IN', 'STOCK_OUT'):
             log.warning(f'Row {i}: unknown movement_type "{movement_type}" — skipping')
-            skipped += 1
+            skipped_bad_type += 1
             continue
 
-        timestamp = _parse_timestamp(g(row, 'Timestamp_UTC'))
+        raw_ts = g(row, 'Timestamp_UTC')
+        timestamp = _parse_timestamp(raw_ts)
         if timestamp is None:
-            # Fall back to epoch so the row still migrates
-            log.warning(f'Row {i} ({event_id}): NULL timestamp — using epoch fallback')
-            timestamp = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            # Hard skip — do NOT use epoch fallback. Epoch rows corrupt date queries.
+            skipped_bad_ts.append((i, event_id, repr(raw_ts)))
+            continue
 
         sync_status = _clean_str(g(row, 'Sync_Status')) or 'SYNCED'
         if sync_status not in ('SYNCED', 'PENDING'):
@@ -295,7 +347,25 @@ def migrate_movements(headers, rows, cur):
             None,   # destination — NULL for all historical rows
         ))
 
-    log.info(f'Prepared {len(records):,} movement records ({skipped} skipped).')
+    log.info(
+        f'Prepared {len(records):,} movement records '
+        f'({skipped_no_id} no-id, {skipped_bad_type} bad-type, '
+        f'{len(skipped_bad_ts)} unparseable-timestamp skipped).'
+    )
+
+    # Report unparseable timestamps so nothing is silently lost
+    if skipped_bad_ts:
+        print()
+        print(f'  ⚠  {len(skipped_bad_ts)} rows skipped due to unparseable timestamp:')
+        for row_n, eid, raw in skipped_bad_ts[:20]:
+            print(f'     row {row_n:>5}  event_id={eid}  raw_ts={raw}')
+        if len(skipped_bad_ts) > 20:
+            print(f'     ... and {len(skipped_bad_ts) - 20} more (see full log)')
+        print()
+
+    if not records:
+        log.error('No valid records to insert after parsing. Aborting.')
+        sys.exit(1)
 
     psycopg2.extras.execute_values(
         cur,
@@ -311,18 +381,15 @@ def migrate_movements(headers, rows, cur):
         page_size=500
     )
     log.info(f'Inserted {len(records):,} rows into movements.')
-    return len(records)
+    return len(records), len(skipped_bad_ts)
 
 
 def derive_pallet_status(cur):
     """
     Derive pallet_status for every HU by selecting its latest movement.
 
-    FIX: Replaced MAX(timestamp_utc) join with DISTINCT ON (handling_unit)
-    ORDER BY timestamp_utc DESC, id DESC. This guarantees exactly one row per
-    HU even when multiple movements share the same timestamp (e.g. epoch fallback
-    rows all landing on 1970-01-01). The tiebreaker on `id` picks the last-inserted
-    row, which is deterministic and avoids the CardinalityViolation error.
+    Uses DISTINCT ON (handling_unit) ORDER BY timestamp_utc DESC, id DESC
+    to guarantee exactly one row per HU with a deterministic tiebreaker.
 
     Rules:
         latest movement_type = STOCK_IN  → IN_WAREHOUSE
@@ -373,7 +440,7 @@ def derive_pallet_status(cur):
 def migrate_ivt(headers, rows, cur):
     """
     Bulk-insert IVT_Line rows into `ivt_scans`.
-    Columns: A=Code  B=Scanned_Date  C=Location
+    Columns: A=Code  B=Scanned Date  C=Location
     """
     if not headers:
         log.info('IVT_Line empty — nothing to migrate.')
@@ -419,23 +486,33 @@ def migrate_ivt(headers, rows, cur):
 def main():
     parser = argparse.ArgumentParser(description='Migrate Excel workbook to Postgres.')
     parser.add_argument('--force', action='store_true',
-                        help='Skip the non-empty movements table guard and re-migrate.')
+                        help='Truncate movements + pallet_status then re-migrate from scratch.')
     args = parser.parse_args()
 
-    # ─ Safety check ───────────────────────────────────────────────
     pg = get_pg_conn()
     cur = pg.cursor()
+
+    # ─ Safety / force-truncate ────────────────────────────────────
     cur.execute('SELECT COUNT(*) FROM movements')
     existing = cur.fetchone()[0]
+
     if existing > 0 and not args.force:
         log.error(
             f'movements table already has {existing:,} rows. '
             'Aborting to prevent double-migration. '
-            'Use --force to override.'
+            'Use --force to truncate and re-run.'
         )
         cur.close()
         pg.close()
         sys.exit(1)
+
+    if args.force and existing > 0:
+        log.warning(f'--force: truncating {existing:,} existing rows from movements + pallet_status...')
+        cur.execute('TRUNCATE TABLE pallet_status RESTART IDENTITY CASCADE;')
+        cur.execute('TRUNCATE TABLE movements RESTART IDENTITY CASCADE;')
+        pg.commit()
+        log.info('Truncate complete.')
+
     cur.close()
 
     # ─ Read from Excel via Graph API ────────────────────────────────
@@ -449,7 +526,10 @@ def main():
         _close_session(sid)
 
     if not ml_rows:
-        log.error('Movement_Log returned no data rows. Aborting.')
+        log.error(
+            f"'{SHEET_MOVEMENT_LOG}' returned no data rows. "
+            "Check the sheet name is correct and the workbook is accessible."
+        )
         pg.close()
         sys.exit(1)
 
@@ -458,7 +538,7 @@ def main():
     try:
         cur = pg.cursor()
 
-        mv_count = migrate_movements(ml_headers, ml_rows, cur)
+        mv_count, ts_skipped = migrate_movements(ml_headers, ml_rows, cur)
         ps_count = derive_pallet_status(cur)
         ivt_count = migrate_ivt(ivt_headers, ivt_rows, cur)
 
@@ -478,13 +558,17 @@ def main():
     print('=' * 55)
     print('  MIGRATION COMPLETE')
     print('=' * 55)
-    print(f'  movements rows inserted : {mv_count:>8,}')
-    print(f'  pallet_status rows      : {ps_count:>8,}  (unique HUs)')
-    print(f'  ivt_scans rows inserted : {ivt_count:>8,}')
+    print(f'  movements rows inserted   : {mv_count:>8,}')
+    print(f'  rows skipped (bad ts)     : {ts_skipped:>8,}')
+    print(f'  pallet_status rows        : {ps_count:>8,}  (unique HUs)')
+    print(f'  ivt_scans rows inserted   : {ivt_count:>8,}')
     print('=' * 55)
     print()
-    print('  Next step: deploy app code changes (Steps 4–9)')
-    print()
+    if ts_skipped > 0:
+        print('  ⚠  Some rows were skipped due to unparseable timestamps.')
+        print('     Check the diagnostic output above for the raw values.')
+        print('     If the format is unexpected, update _TS_FORMATS and re-run.')
+        print()
 
 
 if __name__ == '__main__':
