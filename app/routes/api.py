@@ -19,7 +19,10 @@ Security:
 
   IVT Line — /api/ivt-check and /api/ivt-enter are completely isolated
   from the warehouse movement flow. They only touch the IVT_Line worksheet.
+  Code validation (5 rules) is enforced server-side as a second safety net;
+  the frontend performs the same checks client-side first for instant feedback.
 """
+import re
 import logging
 from datetime import datetime, timezone
 
@@ -44,6 +47,82 @@ def _fmt_dubai(dt_utc: datetime) -> str:
         return dt_dubai.strftime('%d/%m/%Y %I:%M:%S %p')
     except Exception:
         return dt_utc.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# IVT code validation
+# ---------------------------------------------------------------------------
+# Code structure (33 digits total, all numeric):
+#   Positions  0–8   (9 digits)  : Customer code — always "561469490"
+#   Positions  9–16  (8 digits)  : Date in 00DDMMYY format
+#   Positions 17–22  (6 digits)  : Serial number — must be unique per scan
+#   Positions 23–32  (10 digits) : Customer part code — "8750722699" or "8750722840"
+
+_IVT_CUSTOMER_CODE   = '561469490'
+_IVT_TOTAL_LENGTH    = 33
+_IVT_VALID_PART_CODES = {'8750722699', '8750722840'}
+
+
+def _ivt_validate_code(code: str):
+    """
+    Validate an IVT QR code string.
+    Returns None if valid, or a (error_type, message) tuple if invalid.
+
+    Checks (in order):
+      1. Non-numeric characters
+      2. Total length must be 33
+      3. Customer code segment (pos 0-8)
+      4. Date segment (pos 9-16) — 00DDMMYY with valid DD/MM
+      5. Customer part code (pos 23-32)
+    """
+    # 1. Non-numeric characters
+    bad = re.search(r'[^0-9]', code)
+    if bad:
+        ch = bad.group(0)
+        return ('invalid_chars',
+                f"Invalid character \u2018{ch}\u2019 found in code. "
+                f"IVT codes must contain numbers only.")
+
+    # 2. Total length
+    if len(code) != _IVT_TOTAL_LENGTH:
+        return ('invalid_length',
+                f"Code length is {len(code)} digits but must be exactly "
+                f"{_IVT_TOTAL_LENGTH} digits.")
+
+    # 3. Customer code
+    customer = code[0:9]
+    if customer != _IVT_CUSTOMER_CODE:
+        return ('invalid_customer_code',
+                f"Invalid customer code \u2018{customer}\u2019 "
+                f"\u2014 expected {_IVT_CUSTOMER_CODE}.")
+
+    # 4. Date segment — 00DDMMYY; first two chars must be '00',
+    #    DD in 01-31, MM in 01-12
+    date_seg = code[9:17]
+    if date_seg[:2] != '00':
+        return ('invalid_date',
+                f"Invalid date segment \u2018{date_seg}\u2019 "
+                f"\u2014 must start with 00 (format 00DDMMYY).")
+    dd = int(date_seg[2:4])
+    mm = int(date_seg[4:6])
+    if not (1 <= dd <= 31):
+        return ('invalid_date',
+                f"Invalid day \u2018{date_seg[2:4]}\u2019 in date segment "
+                f"\u2018{date_seg}\u2019 \u2014 day must be 01\u201331.")
+    if not (1 <= mm <= 12):
+        return ('invalid_date',
+                f"Invalid month \u2018{date_seg[4:6]}\u2019 in date segment "
+                f"\u2018{date_seg}\u2019 \u2014 month must be 01\u201312.")
+
+    # 5. Customer part code
+    part_code = code[23:33]
+    if part_code not in _IVT_VALID_PART_CODES:
+        valid_list = ' or '.join(sorted(_IVT_VALID_PART_CODES))
+        return ('invalid_part_code',
+                f"Invalid customer part code \u2018{part_code}\u2019 "
+                f"\u2014 must be {valid_list}.")
+
+    return None  # all checks passed
 
 
 # ===========================================================================
@@ -227,20 +306,34 @@ def validate_pin():
 # ===========================================================================
 # IVT LINE ROUTES
 # Completely isolated from warehouse movement flow.
-# Only touches the IVT_Line worksheet (Column A = Code, Column B = Scanned Date).
+# Touches only the IVT_Line worksheet.
+#   Column A : Code          (full 33-digit QR value)
+#   Column B : Scanned Date  (Dubai time, DD/MM/YYYY HH:MM:SS AM/PM)
+#   Column C : Location      (M4 or M5)
 # ===========================================================================
+
+_IVT_VALID_LOCATIONS = {'M4', 'M5'}
+
 
 @api_bp.route('/ivt-check', methods=['POST'])
 def ivt_check():
     """
-    Check whether a scanned code already exists in the IVT_Line worksheet.
+    Validate and duplicate-check an IVT QR code.
 
-    Reads Column A (header: Code) of the IVT_Line sheet and searches
-    for an exact case-insensitive match.
+    Validation rules (server-side mirror of the client-side checks):
+      1. No non-numeric characters
+      2. Total length must be exactly 33 digits
+      3. Positions 0-8  must equal '561469490'  (customer code)
+      4. Positions 9-16 must be valid 00DDMMYY   (date segment)
+      5. Positions 23-32 must be '8750722699' or '8750722840'  (part code)
+
+    If validation passes, Column A of IVT_Line is searched for an
+    exact match (duplicate check).
 
     Returns:
-      { "duplicate": false }                          — code is unique, safe to enter
-      { "duplicate": true, "scanned_date": "..." }   — duplicate found, date from col B
+      { "valid": false, "error_type": "...", "message": "..." }  — validation failed
+      { "valid": true, "duplicate": false }                      — unique, safe to enter
+      { "valid": true, "duplicate": true, "scanned_date": "..." } — duplicate found
       400 — missing code
       502 — Graph/Excel read failure
     """
@@ -250,17 +343,24 @@ def ivt_check():
     if not code:
         return jsonify({"success": False, "message": "Code is required."}), 400
 
+    # Server-side validation (safety net — client validates first)
+    err = _ivt_validate_code(code)
+    if err:
+        error_type, message = err
+        logger.warning("IVT validation failed for code %r [%s]: %s", code, error_type, message)
+        return jsonify({"valid": False, "error_type": error_type, "message": message}), 200
+
+    # Duplicate check against IVT_Line Column A
     try:
         from app.services.graph_client import find_row_as_dict
         sheet = current_app.config['SHEET_IVT_LINE']
         existing = find_row_as_dict(sheet, 'Code', code)
 
         if existing:
-            # Code already exists — return the date stored in column B
             raw_date = str(existing.get('Scanned Date', '') or '').strip()
-            return jsonify({"duplicate": True, "scanned_date": raw_date}), 200
+            return jsonify({"valid": True, "duplicate": True, "scanned_date": raw_date}), 200
 
-        return jsonify({"duplicate": False}), 200
+        return jsonify({"valid": True, "duplicate": False}), 200
 
     except Exception as exc:
         logger.error("IVT check failed for code %s: %s", code, exc)
@@ -270,32 +370,41 @@ def ivt_check():
 @api_bp.route('/ivt-enter', methods=['POST'])
 def ivt_enter():
     """
-    Append a unique code to the IVT_Line worksheet.
+    Append a validated, unique IVT code to the IVT_Line worksheet.
 
-    Writes:
-      Column A: the scanned code
-      Column B: current timestamp in Dubai time (DD/MM/YYYY HH:MM:SS AM/PM)
-
-    The caller is expected to have already called /api/ivt-check and confirmed
-    the code is not a duplicate before calling this endpoint.
+    Writes three columns:
+      A: code
+      B: scanned timestamp (Dubai time)
+      C: location (M4 or M5)
 
     Returns:
       { "success": true, "scanned_date": "DD/MM/YYYY HH:MM:SS AM/PM" }
-      400 — missing code
+      400 — missing/invalid code or location
       502 — Graph/Excel write failure
     """
     data = request.get_json(silent=True) or {}
-    code = str(data.get('code', '')).strip()
+    code     = str(data.get('code', '')).strip()
+    location = str(data.get('location', '')).strip().upper()
 
     if not code:
         return jsonify({"success": False, "message": "Code is required."}), 400
+
+    if location not in _IVT_VALID_LOCATIONS:
+        return jsonify({"success": False,
+                        "message": f"Invalid location '{location}'. Must be M4 or M5."}), 400
+
+    # Server-side validation guard
+    err = _ivt_validate_code(code)
+    if err:
+        _, message = err
+        return jsonify({"success": False, "message": message}), 400
 
     try:
         from app.services.graph_client import append_row
         sheet = current_app.config['SHEET_IVT_LINE']
         scanned_date = _fmt_dubai(datetime.now(timezone.utc))
-        append_row(sheet, [code, scanned_date], num_cols=2)
-        logger.info("IVT_Line: appended code=%s date=%s", code, scanned_date)
+        append_row(sheet, [code, scanned_date, location], num_cols=3)
+        logger.info("IVT_Line: appended code=%s date=%s location=%s", code, scanned_date, location)
         return jsonify({"success": True, "scanned_date": scanned_date}), 200
 
     except Exception as exc:
