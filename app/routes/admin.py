@@ -106,6 +106,18 @@ def _safe_int(val, default=0):
         return default
 
 
+def _fetch_scalar(cur):
+    """
+    Fetch one row from a RealDictCursor COUNT(*) query and return the integer.
+    RealDictRow does NOT support [0] index access — use the first value instead.
+    """
+    row = cur.fetchone()
+    if row is None:
+        return 0
+    # RealDictRow: grab the single value regardless of column name
+    return _safe_int(next(iter(row.values())))
+
+
 # ---------------------------------------------------------------------------
 # Core data endpoints
 # ---------------------------------------------------------------------------
@@ -234,6 +246,10 @@ def api_stats():
     """
     KPI stats. Each query is individually guarded so one failure
     does NOT zero out all stats — partial data is returned instead.
+
+    NOTE: The connection pool uses RealDictCursor, so fetchone() returns
+    a RealDictRow — integer index [0] is NOT supported. All COUNT(*)
+    queries use _fetch_scalar() which grabs the first value by key.
     """
     result = {
         "total_movements": None,
@@ -253,27 +269,27 @@ def api_stats():
 
                 try:
                     cur.execute("SELECT COUNT(*) FROM movements WHERE movement_type != 'ERROR'")
-                    result["total_movements"] = _safe_int(cur.fetchone()[0])
+                    result["total_movements"] = _fetch_scalar(cur)
                 except Exception as e:
                     logger.warning("stats total_movements: %s", e)
 
                 try:
                     cur.execute("""
                         SELECT
-                            SUM(CASE WHEN current_status='IN_WAREHOUSE'     THEN 1 ELSE 0 END),
-                            SUM(CASE WHEN current_status='OUT_OF_WAREHOUSE' THEN 1 ELSE 0 END)
+                            SUM(CASE WHEN current_status='IN_WAREHOUSE'     THEN 1 ELSE 0 END) AS cnt_in,
+                            SUM(CASE WHEN current_status='OUT_OF_WAREHOUSE' THEN 1 ELSE 0 END) AS cnt_out
                         FROM pallet_status
                     """)
                     row = cur.fetchone()
                     if row:
-                        result["pallets_in"]  = _safe_int(row[0])
-                        result["pallets_out"] = _safe_int(row[1])
+                        result["pallets_in"]  = _safe_int(row['cnt_in'])
+                        result["pallets_out"] = _safe_int(row['cnt_out'])
                 except Exception as e:
                     logger.warning("stats pallets: %s", e)
 
                 try:
                     cur.execute("SELECT COUNT(*) FROM movements WHERE validation_status='OVERRIDE'")
-                    result["override_count"] = _safe_int(cur.fetchone()[0])
+                    result["override_count"] = _fetch_scalar(cur)
                 except Exception as e:
                     logger.warning("stats overrides: %s", e)
 
@@ -283,7 +299,7 @@ def api_stats():
                         WHERE movement_type='ERROR'
                            OR validation_status NOT IN ('VALID','OVERRIDE')
                     """)
-                    result["total_errors"] = _safe_int(cur.fetchone()[0])
+                    result["total_errors"] = _fetch_scalar(cur)
                 except Exception as e:
                     logger.warning("stats errors: %s", e)
 
@@ -292,13 +308,13 @@ def api_stats():
                         SELECT COUNT(*) FROM ivt_scans
                         WHERE DATE(scanned_date::timestamptz AT TIME ZONE 'Asia/Dubai') = CURRENT_DATE
                     """)
-                    result["ivt_today"] = _safe_int(cur.fetchone()[0])
+                    result["ivt_today"] = _fetch_scalar(cur)
                 except Exception as e:
                     logger.warning("stats ivt_today: %s", e)
 
                 try:
                     cur.execute("SELECT COUNT(*) FROM ivt_scans")
-                    result["ivt_total"] = _safe_int(cur.fetchone()[0])
+                    result["ivt_total"] = _fetch_scalar(cur)
                 except Exception as e:
                     logger.warning("stats ivt_total: %s", e)
 
@@ -315,13 +331,12 @@ def api_stats():
                               - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) < 0
                         ) t
                     """)
-                    result["neg_alerts"] = _safe_int(cur.fetchone()[0])
+                    result["neg_alerts"] = _fetch_scalar(cur)
                 except Exception as e:
                     logger.warning("stats neg_alerts: %s", e)
 
     except Exception as e:
         logger.error("api_stats DB connection failed: %s", e)
-        # still return what we have — don't 500
 
     # pending_count() is in-memory, always safe
     try:
