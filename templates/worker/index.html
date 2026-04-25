@@ -23,6 +23,23 @@
       padding-bottom: 2px;
     }
 
+    /* ── IVT Mode toggle button in header ── */
+    .btn-ivt-toggle {
+      margin-left: auto;
+      padding: 6px 12px;
+      background: rgba(255,255,255,0.15);
+      border: 1.5px solid rgba(255,255,255,0.4);
+      border-radius: 6px;
+      color: #fff;
+      font-size: .72rem;
+      font-weight: 800;
+      letter-spacing: .6px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .15s;
+    }
+    .btn-ivt-toggle:active { background: rgba(255,255,255,0.28); }
+
     /* ── Location Modal ── */
     .loc-grid {
       display: grid;
@@ -189,6 +206,153 @@
       text-transform: uppercase;
       letter-spacing: .5px;
     }
+
+    /* ── IVT Line screen styles ── */
+    .ivt-header-bar {
+      background: #004D40;
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 10px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .ivt-header-bar .ivt-badge {
+      background: #00BFA5;
+      color: #fff;
+      font-size: .68rem;
+      font-weight: 800;
+      letter-spacing: .8px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .ivt-header-bar .ivt-title {
+      font-size: 1rem;
+      font-weight: 800;
+      letter-spacing: .3px;
+    }
+    .ivt-code-input-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .ivt-code-input-row input {
+      flex: 1;
+      padding: 14px 12px;
+      border: 2px solid #E0E0E0;
+      border-radius: 8px;
+      font-size: 1.05rem;
+      outline: none;
+      transition: border-color .15s;
+      font-family: monospace;
+      letter-spacing: .5px;
+    }
+    .ivt-code-input-row input:focus { border-color: #004D40; }
+    .btn-ivt-lookup {
+      padding: 14px 18px;
+      background: #004D40;
+      color: #FFF;
+      border: none;
+      border-radius: 8px;
+      font-weight: 800;
+      font-size: .95rem;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-ivt-lookup:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-ivt-lookup:active { background: #00251A; }
+
+    /* IVT result cards */
+    .ivt-result-card {
+      margin-top: 16px;
+      padding: 16px;
+      border-radius: 10px;
+      display: none;
+    }
+    .ivt-result-card.visible { display: block; }
+    .ivt-result-card.unique {
+      background: #F1F8E9;
+      border: 1.5px solid #A5D6A7;
+    }
+    .ivt-result-card.duplicate {
+      background: #FFF3E0;
+      border: 1.5px solid #FFB74D;
+    }
+    .ivt-result-icon {
+      font-size: 1.6rem;
+      margin-bottom: 6px;
+    }
+    .ivt-result-title {
+      font-size: .95rem;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+    .ivt-result-card.unique .ivt-result-title  { color: #2E7D32; }
+    .ivt-result-card.duplicate .ivt-result-title { color: #E65100; }
+    .ivt-result-code {
+      font-size: .82rem;
+      font-family: monospace;
+      background: rgba(0,0,0,0.06);
+      padding: 4px 8px;
+      border-radius: 4px;
+      word-break: break-all;
+      margin-bottom: 8px;
+      display: inline-block;
+    }
+    .ivt-result-date {
+      font-size: .82rem;
+      color: #555;
+      margin-top: 6px;
+    }
+    .ivt-result-date strong { color: #BF360C; }
+    .ivt-action-btns {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .btn-ivt-enter {
+      flex: 1;
+      padding: 15px;
+      background: #2E7D32;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-weight: 800;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-ivt-enter:active { background: #1B5E20; }
+    .btn-ivt-skip {
+      flex: 1;
+      padding: 15px;
+      background: #fff;
+      color: #555;
+      border: 2px solid #E0E0E0;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-ivt-skip:active { background: #F5F5F5; }
+    .btn-ivt-next {
+      width: 100%;
+      padding: 15px;
+      background: #004D40;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-weight: 800;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-top: 12px;
+      transition: background .15s;
+    }
+    .btn-ivt-next:active { background: #00251A; }
   </style>
 </head>
 <body>
@@ -196,13 +360,14 @@
 <!-- Header -->
 <header class="hdr">
   <div style="display:flex;align-items:baseline;gap:0">
-    <h1>INDUS WAREHOUSE</h1>
+    <h1 id="hdrTitle">INDUS WAREHOUSE</h1>
     <span class="hdr-version">v1.4.0</span>
   </div>
   <div class="hdr-right">
     <span class="badge" id="pendingBadge">0 pending</span>
     <span class="dot" id="statusDot"></span>
     <span id="statusText">Online</span>
+    <button class="btn-ivt-toggle" id="btnIVTToggle" onclick="goIVTMode()">IVT LINE &rarr;</button>
   </div>
 </header>
 
@@ -326,6 +491,83 @@
     </div>
   </div>
 
+  <!-- ═══ SCREEN 4: IVT LINE ═══ -->
+  <div class="scr" id="scrIVT">
+
+    <!-- Mode header bar -->
+    <div class="ivt-header-bar">
+      <span class="ivt-badge">IVT Line</span>
+      <span class="ivt-title">QR Code Scanner</span>
+    </div>
+
+    <!-- Camera: accepts QR codes and barcodes -->
+    <div class="card">
+      <h2 style="font-size:1.1rem;margin-bottom:6px;color:#004D40">Scan QR Code</h2>
+      <p style="font-size:.82rem;color:#757575;margin-bottom:14px">
+        Scan the QR code on the product or type the code manually below.
+        Duplicate codes will be blocked automatically.
+      </p>
+
+      <div id="ivtScannerContainer" style="width:100%;margin-bottom:14px"></div>
+
+      <button class="btn btn-pri" id="btnIVTToggleScan" onclick="ivtToggleScanner()"
+              style="background:#004D40">
+        <span class="btn-icon">&#128247;</span> START CAMERA
+      </button>
+      <p style="font-size:.72rem;color:#9E9E9E;margin-top:6px;text-align:center">
+        Camera reads QR codes &mdash; point at the QR code on the product
+      </p>
+    </div>
+
+    <!-- Code entry -->
+    <div class="card mt16">
+      <h3 style="font-size:.95rem;margin-bottom:4px;color:#212121">Code</h3>
+      <p style="font-size:.75rem;color:#9E9E9E;margin-bottom:4px">
+        Or type / paste the code manually, then tap CHECK.
+      </p>
+
+      <div class="ivt-code-input-row">
+        <input
+          type="text"
+          id="ivtCodeInput"
+          placeholder="Scan or type the code"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          onkeydown="if(event.key==='Enter'){ivtCheckCode();}"
+        >
+        <button class="btn-ivt-lookup" id="btnIVTCheck" onclick="ivtCheckCode()">CHECK</button>
+      </div>
+
+      <!-- IVT result card: unique -->
+      <div class="ivt-result-card unique" id="ivtResultUnique">
+        <div class="ivt-result-icon">&#9989;</div>
+        <div class="ivt-result-title">Code is UNIQUE</div>
+        <div class="ivt-result-code" id="ivtUniqueCode"></div>
+        <p style="font-size:.82rem;color:#555;margin-bottom:0">This code has not been scanned before. Tap ENTER to record it.</p>
+        <div class="ivt-action-btns">
+          <button class="btn-ivt-enter" onclick="ivtEnter()">&#10003; ENTER</button>
+          <button class="btn-ivt-skip" onclick="ivtReset()">SKIP</button>
+        </div>
+      </div>
+
+      <!-- IVT result card: duplicate -->
+      <div class="ivt-result-card duplicate" id="ivtResultDuplicate">
+        <div class="ivt-result-icon">&#9888;&#65039;</div>
+        <div class="ivt-result-title">DUPLICATE CODE</div>
+        <div class="ivt-result-code" id="ivtDupCode"></div>
+        <div class="ivt-result-date">Already scanned on: <strong id="ivtDupDate">&mdash;</strong></div>
+        <button class="btn-ivt-next" onclick="ivtReset()">SCAN NEXT &rarr;</button>
+      </div>
+    </div>
+
+    <div class="btn-group" style="margin-top:8px">
+      <button class="btn btn-outline" onclick="goWarehouseMode()">
+        &larr; BACK TO WAREHOUSE
+      </button>
+    </div>
+  </div>
+
   <!-- Spinner -->
   <div class="spin" id="spinner">
     <div class="spin-txt">Connecting to system...</div>
@@ -442,7 +684,7 @@
   </div>
 </div>
 
-<!-- html5-qrcode (barcode-only camera scanning) -->
+<!-- html5-qrcode (barcode + QR scanning) -->
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="/static/js/offline.js"></script>
 <script src="/static/js/app.js"></script>
@@ -458,6 +700,250 @@
       ? '\u26a0\ufe0f Supervisor Override \u2014 Manual Data'
       : '\u2713 SAP Data Retrieved';
   };
+</script>
+
+<!-- ═══ IVT LINE MODE ─ completely isolated from warehouse flow ═══ -->
+<script>
+'use strict';
+
+// IVT scanner instance (separate from the warehouse scanner in app.js)
+let _ivtScanner = null;
+let _ivtScannerRunning = false;
+let _ivtCheckInProgress = false;
+// Holds the code that passed the unique check, waiting for ENTER confirmation
+let _ivtPendingCode = '';
+
+// ── Mode switching ──
+
+function goIVTMode() {
+  // Stop warehouse scanner if running
+  if (typeof stopScanner === 'function') stopScanner();
+  // Show the IVT screen
+  document.querySelectorAll('.scr').forEach(function(s) { s.classList.remove('on'); });
+  document.getElementById('scrIVT').classList.add('on');
+  // Update header title and toggle button text
+  document.getElementById('hdrTitle').textContent = 'IVT LINE';
+  var btn = document.getElementById('btnIVTToggle');
+  btn.innerHTML = '&larr; WAREHOUSE';
+  btn.onclick = goWarehouseMode;
+  // Reset IVT state for a fresh start
+  _ivtFullReset();
+}
+
+function goWarehouseMode() {
+  // Stop IVT scanner if running
+  _ivtStopScanner();
+  // Return to warehouse scan screen
+  document.querySelectorAll('.scr').forEach(function(s) { s.classList.remove('on'); });
+  document.getElementById('scrScan').classList.add('on');
+  // Restore header title and toggle button
+  document.getElementById('hdrTitle').textContent = 'INDUS WAREHOUSE';
+  var btn = document.getElementById('btnIVTToggle');
+  btn.innerHTML = 'IVT LINE &rarr;';
+  btn.onclick = goIVTMode;
+}
+
+// ── IVT Camera scanner ──
+
+function ivtToggleScanner() {
+  if (_ivtScannerRunning) { _ivtStopScanner(); }
+  else { _ivtStartScanner(); }
+}
+
+function _ivtStartScanner() {
+  var btn = document.getElementById('btnIVTToggleScan');
+
+  if (typeof Html5Qrcode === 'undefined') {
+    _ivtToast('Camera library not loaded. Check internet.', 'fail');
+    return;
+  }
+
+  // Accept QR codes and common barcodes
+  var formats = [
+    Html5QrcodeSupportedFormats.QR_CODE,
+    Html5QrcodeSupportedFormats.CODE_128,
+    Html5QrcodeSupportedFormats.CODE_39,
+    Html5QrcodeSupportedFormats.EAN_13,
+    Html5QrcodeSupportedFormats.EAN_8,
+    Html5QrcodeSupportedFormats.DATA_MATRIX,
+  ];
+
+  _ivtScanner = new Html5Qrcode('ivtScannerContainer', {
+    formatsToSupport: formats,
+    verbose: false,
+  });
+
+  var scanConfig = {
+    fps: 15,
+    qrbox: { width: 280, height: 280 },
+    aspectRatio: 1.0,
+    disableFlip: false,
+  };
+
+  _ivtScanner.start(
+    { facingMode: 'environment' },
+    scanConfig,
+    _ivtOnScanSuccess,
+    function() {}
+  ).then(function() {
+    _ivtScannerRunning = true;
+    btn.innerHTML = '<span class="btn-icon">&#9209;</span> STOP CAMERA';
+    _ivtToast('Camera active — point at the QR code', 'info', 2000);
+  }).catch(function(err) {
+    console.error('IVT camera error:', err);
+    _ivtToast('Camera access denied or not available.', 'fail');
+  });
+}
+
+function _ivtStopScanner() {
+  var btn = document.getElementById('btnIVTToggleScan');
+  if (_ivtScanner && _ivtScannerRunning) {
+    _ivtScanner.stop().then(function() {
+      _ivtScannerRunning = false;
+      btn.innerHTML = '<span class="btn-icon">&#128247;</span> START CAMERA';
+    }).catch(function() {
+      _ivtScannerRunning = false;
+      btn.innerHTML = '<span class="btn-icon">&#128247;</span> START CAMERA';
+    });
+  }
+}
+
+function _ivtOnScanSuccess(decodedText) {
+  var val = decodedText.trim();
+  if (!val) return;
+  // If a check is already in progress or result is showing, ignore
+  if (_ivtCheckInProgress || _ivtPendingCode) return;
+
+  _ivtStopScanner();
+  if (navigator.vibrate) navigator.vibrate(100);
+
+  // Populate the input field so the user sees what was scanned
+  var inp = document.getElementById('ivtCodeInput');
+  if (inp) inp.value = val;
+
+  // Auto-trigger the duplicate check
+  _ivtDoCheck(val);
+}
+
+// ── Check + Enter logic ──
+
+function ivtCheckCode() {
+  var raw = document.getElementById('ivtCodeInput').value.trim();
+  if (!raw) {
+    _ivtToast('Enter or scan a code first.', 'warn');
+    return;
+  }
+  _ivtDoCheck(raw);
+}
+
+async function _ivtDoCheck(code) {
+  if (_ivtCheckInProgress) return;
+  _ivtCheckInProgress = true;
+
+  var btn = document.getElementById('btnIVTCheck');
+  if (btn) btn.disabled = true;
+
+  // Hide any previous result cards
+  document.getElementById('ivtResultUnique').classList.remove('visible');
+  document.getElementById('ivtResultDuplicate').classList.remove('visible');
+
+  showSpinner('Checking code\u2026');
+
+  try {
+    var resp = await fetch('/api/ivt-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code }),
+    });
+    var data = await resp.json();
+
+    if (!resp.ok) {
+      _ivtToast(data.message || 'Check failed. Try again.', 'fail');
+      _ivtCheckInProgress = false;
+      if (btn) btn.disabled = false;
+      return;
+    }
+
+    if (data.duplicate) {
+      // ── Duplicate ──
+      _ivtPendingCode = '';
+      document.getElementById('ivtDupCode').textContent = code;
+      document.getElementById('ivtDupDate').textContent = data.scanned_date || 'Unknown';
+      document.getElementById('ivtResultDuplicate').classList.add('visible');
+      if (navigator.vibrate) navigator.vibrate([100, 80, 100]);
+    } else {
+      // ── Unique ──
+      _ivtPendingCode = code;
+      document.getElementById('ivtUniqueCode').textContent = code;
+      document.getElementById('ivtResultUnique').classList.add('visible');
+    }
+
+  } catch (err) {
+    console.error('IVT check error:', err);
+    _ivtToast('Network error. Check connection and try again.', 'fail');
+    _ivtPendingCode = '';
+  } finally {
+    hideSpinner();
+    _ivtCheckInProgress = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function ivtEnter() {
+  var code = _ivtPendingCode;
+  if (!code) {
+    _ivtToast('No code to enter. Scan or type a code first.', 'warn');
+    return;
+  }
+
+  var enterBtn = document.querySelector('.btn-ivt-enter');
+  if (enterBtn) enterBtn.disabled = true;
+
+  showSpinner('Recording code\u2026');
+
+  try {
+    var resp = await fetch('/api/ivt-enter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code }),
+    });
+    var data = await resp.json();
+
+    if (data.success) {
+      _ivtToast('\u2713 Code recorded: ' + code, 'ok', 3500);
+      _ivtFullReset();
+    } else {
+      _ivtToast(data.message || 'Write failed. Try again.', 'fail');
+      if (enterBtn) enterBtn.disabled = false;
+    }
+  } catch (err) {
+    console.error('IVT enter error:', err);
+    _ivtToast('Network error. Could not record code.', 'fail');
+    if (enterBtn) enterBtn.disabled = false;
+  } finally {
+    hideSpinner();
+  }
+}
+
+function ivtReset() {
+  _ivtFullReset();
+}
+
+function _ivtFullReset() {
+  _ivtPendingCode = '';
+  _ivtCheckInProgress = false;
+  var inp = document.getElementById('ivtCodeInput');
+  if (inp) inp.value = '';
+  document.getElementById('ivtResultUnique').classList.remove('visible');
+  document.getElementById('ivtResultDuplicate').classList.remove('visible');
+}
+
+// ── IVT toast helper (reuses existing toast function from app.js) ──
+function _ivtToast(msg, type, duration) {
+  if (typeof toast === 'function') {
+    toast(msg, type || 'info', duration || 4000);
+  }
+}
 </script>
 
 <script>
