@@ -118,13 +118,12 @@ def _fetch_scalar(cur):
 
 
 # NOTE on pallet_qty aggregation:
-# pallet_qty is stored as TEXT. Rows with blank/non-numeric qty (e.g. TRANSFER
-# movements) must NOT be excluded — we treat those as qty=0 so the movement
-# still appears in the stock table. We use:
-#   COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty,'[^0-9]','','g'),''),'0')::int
-# which strips non-digits, falls back to '0' if nothing remains, then casts.
+# pallet_qty may be stored as TEXT or INTEGER depending on the DB column type.
+# We cast to TEXT first so REGEXP_REPLACE works regardless of the underlying type,
+# then strip non-digits, fall back to '0' if nothing remains, and cast to int.
+# This handles blank strings, NULL, and non-numeric values safely.
 STOCK_QTY_EXPR = """
-    COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty,'[^0-9]','','g'),''),'0')::int
+    COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty::text,'[^0-9]','','g'),''),'0')::int
 """
 
 
