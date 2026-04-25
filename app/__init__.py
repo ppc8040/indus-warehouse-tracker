@@ -12,8 +12,12 @@ from flask import Flask
 def create_app():
     app = Flask(
         __name__,
-        static_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static'),
-        template_folder=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates'),
+        static_folder=os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static'
+        ),
+        template_folder=os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates'
+        ),
     )
 
     app.config.from_object('app.config.Config')
@@ -28,13 +32,13 @@ def create_app():
     _validate_environment(app)
 
     from app.routes.worker import worker_bp
-    from app.routes.api import api_bp
-    from app.routes.admin import admin_bp
+    from app.routes.api    import api_bp
+    from app.routes.admin  import admin_bp
     from app.routes.health import health_bp
 
     app.register_blueprint(worker_bp)
-    app.register_blueprint(api_bp, url_prefix='/api')
-    app.register_blueprint(admin_bp, url_prefix='/admin')
+    app.register_blueprint(api_bp,    url_prefix='/api')
+    app.register_blueprint(admin_bp,  url_prefix='/admin')
     app.register_blueprint(health_bp)
 
     @app.errorhandler(404)
@@ -53,7 +57,7 @@ def create_app():
         os.environ['_KEEPALIVE_STARTED'] = '1'
         _start_keepalive(app)
 
-    app.logger.info(f"Indus Warehouse Tracker v2 started. deploy_id={deploy_id}")
+    app.logger.info(f"Indus Warehouse Tracker started. deploy_id={deploy_id}")
     return app
 
 
@@ -62,15 +66,14 @@ def _start_keepalive(app):
     import requests as _requests
 
     def _ping_loop():
-        # Wait 2 min before first ping so the dyno is fully up
-        time.sleep(120)
+        time.sleep(120)  # Wait 2 min before first ping so the dyno is fully up
         while True:
             try:
                 port = os.environ.get('PORT', '5000')
                 _requests.get(f'http://localhost:{port}/ping', timeout=10)
             except Exception:
                 pass  # Silently ignore — dyno may still be booting
-            time.sleep(25 * 60)  # 25 minutes
+            time.sleep(25 * 60)
 
     t = threading.Thread(target=_ping_loop, daemon=True)
     t.start()
@@ -80,7 +83,9 @@ def _setup_logging(app):
     level = logging.DEBUG if app.config.get('DEBUG') else logging.INFO
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(level)
-    handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+    handler.setFormatter(
+        logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+    )
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
@@ -90,8 +95,32 @@ def _setup_logging(app):
 
 
 def _validate_environment(app):
-    required = ['GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID', 'GRAPH_CLIENT_SECRET',
-                 'SHAREPOINT_SITE_ID', 'WORKBOOK_FILENAME']
-    missing = [v for v in required if not app.config.get(v)]
-    if missing:
-        app.logger.warning(f"Missing config vars: {', '.join(missing)}. Graph API will not work.")
+    """
+    Check that the critical runtime variables are present.
+
+    DATABASE_URL is mandatory — the app cannot function without Postgres.
+    Missing Graph vars are no longer fatal (graph_client is dormant);
+    a debug-level note is emitted so logs stay clean on Heroku.
+    """
+    db_url = app.config.get('DATABASE_URL', '')
+    if not db_url or db_url == 'postgresql://localhost/indus_warehouse_tracker':
+        app.logger.warning(
+            'DATABASE_URL is not set or is still the localhost default. '
+            'Set the Heroku Postgres add-on or DATABASE_URL config var.'
+        )
+    else:
+        app.logger.info('DATABASE_URL configured (✓)')
+
+    # Graph vars are kept for the transition window only.
+    # Emit a single debug line so they\'re visible in verbose logs
+    # but don\'t pollute normal INFO output.
+    graph_vars = [
+        'GRAPH_TENANT_ID', 'GRAPH_CLIENT_ID',
+        'GRAPH_CLIENT_SECRET', 'SHAREPOINT_SITE_ID',
+    ]
+    missing_graph = [v for v in graph_vars if not app.config.get(v)]
+    if missing_graph:
+        app.logger.debug(
+            'Graph config vars not set (expected — graph_client is dormant): %s',
+            ', '.join(missing_graph),
+        )
