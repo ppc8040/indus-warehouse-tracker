@@ -298,32 +298,30 @@ def _parse_timestamp(val):
  
  
 # ══════════════════════════════════════════════════════════════════
-#  Schema cleanup helpers  (run outside any transaction)
+#  Schema cleanup  (DDL must run outside any open transaction)
 # ══════════════════════════════════════════════════════════════════
 
 def _drop_event_id_unique_constraint(pg):
     """
-    Drop the UNIQUE constraint on movements.event_id together with any
-    objects that depend on it (specifically the FK on pallet_status).
-
-    Steps:
-      1. Drop the FK on pallet_status (IF EXISTS) — safe no-op if already gone.
-      2. Drop the UNIQUE constraint with CASCADE — also safe no-op if already gone.
-
-    Both statements are auto-committed (autocommit=True) so that the DDL
-    cannot be rolled back and is visible immediately to the next transaction.
+    Drop the UNIQUE constraint on movements.event_id and its dependent FK.
+    Must be called only when NO transaction is open on `pg`.
+    We use a fresh connection with autocommit=True so the DDL commits
+    immediately and is visible to the subsequent data transaction.
     """
-    pg.autocommit = True
-    cur = pg.cursor()
+    uri = os.environ.get('DATABASE_URL', '')
+    if uri.startswith('postgres://'):
+        uri = uri.replace('postgres://', 'postgresql://', 1)
+
+    ddl_conn = psycopg2.connect(uri)
+    ddl_conn.autocommit = True
+    cur = ddl_conn.cursor()
     try:
-        # Step 1: drop the dependent FK first (explicit is safer than relying on CASCADE alone)
         log.info('Dropping FK pallet_status_last_event_id_fkey (if present)...')
         cur.execute("""
             ALTER TABLE pallet_status
             DROP CONSTRAINT IF EXISTS pallet_status_last_event_id_fkey;
         """)
 
-        # Step 2: drop the UNIQUE constraint with CASCADE for any other dependents
         log.info('Dropping UNIQUE constraint movements_event_id_key (if present)...')
         cur.execute("""
             ALTER TABLE movements
@@ -333,7 +331,7 @@ def _drop_event_id_unique_constraint(pg):
         log.info('Constraint cleanup complete.')
     finally:
         cur.close()
-        pg.autocommit = False   # restore transactional mode for the rest of the script
+        ddl_conn.close()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -534,13 +532,21 @@ def main():
         cur.execute('TRUNCATE TABLE movements RESTART IDENTITY CASCADE;')
         pg.commit()
         log.info('Truncate complete.')
+    else:
+        # No truncation needed but we must commit the SELECT to close
+        # the implicit transaction before the DDL step below.
+        pg.commit()
 
     cur.close()
+    pg.close()
 
-    # Remove the UNIQUE constraint (and its dependent FK) BEFORE the main
-    # transaction so the DDL auto-commits and cannot be rolled back with data.
+    # Drop the UNIQUE constraint (+ dependent FK) using a dedicated
+    # autocommit connection so there is no open transaction to interfere.
     _drop_event_id_unique_constraint(pg)
  
+    # Re-open main connection for data migration
+    pg = get_pg_conn()
+
     log.info('Connecting to SharePoint workbook...')
     sid, session_headers = _open_session()
     try:
