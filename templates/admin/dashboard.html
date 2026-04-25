@@ -63,6 +63,16 @@
     .tab-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
     .tab-hdr h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
     .kpi-err{font-size:11px;color:var(--err)}
+    /* Negative stock alert banner */
+    .neg-banner{display:none;background:#2d0a0a;border:1px solid #ef4444;border-radius:8px;
+                padding:12px 16px;margin-bottom:14px}
+    .neg-banner.visible{display:block}
+    .neg-banner-title{font-size:11px;font-weight:700;color:var(--neg);text-transform:uppercase;
+                      letter-spacing:.05em;margin-bottom:8px}
+    .neg-banner table{font-size:11px}
+    .neg-banner th{color:#f87171;background:#3d0f0f}
+    .neg-banner td{color:var(--neg);background:#2d0a0a;border-color:#7f1d1d}
+    .neg-banner tbody tr:hover td{background:#3d0f0f!important}
   </style>
 </head>
 <body>
@@ -155,7 +165,16 @@
     <h2>Stock Summary — by Material &amp; Location</h2>
     <button class="btn btn-green" onclick="exportSheet('stock')">&#8659; Export Excel</button>
   </div>
-  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Net Qty = total IN − total OUT per location. <span style="color:var(--neg)">Red = negative stock.</span> Filters (Part, Location) apply.</p>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">
+    Net Qty = total IN − total OUT per location.
+    <span style="color:var(--neg)">Red rows = negative stock.</span>
+    Filters (Part, Location) apply.
+  </p>
+  <!-- Negative stock alert banner — shown only when alerts exist -->
+  <div class="neg-banner" id="neg-stock-banner">
+    <div class="neg-banner-title">⚠ Negative Stock Detected</div>
+    <div class="tbl-wrap" id="neg-stock-banner-tbl"></div>
+  </div>
   <div class="tbl-wrap" id="tbl-stock"><div class="empty">Loading…</div></div>
 </div>
 
@@ -165,7 +184,7 @@
     <h2>Total Stock — All Locations Combined</h2>
     <button class="btn btn-green" onclick="exportSheet('total_stock')">&#8659; Export Excel</button>
   </div>
-  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Overall net qty per material across every location. <span style="color:var(--neg)">Red = total negative stock.</span> Filter by Part only (location filter not applicable here).</p>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Overall net qty per material across every location. <span style="color:var(--neg)">Red = total negative stock.</span> Filter by Part only.</p>
   <div class="tbl-wrap" id="tbl-totalstock"><div class="empty">Loading…</div></div>
 </div>
 
@@ -307,13 +326,8 @@ async function loadStats() {
     set('kPend',     d.pending_keys);
   } catch (e) {
     console.error('loadStats failed:', e);
-    // mark all KPIs as error state rather than silent dashes
     ['kMov','kIn','kOut','kOver','kErr','kNeg','kIvtToday','kIvtTotal','kPend']
-      .forEach(id => {
-        const el = document.getElementById(id);
-        el.textContent = 'ERR';
-        el.classList.add('kpi-err');
-      });
+      .forEach(id => { const el = document.getElementById(id); el.textContent = 'ERR'; el.classList.add('kpi-err'); });
   }
 }
 
@@ -383,6 +397,8 @@ async function loadStatuses() {
 
 async function loadStock() {
   const el = document.getElementById('tbl-stock');
+  const banner = document.getElementById('neg-stock-banner');
+  const bannerTbl = document.getElementById('neg-stock-banner-tbl');
   try {
     const f = getFilters();
     const qs = new URLSearchParams(
@@ -391,13 +407,37 @@ async function loadStock() {
     ).toString();
     const d = await fetch('/admin/api/stock-summary?' + qs).then(r => r.json());
     const rows = d.rows || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found.</div>'; return; }
+    const negRows = d.negative_stock || [];
+
+    // --- Negative stock banner ---
+    if (negRows.length > 0) {
+      let nb = `<table><thead><tr><th>Indus Part</th><th>Location</th><th>Total IN</th><th>Total OUT</th><th>Net Qty (deficit)</th></tr></thead><tbody>`;
+      for (const r of negRows) {
+        nb += `<tr>
+          <td><strong>${r.indus_part || '—'}</strong></td>
+          <td>${r.location || '—'}</td>
+          <td>${r.total_in ?? 0}</td>
+          <td>${r.total_out ?? 0}</td>
+          <td><span style="color:var(--neg);font-weight:700">${r.net_qty} ⚠</span></td>
+        </tr>`;
+      }
+      bannerTbl.innerHTML = nb + '</tbody></table>';
+      banner.classList.add('visible');
+    } else {
+      banner.classList.remove('visible');
+      bannerTbl.innerHTML = '';
+    }
+
+    // --- Main stock table ---
+    if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found. Post some STOCK_IN / STOCK_OUT movements first.</div>'; return; }
     let h = `<table><thead><tr><th>Indus Part</th><th>Customer Part</th><th>Location</th>
       <th>Total IN Qty</th><th>Total OUT Qty</th><th>Net Qty</th><th>Pallets IN</th><th>Pallets OUT</th></tr></thead><tbody>`;
     for (const r of rows) {
-      const net = parseInt(r.net_qty || 0);
+      const net = parseInt(r.net_qty ?? 0);
       const negCls = net < 0 ? 'neg-row' : '';
-      const netDisplay = net < 0 ? `<span style="color:var(--neg);font-weight:700">${net} ⚠</span>` : net;
+      const netDisplay = net < 0
+        ? `<span style="color:var(--neg);font-weight:700">${net} ⚠</span>`
+        : `<span style="color:var(--ok);font-weight:600">${net}</span>`;
       h += `<tr class="${negCls}">
         <td><strong>${r.indus_part}</strong></td>
         <td>${r.customer_part || '—'}</td>
@@ -410,7 +450,10 @@ async function loadStock() {
       </tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
-  } catch (e) { el.innerHTML = '<div class="empty">Failed to load stock summary.</div>'; }
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed to load stock summary.</div>';
+    banner.classList.remove('visible');
+  }
 }
 
 async function loadTotalStock() {
@@ -429,7 +472,7 @@ async function loadTotalStock() {
       <th>Pallets IN</th><th>Pallets OUT</th><th>Locations</th>
     </tr></thead><tbody>`;
     for (const r of rows) {
-      const net = parseInt(r.net_qty || 0);
+      const net = parseInt(r.net_qty ?? 0);
       const negCls = net < 0 ? 'neg-row' : '';
       const netDisplay = net < 0
         ? `<span style="color:var(--neg);font-weight:700">${net} ⚠</span>`

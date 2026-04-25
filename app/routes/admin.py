@@ -5,7 +5,7 @@ Features:
   - Filtered movements endpoint (HU, part, date, type, location)
   - Stock summary by material + location
   - Total stock summary across all locations
-  - Negative stock detection in error log
+  - Negative stock detection in error log + Stock tab banner
   - Excel export (filter-aware, server-side via openpyxl)
   - Analytics: velocity, by-location, by-part, operators, IVT
 """
@@ -114,8 +114,18 @@ def _fetch_scalar(cur):
     row = cur.fetchone()
     if row is None:
         return 0
-    # RealDictRow: grab the single value regardless of column name
     return _safe_int(next(iter(row.values())))
+
+
+# NOTE on pallet_qty aggregation:
+# pallet_qty is stored as TEXT. Rows with blank/non-numeric qty (e.g. TRANSFER
+# movements) must NOT be excluded — we treat those as qty=0 so the movement
+# still appears in the stock table. We use:
+#   COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty,'[^0-9]','','g'),''),'0')::int
+# which strips non-digits, falls back to '0' if nothing remains, then casts.
+STOCK_QTY_EXPR = """
+    COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty,'[^0-9]','','g'),''),'0')::int
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +202,13 @@ def api_errors():
     Error log combining:
       1. Movement rows with movement_type='ERROR' or invalid validation_status
       2. Materials/locations where net stock (IN - OUT) < 0 (negative stock alerts)
+    Qty aggregation is robust: blank/non-numeric pallet_qty treated as 0.
     """
     limit = request.args.get('limit', 200, type=int)
+    qty = STOCK_QTY_EXPR
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
-                # --- movement errors ---
                 cur.execute("""
                     SELECT
                         event_id,
@@ -215,21 +226,20 @@ def api_errors():
                 """, {'limit': limit})
                 movement_errors = [_row_to_dict(r) for r in cur.fetchall()]
 
-                # --- negative stock: part+location combos where IN qty < OUT qty ---
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         COALESCE(NULLIF(indus_part,''), 'Unknown') AS indus_part,
                         COALESCE(NULLIF(location,''), 'Unknown')   AS location,
-                        SUM(CASE WHEN movement_type='STOCK_IN'  THEN COALESCE(pallet_qty::int,0) ELSE 0 END) AS total_in,
-                        SUM(CASE WHEN movement_type='STOCK_OUT' THEN COALESCE(pallet_qty::int,0) ELSE 0 END) AS total_out,
-                        SUM(CASE WHEN movement_type='STOCK_IN'  THEN COALESCE(pallet_qty::int,0) ELSE 0 END)
-                        - SUM(CASE WHEN movement_type='STOCK_OUT' THEN COALESCE(pallet_qty::int,0) ELSE 0 END) AS net_qty
+                        SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in,
+                        SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out,
+                        SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                        - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
                     FROM movements
                     WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-                      AND pallet_qty ~ '^[0-9]+$'
                     GROUP BY indus_part, location
-                    HAVING SUM(CASE WHEN movement_type='STOCK_IN'  THEN COALESCE(pallet_qty::int,0) ELSE 0 END)
-                         - SUM(CASE WHEN movement_type='STOCK_OUT' THEN COALESCE(pallet_qty::int,0) ELSE 0 END) < 0
+                    HAVING
+                        SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                      - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) < 0
                     ORDER BY net_qty ASC
                 """)
                 neg_rows = [dict(r) for r in cur.fetchall()]
@@ -244,12 +254,12 @@ def api_errors():
 @_auth_required
 def api_stats():
     """
-    KPI stats. Each query is individually guarded so one failure
-    does NOT zero out all stats — partial data is returned instead.
+    KPI stats. Each query individually guarded so one failure does NOT
+    zero out all stats — partial data is returned instead.
 
-    NOTE: The connection pool uses RealDictCursor, so fetchone() returns
-    a RealDictRow — integer index [0] is NOT supported. All COUNT(*)
-    queries use _fetch_scalar() which grabs the first value by key.
+    NOTE: Pool uses RealDictCursor — fetchone()[0] is NOT valid.
+    All COUNT(*) queries use _fetch_scalar() which reads the first key.
+    Qty aggregation uses STOCK_QTY_EXPR (robust, no rows dropped).
     """
     result = {
         "total_movements": None,
@@ -262,6 +272,7 @@ def api_stats():
         "ivt_total":       None,
         "neg_alerts":      None,
     }
+    qty = STOCK_QTY_EXPR
 
     try:
         with _get_conn() as conn:
@@ -319,16 +330,15 @@ def api_stats():
                     logger.warning("stats ivt_total: %s", e)
 
                 try:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT COUNT(*) FROM (
                             SELECT indus_part, location
                             FROM movements
                             WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-                              AND pallet_qty ~ '^[0-9]+$'
                             GROUP BY indus_part, location
                             HAVING
-                                SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END)
-                              - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) < 0
+                                SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                              - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) < 0
                         ) t
                     """)
                     result["neg_alerts"] = _fetch_scalar(cur)
@@ -338,7 +348,6 @@ def api_stats():
     except Exception as e:
         logger.error("api_stats DB connection failed: %s", e)
 
-    # pending_count() is in-memory, always safe
     try:
         result["pending_keys"] = pending_count()
     except Exception as e:
@@ -364,26 +373,29 @@ def api_conn_test():
 def api_stock_summary():
     """
     Aggregate stock per material + location.
-    Shows total IN qty, total OUT qty, net qty (IN - OUT), pallet count IN.
+    Includes ALL STOCK_IN / STOCK_OUT rows — blank/non-numeric pallet_qty treated as 0.
+    Returns negative_stock list alongside rows for banner display.
     Params: part (filter), location (filter).
     """
     part = (request.args.get('part') or '').strip()
     loc  = (request.args.get('location') or '').strip()
-    clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')", "pallet_qty ~ '^[0-9]+$'"]
+    # Only filter by movement type — do NOT filter by pallet_qty format
+    clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
     params  = {}
     if part: clauses.append("indus_part ILIKE %(part)s");   params['part'] = f'%{part}%'
     if loc and loc != 'ALL': clauses.append("location = %(loc)s"); params['loc'] = loc
     where = 'WHERE ' + ' AND '.join(clauses)
+    qty = STOCK_QTY_EXPR
     sql = f"""
         SELECT
-            COALESCE(NULLIF(indus_part,''),  'Unknown') AS indus_part,
+            COALESCE(NULLIF(indus_part,''),   'Unknown') AS indus_part,
             COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
-            COALESCE(NULLIF(location,''),    'Unknown') AS location,
-            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END) AS total_in_qty,
-            SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS total_out_qty,
-            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END)
-            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS net_qty,
-            COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN' THEN handling_unit END) AS pallets_in,
+            COALESCE(NULLIF(location,''),     'Unknown') AS location,
+            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
+            SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
+            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty,
+            COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN'  THEN handling_unit END) AS pallets_in,
             COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out
         FROM movements
         {where}
@@ -395,10 +407,17 @@ def api_stock_summary():
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = [dict(r) for r in cur.fetchall()]
-        return jsonify({"rows": rows})
+        # Derive negative stock alerts from the same result set
+        neg = [
+            {"indus_part": r["indus_part"], "location": r["location"],
+             "total_in": r["total_in_qty"], "total_out": r["total_out_qty"],
+             "net_qty": r["net_qty"]}
+            for r in rows if _safe_int(r.get("net_qty")) < 0
+        ]
+        return jsonify({"rows": rows, "negative_stock": neg})
     except Exception as e:
         logger.error("api_stock_summary: %s", e)
-        return jsonify({"rows": [], "error": str(e)})
+        return jsonify({"rows": [], "negative_stock": [], "error": str(e)})
 
 
 # ---------------------------------------------------------------------------
@@ -410,24 +429,25 @@ def api_stock_summary():
 def api_total_stock():
     """
     Aggregate stock per material across ALL locations combined.
-    Useful for seeing total on-hand qty regardless of where it is stored.
+    blank/non-numeric pallet_qty treated as 0.
     Params: part (filter).
     """
     part = (request.args.get('part') or '').strip()
-    clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')", "pallet_qty ~ '^[0-9]+$'"]
+    clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
     params  = {}
     if part:
         clauses.append("indus_part ILIKE %(part)s")
         params['part'] = f'%{part}%'
     where = 'WHERE ' + ' AND '.join(clauses)
+    qty = STOCK_QTY_EXPR
     sql = f"""
         SELECT
             COALESCE(NULLIF(indus_part,''),   'Unknown') AS indus_part,
             COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
-            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END) AS total_in_qty,
-            SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS total_out_qty,
-            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END)
-            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS net_qty,
+            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
+            SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
+            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty,
             COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN'  THEN handling_unit END) AS pallets_in,
             COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out,
             COUNT(DISTINCT location) AS location_count
@@ -454,20 +474,13 @@ def api_total_stock():
 @admin_bp.route('/api/export')
 @_auth_required
 def api_export():
-    """
-    Export filtered data as .xlsx.
-    Param: sheet = movements | statuses | stock | total_stock | errors | ivt (default: movements)
-    All movement filter params (hu, part, date_from, date_to, movement_type, location) apply.
-    """
     try:
         import openpyxl
         from openpyxl.styles import PatternFill, Font, Alignment
         from openpyxl.utils import get_column_letter
     except ImportError:
-        logger.error("openpyxl not installed — cannot export")
         return Response(
-            "openpyxl is not installed on this server. "
-            "Add 'openpyxl>=3.1.2' to requirements.txt and redeploy.",
+            "openpyxl is not installed. Add 'openpyxl>=3.1.2' to requirements.txt.",
             status=500, mimetype='text/plain'
         )
 
@@ -489,7 +502,6 @@ def api_export():
             ws.column_dimensions[get_column_letter(j)].width = 22
 
     def _write_rows(ws, headers, data, neg_col=None):
-        """Write data rows. neg_col = key name to check for negative value highlight."""
         for i, row in enumerate(data, start=2):
             ws.append([str(row.get(h, '') or '') for h in headers])
             if i % 2 == 0:
@@ -502,6 +514,8 @@ def api_export():
                             cell.fill = NEG_FILL
                 except (TypeError, ValueError):
                     pass
+
+    qty = STOCK_QTY_EXPR
 
     try:
         if sheet_name == 'movements':
@@ -559,7 +573,7 @@ def api_export():
         elif sheet_name == 'stock':
             part = (request.args.get('part') or '').strip()
             loc  = (request.args.get('location') or '').strip()
-            cl3 = ["movement_type IN ('STOCK_IN','STOCK_OUT')", "pallet_qty ~ '^[0-9]+$'"]
+            cl3 = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
             p3  = {}
             if part: cl3.append("indus_part ILIKE %(part)s");   p3['part'] = f'%{part}%'
             if loc and loc != 'ALL': cl3.append("location=%(loc)s"); p3['loc'] = loc
@@ -571,10 +585,10 @@ def api_export():
                             COALESCE(NULLIF(indus_part,''),'Unknown')    AS indus_part,
                             COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
                             COALESCE(NULLIF(location,''),'Unknown')      AS location,
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END) AS total_in_qty,
-                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS total_out_qty,
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END)
-                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS net_qty,
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
+                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty,
                             COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN'  THEN handling_unit END) AS pallets_in,
                             COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out
                         FROM movements {where3}
@@ -592,7 +606,7 @@ def api_export():
 
         elif sheet_name == 'total_stock':
             part = (request.args.get('part') or '').strip()
-            cl4 = ["movement_type IN ('STOCK_IN','STOCK_OUT')", "pallet_qty ~ '^[0-9]+$'"]
+            cl4 = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
             p4  = {}
             if part:
                 cl4.append("indus_part ILIKE %(part)s")
@@ -604,10 +618,10 @@ def api_export():
                         SELECT
                             COALESCE(NULLIF(indus_part,''),'Unknown')    AS indus_part,
                             COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END) AS total_in_qty,
-                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS total_out_qty,
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END)
-                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS net_qty,
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
+                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty,
                             COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN'  THEN handling_unit END) AS pallets_in,
                             COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out,
                             COUNT(DISTINCT location) AS location_count
@@ -638,21 +652,20 @@ def api_export():
                         ORDER BY timestamp_utc DESC LIMIT 2000
                     """)
                     mov_errors = [_row_to_dict(r) for r in cur.fetchall()]
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT
                             COALESCE(NULLIF(indus_part,''),'Unknown') AS indus_part,
                             COALESCE(NULLIF(location,''),'Unknown')   AS location,
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END) AS total_in,
-                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS total_out,
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END)
-                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) AS net_qty
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in,
+                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out,
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
                         FROM movements
                         WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-                          AND pallet_qty ~ '^[0-9]+$'
                         GROUP BY indus_part, location
                         HAVING
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN pallet_qty::int ELSE 0 END)
-                          - SUM(CASE WHEN movement_type='STOCK_OUT' THEN pallet_qty::int ELSE 0 END) < 0
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                          - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) < 0
                         ORDER BY net_qty
                     """)
                     neg = [dict(r) for r in cur.fetchall()]
@@ -668,10 +681,9 @@ def api_export():
             h2 = ['indus_part','location','total_in','total_out','net_qty']
             ws2.append(h2)
             for cell in ws2[1]:
-                cell.fill = HDR_FILL
-                cell.font = HDR_FONT
+                cell.fill = HDR_FILL; cell.font = HDR_FONT
                 cell.alignment = Alignment(horizontal='center')
-            for j in range(1, len(h2) + 1):
+            for j in range(1, len(h2)+1):
                 ws2.column_dimensions[get_column_letter(j)].width = 24
             for i, row in enumerate(neg, start=2):
                 ws2.append([str(row.get(h, '') or '') for h in h2])
@@ -702,9 +714,7 @@ def api_export():
     wb.save(buf)
     buf.seek(0)
     return send_file(
-        buf,
-        as_attachment=True,
-        download_name=filename,
+        buf, as_attachment=True, download_name=filename,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
 
