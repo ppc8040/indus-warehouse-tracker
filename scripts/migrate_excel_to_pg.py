@@ -160,9 +160,7 @@ def _clean_str(val):
     
     # ← FIX: Handle float Handling_Units (e.g., 1.00000000000843e+17)
     if isinstance(val, float):
-        # Check if it's a huge number in scientific notation
-        if val > 1e16:  # 18-digit HU stored as float
-            # Convert to integer then string to avoid 'e+' notation
+        if val > 1e16:
             try:
                 return str(int(val))
             except (ValueError, OverflowError):
@@ -195,13 +193,10 @@ def _clean_customer_part(val):
     """
     if val is None:
         return None
-    
-    # ← FIX: Force integer Customer_Part to string
     if isinstance(val, (int, float)):
         if isinstance(val, float) and val.is_integer():
-            return str(int(val))  # Remove .0
+            return str(int(val))
         return str(int(val))
-    
     return _clean_str(val)
  
  
@@ -212,45 +207,33 @@ def _clean_customer_part(val):
 def _normalise_ts_string(raw):
     """Clean timestamp string (collapse spaces, strip invisible chars)."""
     s = str(raw)
-    s = s.replace('\u00a0', ' ')   # non-breaking space
-    s = s.replace('\u200b', '')    # zero-width space
-    s = s.replace('\ufeff', '')    # BOM
-    s = s.replace('\u00ad', '')    # soft hyphen
+    s = s.replace('\u00a0', ' ')
+    s = s.replace('\u200b', '')
+    s = s.replace('\ufeff', '')
+    s = s.replace('\u00ad', '')
     s = s.lstrip("'")
     s = ' '.join(s.split())
     return s.strip()
  
  
-# ← FIX: Add formats WITHOUT SECONDS (e.g., '13/4/2026 07:23')
 _TS_FORMATS = [
-    # DD/MM/YYYY with seconds
     '%d/%m/%Y %I:%M:%S %p',
     '%d/%m/%Y %H:%M:%S',
-    
-    # ← FIX: WITHOUT SECONDS
-    '%d/%m/%Y %H:%M',      # 13/4/2026 07:23
-    '%d/%m/%Y %I:%M %p',   # 13/4/2026 07:23 AM
-    
-    # D/M/YYYY (no zero-padding)
+    '%d/%m/%Y %H:%M',
+    '%d/%m/%Y %I:%M %p',
     '%d/%m/%Y %I:%M:%S %p',
     '%d/%m/%Y %H:%M:%S',
-    '%d/%m/%Y %H:%M',      # ← Also without seconds
-    
-    # M/D/YYYY American format
+    '%d/%m/%Y %H:%M',
     '%m/%d/%Y %I:%M:%S %p',
     '%m/%d/%Y %H:%M:%S',
-    '%m/%d/%Y %H:%M',      # ← Also without seconds
+    '%m/%d/%Y %H:%M',
     '%m/%d/%Y %I:%M %p',
-    
-    # ISO 8601
     '%Y-%m-%dT%H:%M:%S',
     '%Y-%m-%dT%H:%M:%SZ',
     '%Y-%m-%dT%H:%M:%S.%f',
     '%Y-%m-%d %H:%M:%S',
     '%Y-%m-%d %H:%M',
     '%Y-%m-%d',
-    
-    # Excel export variants
     '%d-%m-%Y %H:%M:%S',
     '%d-%m-%Y %H:%M',
     '%d %b %Y %H:%M:%S',
@@ -258,7 +241,6 @@ _TS_FORMATS = [
     '%b %d, %Y %I:%M:%S %p',
 ]
  
-# Enhanced regex to handle missing seconds
 _TS_REGEX = re.compile(
     r'(\d{1,4})[/\-\.](\d{1,2})[/\-\.](\d{2,4})'
     r'(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?)?',
@@ -267,14 +249,11 @@ _TS_REGEX = re.compile(
  
  
 def _regex_fallback(s):
-    """Last-resort: extract date+time via regex."""
     m = _TS_REGEX.search(s)
     if not m:
         return None
     p1, p2, p3, hh, mm, ss, ampm = m.groups()
     p1, p2, p3 = int(p1), int(p2), int(p3)
- 
-    # Determine year, month, day
     if p3 > 31:
         year, month, day = p3, p2, p1
     elif p1 > 31:
@@ -283,18 +262,15 @@ def _regex_fallback(s):
         day, month, year = p1, p2, p3
         if year < 100:
             year += 2000
- 
     hour   = int(hh) if hh else 0
     minute = int(mm) if mm else 0
-    second = int(ss) if ss else 0  # ← Defaults to 0 if missing
- 
+    second = int(ss) if ss else 0
     if ampm:
         ampm = ampm.upper()
         if ampm == 'PM' and hour != 12:
             hour += 12
         elif ampm == 'AM' and hour == 12:
             hour = 0
- 
     try:
         return datetime(year, month, day, hour, minute, second)
     except ValueError:
@@ -305,20 +281,11 @@ def _regex_fallback(s):
  
  
 def _parse_timestamp(val):
-    """
-    Parse any timestamp value from Excel into a UTC-aware datetime.
-    
-    ← FIX: Now handles '13/4/2026 07:23' (missing seconds)
-    ← FIX: Fallback to current time instead of returning None
-    """
     if val is None:
         return None
- 
     s = _normalise_ts_string(val)
     if not s:
         return None
- 
-    # Stage 1: Excel numeric serial date
     try:
         serial = float(s)
         if serial > 1:
@@ -326,31 +293,21 @@ def _parse_timestamp(val):
             return base + timedelta(days=serial)
     except ValueError:
         pass
- 
     def _to_utc(dt_naive):
-        """Treat naive datetime as Dubai local (+04) and convert to UTC."""
         return dt_naive.replace(tzinfo=None).replace(tzinfo=timezone.utc) - timedelta(hours=4)
- 
-    # Stage 2: dateutil
     if _DATEUTIL_AVAILABLE:
         try:
             return _to_utc(dateutil_parser.parse(s, dayfirst=True))
         except (ValueError, OverflowError, TypeError):
             pass
- 
-    # Stage 3: strptime loop (now includes formats without seconds)
     for fmt in _TS_FORMATS:
         try:
             return _to_utc(datetime.strptime(s, fmt))
         except ValueError:
             continue
- 
-    # Stage 4: regex last resort
     dt = _regex_fallback(s)
     if dt is not None:
         return _to_utc(dt)
- 
-    # ← FIX: Log but DO NOT return None — use current time as fallback
     log.warning(f"Unparseable timestamp '{s}' — using current migration time as fallback")
     return datetime.now(timezone.utc)
  
@@ -392,19 +349,13 @@ def migrate_movements(headers, rows, cur):
             skipped_bad_type += 1
             continue
  
-        # ← FIX #1: Timestamp parsing now has fallback (never returns None)
         raw_ts = g(row, 'Timestamp_UTC')
         timestamp = _parse_timestamp(raw_ts)
-        
-        # Track if we used fallback
         if timestamp == datetime.now(timezone.utc):
             fallback_timestamps += 1
  
-        # ← FIX #3: Customer_Part type conversion
         customer_part_raw = g(row, 'Customer_Part')
         customer_part = _clean_customer_part(customer_part_raw)
-        
-        # ← FIX #2: Handling_Unit float conversion
         handling_unit_raw = g(row, 'Handling_Unit')
         handling_unit = _clean_str(handling_unit_raw)
  
@@ -443,10 +394,9 @@ def migrate_movements(headers, rows, cur):
         log.error('No valid records to insert. Aborting.')
         sys.exit(1)
  
-    # NOTE: Plain INSERT — no ON CONFLICT clause.
+    # Plain INSERT — no ON CONFLICT clause.
     # All rows from Excel are inserted as-is, including duplicate event_ids
-    # from the historical Excel data. Going forward the app always generates
-    # unique event_ids so this is a one-time migration concern only.
+    # from historical data. Going forward the app always generates unique event_ids.
     psycopg2.extras.execute_values(
         cur,
         """
@@ -561,6 +511,17 @@ def main():
         pg.commit()
         log.info('Truncate complete.')
  
+    # Drop the UNIQUE constraint on event_id so duplicate historical
+    # event_ids from Excel can be inserted. The app always generates
+    # unique event_ids going forward so this constraint is no longer needed.
+    log.info('Dropping UNIQUE constraint on movements.event_id (if present)...')
+    cur.execute("""
+        ALTER TABLE movements
+        DROP CONSTRAINT IF EXISTS movements_event_id_key;
+    """)
+    pg.commit()
+    log.info('Constraint drop complete.')
+
     cur.close()
  
     log.info('Connecting to SharePoint workbook...')

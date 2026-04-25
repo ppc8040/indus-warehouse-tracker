@@ -16,25 +16,24 @@ import sys
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-# ── Connection ────────────────────────────────────────────────────────────────
+# ── Connection ───────────────────────────────────────────────────────────────────
 
 def get_connection():
     uri = os.environ.get("DATABASE_URL")
     if not uri:
         print("ERROR: DATABASE_URL environment variable is not set.")
         sys.exit(1)
-    # Heroku returns postgres:// but psycopg2 requires postgresql://
     if uri.startswith("postgres://"):
         uri = uri.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(uri)
 
 
-# ── DDL Statements ────────────────────────────────────────────────────────────
+# ── DDL Statements ─────────────────────────────────────────────────────────────
 
 CREATE_MOVEMENTS = """
 CREATE TABLE IF NOT EXISTS movements (
     id                BIGSERIAL       PRIMARY KEY,
-    event_id          TEXT            NOT NULL UNIQUE,
+    event_id          TEXT            NOT NULL,
     timestamp_utc     TIMESTAMPTZ     NOT NULL,
     handling_unit     TEXT            NOT NULL,
     indus_part        TEXT,
@@ -47,11 +46,12 @@ CREATE TABLE IF NOT EXISTS movements (
     sync_status       TEXT            NOT NULL DEFAULT 'SYNCED' CHECK (sync_status IN ('SYNCED', 'PENDING')),
     validation_status TEXT            NOT NULL DEFAULT 'VALID'  CHECK (validation_status IN ('VALID', 'OVERRIDE')),
     location          TEXT,
-    destination       TEXT            -- NULL for all historical rows; populated on new STOCK_OUT movements
+    destination       TEXT
 );
 """
 
 CREATE_MOVEMENTS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_movements_event_id    ON movements (event_id);
 CREATE INDEX IF NOT EXISTS idx_movements_handling_unit ON movements (handling_unit);
 CREATE INDEX IF NOT EXISTS idx_movements_timestamp     ON movements (timestamp_utc DESC);
 CREATE INDEX IF NOT EXISTS idx_movements_movement_type ON movements (movement_type);
@@ -62,7 +62,7 @@ CREATE_PALLET_STATUS = """
 CREATE TABLE IF NOT EXISTS pallet_status (
     handling_unit       TEXT        PRIMARY KEY,
     current_status      TEXT        NOT NULL CHECK (current_status IN ('IN_WAREHOUSE', 'OUT_OF_WAREHOUSE')),
-    last_event_id       TEXT        REFERENCES movements (event_id) ON DELETE SET NULL,
+    last_event_id       TEXT,
     last_movement_type  TEXT        NOT NULL CHECK (last_movement_type IN ('STOCK_IN', 'STOCK_OUT')),
     last_movement_time  TIMESTAMPTZ NOT NULL,
     indus_part          TEXT,
@@ -150,7 +150,7 @@ ORDER BY last_active DESC;
 """
 
 
-# ── Runner ────────────────────────────────────────────────────────────────────
+# ── Runner ───────────────────────────────────────────────────────────────────
 
 def run():
     print("Connecting to Postgres...")
@@ -174,9 +174,9 @@ def run():
     for label, sql in steps:
         try:
             cur.execute(sql)
-            print(f"  ✓  {label}")
+            print(f"  \u2713  {label}")
         except Exception as e:
-            print(f"  ✗  {label} FAILED: {e}")
+            print(f"  \u2717  {label} FAILED: {e}")
             all_ok = False
 
     cur.close()
