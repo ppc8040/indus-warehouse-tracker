@@ -1,16 +1,20 @@
 """
-scripts/migrate_excel_to_pg_FIXED.py
+scripts/migrate_excel_to_pg.py
  
-FIXED migration script with enhanced timestamp parsing and type coercion.
+Migration script with enhanced timestamp parsing and type coercion.
 Handles all 3 data corruption issues:
   1. Unparseable timestamp strings (274 rows) - missing seconds component
   2. Float Handling_Unit in scientific notation (2 rows) - precision loss  
   3. Integer Customer_Part values (889 rows) - wrong type
  
+NOTE: No uniqueness check on event_id — all rows from Excel are inserted as-is.
+Duplicate event_ids in the source Excel are intentionally preserved.
+Going forward the application always generates unique event_ids.
+ 
 Usage:
-    heroku run python scripts/migrate_excel_to_pg_FIXED.py -a indus-warehouse-tracker
+    heroku run python scripts/migrate_excel_to_pg.py -a indus-warehouse-tracker
     OR with --force to truncate first:
-    heroku run python scripts/migrate_excel_to_pg_FIXED.py --force -a indus-warehouse-tracker
+    heroku run python scripts/migrate_excel_to_pg.py --force -a indus-warehouse-tracker
 """
  
 import os
@@ -439,6 +443,10 @@ def migrate_movements(headers, rows, cur):
         log.error('No valid records to insert. Aborting.')
         sys.exit(1)
  
+    # NOTE: Plain INSERT — no ON CONFLICT clause.
+    # All rows from Excel are inserted as-is, including duplicate event_ids
+    # from the historical Excel data. Going forward the app always generates
+    # unique event_ids so this is a one-time migration concern only.
     psycopg2.extras.execute_values(
         cur,
         """
@@ -447,12 +455,11 @@ def migrate_movements(headers, rows, cur):
              pallet_qty, job_no, movement_type, operator_id, device_id,
              sync_status, validation_status, location, destination)
         VALUES %s
-        ON CONFLICT (event_id) DO NOTHING
         """,
         records,
         page_size=500
     )
-    log.info(f'Inserted {len(records):,} rows into movements.')
+    log.info(f'Inserted {len(records):,} rows into movements (all rows, no dedup).')
     return len(records), 0
  
  
