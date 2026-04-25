@@ -252,14 +252,6 @@ def api_errors():
 @admin_bp.route('/api/stats')
 @_auth_required
 def api_stats():
-    """
-    KPI stats. Each query individually guarded so one failure does NOT
-    zero out all stats — partial data is returned instead.
-
-    NOTE: Pool uses RealDictCursor — fetchone()[0] is NOT valid.
-    All COUNT(*) queries use _fetch_scalar() which reads the first key.
-    Qty aggregation uses STOCK_QTY_EXPR (robust, no rows dropped).
-    """
     result = {
         "total_movements": None,
         "total_errors":    None,
@@ -370,15 +362,8 @@ def api_conn_test():
 @admin_bp.route('/api/stock-summary')
 @_auth_required
 def api_stock_summary():
-    """
-    Aggregate stock per material + location.
-    Includes ALL STOCK_IN / STOCK_OUT rows — blank/non-numeric pallet_qty treated as 0.
-    Returns negative_stock list alongside rows for banner display.
-    Params: part (filter), location (filter).
-    """
     part = (request.args.get('part') or '').strip()
     loc  = (request.args.get('location') or '').strip()
-    # Only filter by movement type — do NOT filter by pallet_qty format
     clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
     params  = {}
     if part: clauses.append("indus_part ILIKE %(part)s");   params['part'] = f'%{part}%'
@@ -406,7 +391,6 @@ def api_stock_summary():
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = [dict(r) for r in cur.fetchall()]
-        # Derive negative stock alerts from the same result set
         neg = [
             {"indus_part": r["indus_part"], "location": r["location"],
              "total_in": r["total_in_qty"], "total_out": r["total_out_qty"],
@@ -426,11 +410,6 @@ def api_stock_summary():
 @admin_bp.route('/api/total-stock')
 @_auth_required
 def api_total_stock():
-    """
-    Aggregate stock per material across ALL locations combined.
-    blank/non-numeric pallet_qty treated as 0.
-    Params: part (filter).
-    """
     part = (request.args.get('part') or '').strip()
     clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
     params  = {}
@@ -467,7 +446,7 @@ def api_total_stock():
 
 
 # ---------------------------------------------------------------------------
-# Excel export (filter-aware, openpyxl)
+# Excel export — clean formatting: coloured header row + cell borders only
 # ---------------------------------------------------------------------------
 
 @admin_bp.route('/api/export')
@@ -475,7 +454,7 @@ def api_total_stock():
 def api_export():
     try:
         import openpyxl
-        from openpyxl.styles import PatternFill, Font, Alignment
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
         from openpyxl.utils import get_column_letter
     except ImportError:
         return Response(
@@ -487,32 +466,41 @@ def api_export():
     wb = openpyxl.Workbook()
     ws = wb.active
 
-    HDR_FILL  = PatternFill("solid", fgColor="1E293B")
-    HDR_FONT  = Font(bold=True, color="E2E8F0", size=10)
-    ALT_FILL  = PatternFill("solid", fgColor="0F172A")
-    NEG_FILL  = PatternFill("solid", fgColor="7F1D1D")
+    # ---- Styling constants ------------------------------------------------
+    # Header: deep navy background, white bold text
+    HDR_FILL = PatternFill('solid', fgColor='1E3A5F')
+    HDR_FONT = Font(bold=True, color='FFFFFF', size=10, name='Calibri')
+    HDR_ALIGN = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-    def _style_header(ws, num_cols):
+    # Data cells: plain white background, normal Calibri text
+    DATA_FONT  = Font(size=10, name='Calibri')
+    DATA_ALIGN = Alignment(vertical='center')
+
+    # Thin border for every cell
+    _thin = Side(style='thin', color='CCCCCC')
+    CELL_BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+
+    def _apply_header(ws, num_cols, row_height=22):
+        """Style the first (header) row and set column widths."""
+        ws.row_dimensions[1].height = row_height
         for cell in ws[1]:
-            cell.fill = HDR_FILL
-            cell.font = HDR_FONT
-            cell.alignment = Alignment(horizontal='center')
+            cell.fill   = HDR_FILL
+            cell.font   = HDR_FONT
+            cell.alignment = HDR_ALIGN
+            cell.border = CELL_BORDER
         for j in range(1, num_cols + 1):
             ws.column_dimensions[get_column_letter(j)].width = 22
 
-    def _write_rows(ws, headers, data, neg_col=None):
-        for i, row in enumerate(data, start=2):
-            ws.append([str(row.get(h, '') or '') for h in headers])
-            if i % 2 == 0:
-                for cell in ws[i]:
-                    cell.fill = ALT_FILL
-            if neg_col:
-                try:
-                    if int(row.get(neg_col, 0) or 0) < 0:
-                        for cell in ws[i]:
-                            cell.fill = NEG_FILL
-                except (TypeError, ValueError):
-                    pass
+    def _write_rows(ws, headers, data, start_row=2):
+        """Write data rows with thin borders and plain white background."""
+        for i, row in enumerate(data, start=start_row):
+            ws.row_dimensions[i].height = 18
+            for j, h in enumerate(headers, start=1):
+                val = row.get(h)
+                cell = ws.cell(row=i, column=j, value=str(val) if val is not None else '')
+                cell.font      = DATA_FONT
+                cell.alignment = DATA_ALIGN
+                cell.border    = CELL_BORDER
 
     qty = STOCK_QTY_EXPR
 
@@ -533,14 +521,14 @@ def api_export():
                         ORDER BY timestamp_utc DESC LIMIT %(limit)s
                     """, params)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
-            ws.title = "Movements"
+            ws.title = 'Movements'
             headers = ['event_id','timestamp_dubai','handling_unit','indus_part','customer_part',
                        'pallet_qty','job_no','movement_type','operator_id','device_id',
                        'sync_status','validation_status','location','from_location','to_location']
             ws.append(headers)
-            _style_header(ws, len(headers))
+            _apply_header(ws, len(headers))
             _write_rows(ws, headers, data)
-            filename = "movements_export.xlsx"
+            filename = 'movements_export.xlsx'
 
         elif sheet_name == 'statuses':
             hu   = (request.args.get('hu')   or '').strip()
@@ -561,13 +549,13 @@ def api_export():
                         ORDER BY last_movement_time DESC NULLS LAST
                     """, p2)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
-            ws.title = "Pallet Status"
+            ws.title = 'Pallet Status'
             headers = ['handling_unit','current_status','last_movement_type',
                        'last_movement_time_dubai','indus_part','pallet_qty','last_location']
             ws.append(headers)
-            _style_header(ws, len(headers))
+            _apply_header(ws, len(headers))
             _write_rows(ws, headers, data)
-            filename = "pallet_status_export.xlsx"
+            filename = 'pallet_status_export.xlsx'
 
         elif sheet_name == 'stock':
             part = (request.args.get('part') or '').strip()
@@ -595,13 +583,13 @@ def api_export():
                         ORDER BY indus_part, location
                     """, p3)
                     data = [dict(r) for r in cur.fetchall()]
-            ws.title = "Stock Summary"
+            ws.title = 'Stock Summary'
             headers = ['indus_part','customer_part','location','total_in_qty',
                        'total_out_qty','net_qty','pallets_in','pallets_out']
             ws.append(headers)
-            _style_header(ws, len(headers))
-            _write_rows(ws, headers, data, neg_col='net_qty')
-            filename = "stock_summary_export.xlsx"
+            _apply_header(ws, len(headers))
+            _write_rows(ws, headers, data)
+            filename = 'stock_summary_export.xlsx'
 
         elif sheet_name == 'total_stock':
             part = (request.args.get('part') or '').strip()
@@ -629,13 +617,13 @@ def api_export():
                         ORDER BY indus_part
                     """, p4)
                     data = [dict(r) for r in cur.fetchall()]
-            ws.title = "Total Stock"
+            ws.title = 'Total Stock'
             headers = ['indus_part','customer_part','total_in_qty','total_out_qty',
                        'net_qty','pallets_in','pallets_out','location_count']
             ws.append(headers)
-            _style_header(ws, len(headers))
-            _write_rows(ws, headers, data, neg_col='net_qty')
-            filename = "total_stock_export.xlsx"
+            _apply_header(ws, len(headers))
+            _write_rows(ws, headers, data)
+            filename = 'total_stock_export.xlsx'
 
         elif sheet_name == 'errors':
             with _get_conn() as conn:
@@ -669,38 +657,31 @@ def api_export():
                     """)
                     neg = [dict(r) for r in cur.fetchall()]
 
-            ws.title = "Movement Errors"
+            ws.title = 'Movement Errors'
             h1 = ['event_id','timestamp_dubai','handling_unit','movement_type',
                   'validation_status','operator_id','location','sync_status']
             ws.append(h1)
-            _style_header(ws, len(h1))
+            _apply_header(ws, len(h1))
             _write_rows(ws, h1, mov_errors)
 
-            ws2 = wb.create_sheet("Negative Stock")
+            ws2 = wb.create_sheet('Negative Stock')
             h2 = ['indus_part','location','total_in','total_out','net_qty']
             ws2.append(h2)
-            for cell in ws2[1]:
-                cell.fill = HDR_FILL; cell.font = HDR_FONT
-                cell.alignment = Alignment(horizontal='center')
-            for j in range(1, len(h2)+1):
-                ws2.column_dimensions[get_column_letter(j)].width = 24
-            for i, row in enumerate(neg, start=2):
-                ws2.append([str(row.get(h, '') or '') for h in h2])
-                for cell in ws2[i]:
-                    cell.fill = NEG_FILL
-            filename = "error_log_export.xlsx"
+            _apply_header(ws2, len(h2))
+            _write_rows(ws2, h2, neg)
+            filename = 'error_log_export.xlsx'
 
         elif sheet_name == 'ivt':
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT code, scanned_date, location FROM ivt_scans ORDER BY id DESC")
                     data = [dict(r) for r in cur.fetchall()]
-            ws.title = "IVT Scans"
+            ws.title = 'IVT Scans'
             headers = ['code', 'scanned_date', 'location']
             ws.append(headers)
-            _style_header(ws, len(headers))
+            _apply_header(ws, len(headers))
             _write_rows(ws, headers, data)
-            filename = "ivt_scans_export.xlsx"
+            filename = 'ivt_scans_export.xlsx'
 
         else:
             return jsonify({"error": f"Unknown sheet: {sheet_name}"}), 400

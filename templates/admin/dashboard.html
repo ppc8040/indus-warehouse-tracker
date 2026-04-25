@@ -246,8 +246,6 @@ const charts = {};
 let filterTimer = null;
 
 // Map each tab name to the function that loads its data.
-// Analytics, IVT and Errors are lazy-loaded only when the tab is opened,
-// so they do not compete with the critical stock queries on page load.
 const TAB_LOADERS = {
   movements:  () => loadMovements(),
   statuses:   () => loadStatuses(),
@@ -263,7 +261,6 @@ function switchTab(name, el) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('on'));
   el.classList.add('on');
   document.getElementById('pane-' + name).classList.add('on');
-  // Always reload data for the active tab so it is never stale / empty.
   if (TAB_LOADERS[name]) TAB_LOADERS[name]();
 }
 
@@ -351,7 +348,12 @@ async function loadMovements() {
   el.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const d = await fetch('/admin/api/movements?limit=200&' + filterQS()).then(r => r.json());
-    const rows = d.movements || [];
+    // Sort descending by timestamp so newest movement is always first
+    const rows = (d.movements || []).sort((a, b) => {
+      const ta = a.timestamp_dubai ? new Date(a.timestamp_dubai).getTime() : 0;
+      const tb = b.timestamp_dubai ? new Date(b.timestamp_dubai).getTime() : 0;
+      return tb - ta;
+    });
     if (!rows.length) { el.innerHTML = '<div class="empty">No movements match filters.</div>'; return; }
     let h = `<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Qty</th>
       <th>Type</th><th>Location</th><th>From</th><th>To</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>`;
@@ -430,7 +432,6 @@ async function loadStock() {
     const rows = d.rows || [];
     const negRows = d.negative_stock || [];
 
-    // --- Negative stock banner ---
     if (negRows.length > 0) {
       let nb = `<table><thead><tr><th>Indus Part</th><th>Location</th><th>Total IN</th><th>Total OUT</th><th>Net Qty (deficit)</th></tr></thead><tbody>`;
       for (const r of negRows) {
@@ -449,7 +450,6 @@ async function loadStock() {
       bannerTbl.innerHTML = '';
     }
 
-    // --- Main stock table ---
     if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found. Post some STOCK_IN / STOCK_OUT movements first.</div>'; return; }
     let h = `<table><thead><tr><th>Indus Part</th><th>Customer Part</th><th>Location</th>
       <th>Total IN Qty</th><th>Total OUT Qty</th><th>Net Qty</th><th>Pallets IN</th><th>Pallets OUT</th></tr></thead><tbody>`;
@@ -676,8 +676,6 @@ async function loadIvt() {
   } catch (e) { console.error('IVT', e); }
 }
 
-// On page load: fetch only the critical data immediately (stats, movements, statuses,
-// stock, total-stock). Analytics/IVT/Errors are lazy-loaded on first tab click.
 function loadAll() {
   checkConn();
   loadStats();
