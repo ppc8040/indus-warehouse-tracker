@@ -211,7 +211,7 @@ _TS_FORMATS = [
     # D/M/YYYY — no zero-padding (common from older rows)
     '%d/%m/%Y %I:%M:%S %p',
     '%d/%m/%Y %H:%M:%S',
-    # M/D/YYYY — American format guard (shouldn’t occur but covered)
+    # M/D/YYYY — American format guard (shouldn't occur but covered)
     '%m/%d/%Y %I:%M:%S %p',
     '%m/%d/%Y %H:%M:%S',
     '%m/%d/%Y %H:%M',
@@ -376,20 +376,19 @@ def migrate_movements(headers, rows, cur):
         return row[idx]
 
     records = []
-    skipped_no_id = 0
-    skipped_bad_type = 0
-    skipped_bad_ts = []
+    skipped_no_id    = []   # (row_num, raw_event_id)
+    skipped_bad_type = []   # (row_num, event_id, raw_movement_type)
+    skipped_bad_ts   = []   # (row_num, event_id, raw_ts)
 
     for i, row in enumerate(rows, start=2):
         event_id = _clean_str(g(row, 'Event_ID'))
         if not event_id:
-            skipped_no_id += 1
+            skipped_no_id.append((i, repr(g(row, 'Event_ID'))))
             continue
 
         movement_type = _clean_str(g(row, 'Movement_Type'))
         if movement_type not in ('STOCK_IN', 'STOCK_OUT'):
-            log.warning(f'Row {i}: unknown movement_type "{movement_type}" — skipping')
-            skipped_bad_type += 1
+            skipped_bad_type.append((i, event_id, repr(movement_type)))
             continue
 
         raw_ts = g(row, 'Timestamp_UTC')
@@ -423,19 +422,49 @@ def migrate_movements(headers, rows, cur):
             None,
         ))
 
+    total_skipped = len(skipped_no_id) + len(skipped_bad_type) + len(skipped_bad_ts)
     log.info(
         f'Prepared {len(records):,} movement records '
-        f'({skipped_no_id} no-id, {skipped_bad_type} bad-type, '
-        f'{len(skipped_bad_ts)} still-unparseable skipped).'
+        f'({len(skipped_no_id)} no-id, {len(skipped_bad_type)} bad-type, '
+        f'{len(skipped_bad_ts)} bad-ts skipped).'
     )
 
-    if skipped_bad_ts:
+    # ── Skipped rows report ────────────────────────────────────────────────
+    if total_skipped > 0:
         print()
-        print(f'  ⚠  {len(skipped_bad_ts)} rows still skipped (genuinely unparseable timestamp):')
-        for row_n, eid, raw in skipped_bad_ts[:20]:
-            print(f'     row {row_n:>5}  event_id={eid}  raw_ts={raw}')
-        if len(skipped_bad_ts) > 20:
-            print(f'     ... and {len(skipped_bad_ts) - 20} more')
+        print('=' * 90)
+        print(f'  SKIPPED ROWS REPORT  ({total_skipped} total not migrated)')
+        print('=' * 90)
+
+        if skipped_no_id:
+            print(f'\n  ① Missing / blank Event_ID  ({len(skipped_no_id)} rows)')
+            print(f'  {"ROW":<8} {"RAW EVENT_ID VALUE"}')
+            print(f'  {"-"*7}  {"-"*40}')
+            for row_n, raw_eid in skipped_no_id[:50]:
+                print(f'  {row_n:<8} {raw_eid}')
+            if len(skipped_no_id) > 50:
+                print(f'  ... and {len(skipped_no_id) - 50} more')
+
+        if skipped_bad_type:
+            print(f'\n  ② Unknown Movement_Type  ({len(skipped_bad_type)} rows)')
+            print(f'  {"ROW":<8} {"EVENT_ID":<30} {"RAW MOVEMENT_TYPE VALUE"}')
+            print(f'  {"-"*7}  {"-"*29}  {"-"*35}')
+            for row_n, eid, raw_mt in skipped_bad_type[:50]:
+                print(f'  {row_n:<8} {eid:<30} {raw_mt}')
+            if len(skipped_bad_type) > 50:
+                print(f'  ... and {len(skipped_bad_type) - 50} more')
+
+        if skipped_bad_ts:
+            print(f'\n  ③ Unparseable Timestamp  ({len(skipped_bad_ts)} rows)')
+            print(f'  {"ROW":<8} {"EVENT_ID":<30} {"RAW TIMESTAMP VALUE"}')
+            print(f'  {"-"*7}  {"-"*29}  {"-"*40}')
+            for row_n, eid, raw_ts in skipped_bad_ts[:50]:
+                print(f'  {row_n:<8} {eid:<30} {raw_ts}')
+            if len(skipped_bad_ts) > 50:
+                print(f'  ... and {len(skipped_bad_ts) - 50} more')
+
+        print()
+        print('=' * 90)
         print()
 
     if not records:
@@ -456,7 +485,7 @@ def migrate_movements(headers, rows, cur):
         page_size=500
     )
     log.info(f'Inserted {len(records):,} rows into movements.')
-    return len(records), len(skipped_bad_ts)
+    return len(records), len(skipped_bad_ts), len(skipped_bad_type), len(skipped_no_id)
 
 
 def derive_pallet_status(cur):
@@ -577,7 +606,7 @@ def main():
     log.info('Beginning Postgres transaction...')
     try:
         cur = pg.cursor()
-        mv_count, ts_skipped = migrate_movements(ml_headers, ml_rows, cur)
+        mv_count, ts_skipped, type_skipped, noid_skipped = migrate_movements(ml_headers, ml_rows, cur)
         ps_count = derive_pallet_status(cur)
         ivt_count = migrate_ivt(ivt_headers, ivt_rows, cur)
         pg.commit()
@@ -589,19 +618,24 @@ def main():
     finally:
         cur.close(); pg.close()
 
+    total_skipped = ts_skipped + type_skipped + noid_skipped
+
     print()
     print('=' * 55)
     print('  MIGRATION COMPLETE')
     print('=' * 55)
     print(f'  movements rows inserted   : {mv_count:>8,}')
-    print(f'  rows skipped (bad ts)     : {ts_skipped:>8,}')
+    print(f'  skipped — bad timestamp   : {ts_skipped:>8,}')
+    print(f'  skipped — bad move type   : {type_skipped:>8,}')
+    print(f'  skipped — no event_id     : {noid_skipped:>8,}')
+    print(f'  total skipped             : {total_skipped:>8,}')
     print(f'  pallet_status rows        : {ps_count:>8,}  (unique HUs)')
     print(f'  ivt_scans rows inserted   : {ivt_count:>8,}')
     print('=' * 55)
-    if ts_skipped > 0:
+    if total_skipped > 0:
         print()
-        print('  ⚠  Check the skipped rows above — these are genuinely')
-        print('     unreadable timestamps that no parser could recover.')
+        print('  ⚠  See the SKIPPED ROWS REPORT above for full details.')
+        print('     Fix the raw data in Excel then re-run with --force.')
     print()
 
 
