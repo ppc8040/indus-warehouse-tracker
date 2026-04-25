@@ -11,7 +11,7 @@ its latest movement record.
 Run ONCE after create_schema.py has been executed successfully.
 
 Usage:
-    heroku run python scripts/migrate_excel_to_pg.py --app indus-warehouse-tracker
+    heroku run --app indus-warehouse-tracker python scripts/migrate_excel_to_pg.py
     OR locally with both DATABASE_URL and Graph credentials set in your .env
 
 Safety:
@@ -26,7 +26,7 @@ import sys
 import time
 import logging
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import msal
 import requests
@@ -175,9 +175,15 @@ def _clean_int(val):
 
 
 # Timestamp formats written by the app (Dubai local time stored as display string)
+# FIX: Added short formats '%d/%m/%Y %H:%M' and '%-d/%m/%Y %H:%M' to handle
+# entries like '13/4/2026 12:57' that lack seconds and use single-digit day/month.
 _TS_FORMATS = [
     '%d/%m/%Y %I:%M:%S %p',   # 25/04/2026 12:30:04 PM  (primary format)
-    '%d/%m/%Y %H:%M:%S',      # 25/04/2026 12:30:04     (fallback)
+    '%d/%m/%Y %H:%M:%S',      # 25/04/2026 12:30:04     (24h with seconds)
+    '%d/%m/%Y %H:%M',         # 25/04/2026 12:30        (24h, no seconds)
+    '%-d/%-m/%Y %H:%M:%S',    # 13/4/2026 12:30:04      (no zero-padding, Linux)
+    '%-d/%-m/%Y %H:%M',       # 13/4/2026 12:30         (no zero-padding, no seconds)
+    '%d/%m/%Y %I:%M %p',      # 25/04/2026 12:30 PM     (12h, no seconds)
     '%Y-%m-%dT%H:%M:%S',      # ISO fallback
     '%Y-%m-%d %H:%M:%S',
 ]
@@ -194,11 +200,9 @@ def _parse_timestamp(val):
     if not s:
         return None
 
-    # Handle numeric Excel serial dates (shouldn’t occur but guard anyway)
+    # Handle numeric Excel serial dates (shouldn't occur but guard anyway)
     try:
         serial = float(s)
-        # Excel serial 0 = 1900-01-00 (bug), 1 = 1900-01-01
-        from datetime import timedelta
         base = datetime(1899, 12, 30, tzinfo=timezone.utc)
         dt_utc = base + timedelta(days=serial)
         return dt_utc
@@ -210,7 +214,7 @@ def _parse_timestamp(val):
             dt_naive = datetime.strptime(s, fmt)
             # Timestamps are stored in Dubai local time (UTC+4)
             # Subtract 4 hours to store as true UTC in Postgres
-            dt_utc = dt_naive.replace(tzinfo=timezone.utc) - __import__('datetime').timedelta(hours=4)
+            dt_utc = dt_naive.replace(tzinfo=timezone.utc) - timedelta(hours=4)
             return dt_utc
         except ValueError:
             continue
@@ -313,11 +317,16 @@ def migrate_movements(headers, rows, cur):
 def derive_pallet_status(cur):
     """
     Derive pallet_status for every HU by selecting its latest movement.
+
+    FIX: Replaced MAX(timestamp_utc) join with DISTINCT ON (handling_unit)
+    ORDER BY timestamp_utc DESC, id DESC. This guarantees exactly one row per
+    HU even when multiple movements share the same timestamp (e.g. epoch fallback
+    rows all landing on 1970-01-01). The tiebreaker on `id` picks the last-inserted
+    row, which is deterministic and avoids the CardinalityViolation error.
+
     Rules:
         latest movement_type = STOCK_IN  → IN_WAREHOUSE
         latest movement_type = STOCK_OUT → OUT_OF_WAREHOUSE
-    All OUT_OF_WAREHOUSE pallets are treated as out of Indus — no in-transit concept.
-    Edge cases (HU physically present but marked OUT) handled by supervisor override.
     """
     log.info('Deriving pallet_status from movements...')
     cur.execute("""
@@ -325,25 +334,25 @@ def derive_pallet_status(cur):
             (handling_unit, current_status, last_event_id, last_movement_type,
              last_movement_time, indus_part, pallet_qty, last_location)
         SELECT
-            m.handling_unit,
-            CASE m.movement_type
+            handling_unit,
+            CASE movement_type
                 WHEN 'STOCK_IN'  THEN 'IN_WAREHOUSE'
                 WHEN 'STOCK_OUT' THEN 'OUT_OF_WAREHOUSE'
-            END                         AS current_status,
-            m.event_id                  AS last_event_id,
-            m.movement_type             AS last_movement_type,
-            m.timestamp_utc             AS last_movement_time,
-            m.indus_part,
-            m.pallet_qty,
-            m.location                  AS last_location
-        FROM movements m
-        INNER JOIN (
-            SELECT handling_unit, MAX(timestamp_utc) AS latest_ts
-            FROM   movements
-            WHERE  handling_unit IS NOT NULL
-            GROUP  BY handling_unit
-        ) latest ON m.handling_unit = latest.handling_unit
-                 AND m.timestamp_utc = latest.latest_ts
+            END                     AS current_status,
+            event_id                AS last_event_id,
+            movement_type           AS last_movement_type,
+            timestamp_utc           AS last_movement_time,
+            indus_part,
+            pallet_qty,
+            location                AS last_location
+        FROM (
+            SELECT DISTINCT ON (handling_unit)
+                handling_unit, movement_type, event_id,
+                timestamp_utc, indus_part, pallet_qty, location
+            FROM  movements
+            WHERE handling_unit IS NOT NULL
+            ORDER BY handling_unit, timestamp_utc DESC, id DESC
+        ) latest
         ON CONFLICT (handling_unit) DO UPDATE SET
             current_status     = EXCLUDED.current_status,
             last_event_id      = EXCLUDED.last_event_id,
