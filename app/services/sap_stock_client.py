@@ -5,10 +5,10 @@ SAP Material Stock client — API_MATERIAL_STOCK_SRV (OData v2).
 
 FLOW (as described in the reference BOM script fetch_material_stock_data):
   1. Fetch ALL pages from A_MatlStkInAcctMod (no server-side $filter).
-     Only 2 fields are selected: Material, MatlWrhsStkQtyInMatlBaseUnit.
-     We also select Plant so we can filter it in Python.
-  2. Python plant filter : keep only Plant '1000' and '2000'.
-  3. Python material filter: keep only materials starting with A, C, or I.
+     Only 3 fields are selected: Material, Plant, MatlWrhsStkQtyInMatlBaseUnit.
+  2. Python plant filter  : keep only Plant '1000' and '2000'.
+  3. Python material filter: keep only materials that CONTAIN the letter A, C, or I
+                             (anywhere in the code, case-insensitive).
   4. Aggregate qty per material per plant → one dict per unique material.
 
 WHY no server-side $filter for plant:
@@ -65,8 +65,10 @@ _CACHE_TTL = 300
 # Plant codes to keep (Python-side filter applied after full fetch).
 _VALID_PLANTS = frozenset({"1000", "2000"})
 
-# Material first-character whitelist — Indus part prefixes.
-_INDUS_PREFIXES = frozenset("ACI")
+# Material letter whitelist — keep any material whose code CONTAINS A, C, or I
+# (case-insensitive).  This is broader than a starts-with check so that codes
+# like "PROD-ACN" or "ZI123" are also included as long as they contain the letter.
+_INDUS_LETTERS = frozenset("ACI")
 
 # Only fetch these 3 fields — slimmer payload, faster pages.
 # Material + Plant for filtering; MatlWrhsStkQtyInMatlBaseUnit for qty.
@@ -233,9 +235,11 @@ def _fetch_all_raw_records() -> List[dict]:
 
 def _filter_and_aggregate(raw_records: List[dict]) -> List[dict]:
     """
-    Step 1 — Plant filter  : keep only Plant '1000' and '2000'.
-    Step 2 — Material filter: keep only materials starting with A, C, or I.
-    Step 3 — Aggregate     : sum qty per material per plant.
+    Step 1 — Plant filter   : keep only Plant '1000' and '2000'.
+    Step 2 — Material filter: keep only materials whose code CONTAINS the
+                              letter A, C, or I (case-insensitive, anywhere
+                              in the material code string).
+    Step 3 — Aggregate      : sum qty per material per plant.
 
     Returns list of dicts sorted by material code:
       [
@@ -265,22 +269,23 @@ def _filter_and_aggregate(raw_records: List[dict]) -> List[dict]:
         len(plant_filtered), skipped_plant
     )
 
-    # ── Step 2: Material prefix filter ────────────────────────────────────
+    # ── Step 2: Material contains-letter filter ───────────────────────────
+    # Keep any material whose uppercased code contains A, C, or I anywhere.
     mat_filtered: List[dict] = []
     skipped_mat = 0
     for rec in plant_filtered:
         mat = (rec.get("Material") or "").strip().upper()
-        if mat and mat[0] in _INDUS_PREFIXES:
+        if mat and any(letter in mat for letter in _INDUS_LETTERS):
             mat_filtered.append(rec)
         else:
             skipped_mat += 1
 
     print(
         f"[SAP STOCK] Material filter: kept {len(mat_filtered):>7d} records "
-        f"(starting A/C/I) | discarded {skipped_mat:>7d} non-Indus materials"
+        f"(code contains A/C/I) | discarded {skipped_mat:>7d} non-matching materials"
     )
     logger.info(
-        "SAP stock material filter: %d kept (A/C/I prefix), %d discarded",
+        "SAP stock material filter: %d kept (contains A/C/I), %d discarded",
         len(mat_filtered), skipped_mat
     )
 
