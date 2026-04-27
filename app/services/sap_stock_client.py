@@ -16,6 +16,7 @@ returns immediately from the in-memory cache while the thread populates it.
   fetch_stock(force_refresh) → same; always triggers a new background fetch
   cache_age_seconds()        → seconds since last successful fetch
   last_error()               → last fetch error string, or ''
+  is_fetching()              → True while a background fetch is in progress
 """
 
 import logging
@@ -263,6 +264,6 @@ def last_error() -> str:
 
 
 def is_fetching() -> bool:
-    """Return True if a background fetch is currently in progress."""
+    """Return True if a background SAP fetch thread is currently running."""
     with _fetch_lock:
         return _fetch_thread is not None and _fetch_thread.is_alive()
