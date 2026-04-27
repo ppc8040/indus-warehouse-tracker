@@ -9,6 +9,7 @@ Features:
   - Excel export (filter-aware, server-side via openpyxl)
   - Analytics: velocity, by-location, by-part, operators, IVT
   - SAP Recon: compares scanner net qty vs SAP plant stock (Plants 1000 & 2000)
+  - SAP Recon Status: lightweight polling endpoint for frontend progress tracking
 """
 import io
 import logging
@@ -494,6 +495,50 @@ def api_total_stock():
     except Exception as e:
         logger.error("api_total_stock: %s", e)
         return jsonify({"rows": [], "error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# SAP Recon status — lightweight polling endpoint (no DB query, no SAP call)
+# ---------------------------------------------------------------------------
+
+@admin_bp.route('/api/sap-recon-status')
+@_auth_required
+def api_sap_recon_status():
+    """
+    Lightweight status endpoint polled by the frontend every 5 seconds while
+    the background SAP fetch thread is running.
+
+    Returns immediately with:
+      {
+        "is_fetching":      bool,   — True while background thread is alive
+        "has_data":         bool,   — True once cache has been populated at least once
+        "material_count":   int,    — number of SAP materials cached (0 if not yet done)
+        "cache_age_seconds": float, — seconds since last successful fetch (0 if never)
+        "error":            str|null — last fetch error, or null
+      }
+
+    The frontend polls this until is_fetching=False AND has_data=True,
+    then calls /api/sap-recon to get the full reconciliation data.
+    """
+    from app.services.sap_stock_client import (
+        is_fetching, cache_age_seconds, last_error,
+    )
+    from app.services import sap_stock_client as _ssc
+
+    fetching   = is_fetching()
+    data       = _ssc._cache.get("data")
+    has_data   = data is not None and len(data) > 0
+    mat_count  = len(data) if has_data else 0
+    age        = round(cache_age_seconds())
+    err        = last_error() or None
+
+    return jsonify({
+        "is_fetching":       fetching,
+        "has_data":          has_data,
+        "material_count":    mat_count,
+        "cache_age_seconds": age,
+        "error":             err,
+    })
 
 
 # ---------------------------------------------------------------------------
