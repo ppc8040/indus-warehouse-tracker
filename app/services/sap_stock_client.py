@@ -56,21 +56,13 @@ def _auth() -> HTTPBasicAuth:
 
 
 def _odata_filter() -> str:
-    """
-    OData v2 $filter that restricts to:
-      - Plant 1000 or Plant 2000
-      - Material starting with A, C, or I  (index-friendly startswith)
-      - InventoryStockType = '' (unrestricted / blank = unrestricted in SAP)
-        We do NOT filter on InventoryStockType here; we sum all stock types
-        per material per plant and let the caller decide.
-    """
-    plant_filter    = "(Plant eq '1000' or Plant eq '2000')"
+    plant_filter = "(Plant eq '1000' or Plant eq '2000')"
     material_filter = (
-        "(startswith(Material,'A') eq true"
-        " or startswith(Material,'C') eq true"
-        " or startswith(Material,'I') eq true)"
+        "(Material ge 'A' and Material lt 'B')"
+        " or (Material ge 'C' and Material lt 'D')"
+        " or (Material ge 'I' and Material lt 'J')"
     )
-    return f"{plant_filter} and {material_filter}"
+    return f"{plant_filter} and ({material_filter})"
 
 
 def _fetch_all_pages() -> list:
