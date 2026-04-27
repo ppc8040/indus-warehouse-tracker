@@ -6,6 +6,11 @@ plants.  NO $filter is sent to SAP — this matches the reference BOM script
 approach and prevents SAP from silently truncating or rejecting the request
 when a filter is combined with large result sets.
 
+Only 3 fields are selected from SAP (Material, Plant, MatlWrhsStkQtyInMatlBaseUnit)
+— the rest (StorageLocation, Batch, InventorySpecialStockType, InventoryStockType,
+MaterialBaseUnit) are not needed and excluding them reduces payload size and
+speeds up each page fetch.
+
 All filtering is done in Python after the full paginated fetch:
   - Plant filter  : keep only Plant '1000' and '2000'
   - Material filter: keep only materials starting with A, C, or I (Indus prefixes)
@@ -52,6 +57,9 @@ _VALID_PLANTS = frozenset({"1000", "2000"})
 # Material code first-letter whitelist — only Indus part codes
 _INDUS_PREFIXES = frozenset("ACI")
 
+# Only these 3 fields are needed — slimmer payload, faster pages
+_SELECT_FIELDS = "Material,Plant,MatlWrhsStkQtyInMatlBaseUnit"
+
 # ---------------------------------------------------------------------------
 # In-memory cache + background-fetch state
 # ---------------------------------------------------------------------------
@@ -82,23 +90,18 @@ def _fetch_all_pages() -> list:
     """
     Page through A_MatlStkInAcctMod using $skip/$top with NO $filter.
     Stops when a page returns fewer records than _PAGE_SIZE (last page).
-    This matches the reference fetchmaterialstockdata() approach exactly.
+    Only requests 3 fields: Material, Plant, MatlWrhsStkQtyInMatlBaseUnit.
     """
     endpoint = f"{_BASE_URL}/A_MatlStkInAcctMod"
-    select_fields = (
-        "Material,Plant,StorageLocation,Batch,"
-        "InventorySpecialStockType,InventoryStockType,"
-        "MaterialBaseUnit,MatlWrhsStkQtyInMatlBaseUnit"
-    )
-    headers = {"Accept": "application/json"}
-    auth    = _auth()
+    headers  = {"Accept": "application/json"}
+    auth     = _auth()
     all_records = []
     skip = 0
 
     while True:
         params = {
             "$format": "json",
-            "$select": select_fields,
+            "$select": _SELECT_FIELDS,
             "$top":    str(_PAGE_SIZE),
             "$skip":   str(skip),
         }
