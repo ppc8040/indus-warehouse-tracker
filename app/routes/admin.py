@@ -512,20 +512,27 @@ def api_sap_recon_status():
       {
         "is_fetching":      bool,   — True while background thread is alive
         "has_data":         bool,   — True once cache has been populated at least once
+        "fetch_started":    bool,   — True once a fetch has been triggered
+                                      (lets the frontend distinguish "waiting for first kick"
+                                       from "finished with error")
         "material_count":   int,    — number of SAP materials cached (0 if not yet done)
         "cache_age_seconds": float, — seconds since last successful fetch (0 if never)
         "error":            str|null — last fetch error, or null
       }
 
-    The frontend polls this until is_fetching=False AND has_data=True,
-    then calls /api/sap-recon to get the full reconciliation data.
+    State machine on the frontend:
+      fetch_started=False                → still waiting for kick-off, keep spinner
+      fetch_started=True, is_fetching=True  → actively fetching, update progress msg
+      fetch_started=True, is_fetching=False, has_data=True  → SUCCESS → load data
+      fetch_started=True, is_fetching=False, has_data=False → ERROR   → show error
     """
     from app.services.sap_stock_client import (
-        is_fetching, cache_age_seconds, last_error,
+        is_fetching, cache_age_seconds, last_error, fetch_started,
     )
     from app.services import sap_stock_client as _ssc
 
     fetching   = is_fetching()
+    started    = fetch_started()
     data       = _ssc._cache.get("data")
     has_data   = data is not None and len(data) > 0
     mat_count  = len(data) if has_data else 0
@@ -534,6 +541,7 @@ def api_sap_recon_status():
 
     return jsonify({
         "is_fetching":       fetching,
+        "fetch_started":     started,
         "has_data":          has_data,
         "material_count":    mat_count,
         "cache_age_seconds": age,
@@ -581,7 +589,7 @@ def api_sap_recon():
 
     force = request.args.get('force_refresh', '0') == '1'
 
-    # ── 1. Fetch SAP stock (cached or live) ──────────────────────────────────
+    # ── 1. Fetch SAP stock (cached or live) ────────────────────────────────────
     sap_rows  = []
     sap_error = None
     try:
@@ -596,7 +604,7 @@ def api_sap_recon():
         for r in sap_rows
     }
 
-    # ── 2. Fetch scanner net qty per indus_part ──────────────────────────────
+    # ── 2. Fetch scanner net qty per indus_part ─────────────────────────────
     qty = STOCK_QTY_EXPR
     scanner_sql = f"""
         SELECT
@@ -785,7 +793,7 @@ def api_export():
                                      THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
                                      ELSE 0 END) AS m4_stock,
                             SUM(CASE WHEN UPPER(location)='M5'
-                                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+ clearly                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
                                      ELSE 0 END) AS m5_stock,
                             SUM(CASE WHEN UPPER(location)='M6'
                                      THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
