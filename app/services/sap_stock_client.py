@@ -2,7 +2,8 @@
 SAP Material Stock API client — API_MATERIAL_STOCK_SRV (OData v2).
 
 Fetches unrestricted warehouse stock (MatlWrhsStkQtyInMatlBaseUnit) from
-Plants 1000 and 2000 for ALL materials (no material-code restriction).
+Plants 1000 and 2000, restricted to Indus material codes starting with
+A, C, or I (covers ACN*, AEW*, AJF*, AJM*, AHR*, CXX*, IXX*, etc.).
 
 Results are cached in-memory for SAP_STOCK_CACHE_TTL_SECONDS (default 300).
 Call fetch_stock(force_refresh=True) to bypass the cache on demand.
@@ -54,10 +55,22 @@ def _auth() -> HTTPBasicAuth:
 
 def _odata_filter() -> str:
     """
-    OData v2 $filter restricted to Plants 1000 and 2000 only.
-    No material-code restriction — fetches all materials in those plants.
+    OData v2 $filter for Plants 1000 and 2000, restricted to Indus material
+    codes that start with A, C, or I.
+
+    OData v2 does not support startswith() on all SAP systems, so we use
+    ge/lt range pairs instead:
+      A* → Material ge 'A' and Material lt 'B'
+      C* → Material ge 'C' and Material lt 'D'
+      I* → Material ge 'I' and Material lt 'J'
     """
-    return "(Plant eq '1000' or Plant eq '2000')"
+    plant_filter = "(Plant eq '1000' or Plant eq '2000')"
+    material_filter = (
+        "(Material ge 'A' and Material lt 'B')"
+        " or (Material ge 'C' and Material lt 'D')"
+        " or (Material ge 'I' and Material lt 'J')"
+    )
+    return f"{plant_filter} and ({material_filter})"
 
 
 def _fetch_all_pages() -> list:
