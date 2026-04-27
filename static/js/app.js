@@ -10,9 +10,10 @@
    normally with is_override=true and the raw supervisor PIN.
 
    STOCK_OUT: after the worker taps STOCK OUT and selects a location,
-   a destination picker appears before the movement is posted. The
-   list of destinations is loaded once from GET /api/destinations on
-   DOMContentLoaded and cached in _destinations[].
+   a destination picker appears before the movement is posted. A
+   destination MUST be selected — posting without a destination is
+   not permitted. The list of destinations is loaded once from
+   GET /api/destinations on DOMContentLoaded and cached in _destinations[].
 
    QR codes are no longer scanned. Camera is barcode-only.
    ═══════════════════════════════════════════════════════════ */
@@ -578,6 +579,8 @@ function cancelLocation() {
 
 // ═══════════════════════════════════════════════════════════
 //  DESTINATION MODAL — STOCK_OUT only
+//  Destination is MANDATORY — the modal cannot be submitted
+//  without selecting a destination.
 // ═══════════════════════════════════════════════════════════
 
 function _openDestinationModal(location) {
@@ -591,7 +594,6 @@ function _openDestinationModal(location) {
 
   document.querySelectorAll('.dest-btn').forEach(b => b.classList.remove('selected'));
   document.getElementById('btnConfirmDestination').disabled = true;
-  document.getElementById('btnSkipDestination').dataset.location = location;
   document.getElementById('destinationModal').classList.add('on');
 }
 
@@ -607,11 +609,6 @@ function confirmDestination() {
   if (!_selectedDestination) return;
   document.getElementById('destinationModal').classList.remove('on');
   doMovement('STOCK_OUT', _selectedLocation, _selectedDestination);
-}
-
-function skipDestination() {
-  document.getElementById('destinationModal').classList.remove('on');
-  doMovement('STOCK_OUT', _selectedLocation, '');
 }
 
 function cancelDestination() {

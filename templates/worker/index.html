@@ -305,20 +305,6 @@
       background: #C62828;
     }
     #btnConfirmDestination:not(:disabled):active { background: #7F0000; }
-    /* "Post without destination" ghost link */
-    .dest-skip-btn {
-      width: 100%;
-      padding: 10px;
-      background: transparent;
-      border: none;
-      color: #9E9E9E;
-      font-size: .78rem;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: underline;
-      margin-top: 4px;
-    }
-    .dest-skip-btn:active { color: #555; }
 
     /* ── IVT Line screen styles (unchanged) ── */
     .ivt-header-bar {
@@ -681,7 +667,7 @@
 <div class="modal-bg" id="destinationModal">
   <div class="modal">
     <p class="dest-modal-title">&#128228; Where is this pallet going?</p>
-    <p class="dest-modal-sub">Select the destination for this Stock OUT. This is saved for traceability.</p>
+    <p class="dest-modal-sub">Select a destination. This is required before posting a Stock OUT.</p>
 
     <!-- From → To flow indicator -->
     <div class="dest-from-row">
@@ -714,9 +700,6 @@
       <button class="btn btn-outline" onclick="cancelDestination()">Cancel</button>
       <button class="btn btn-err" id="btnConfirmDestination" onclick="confirmDestination()" disabled>POST STOCK OUT</button>
     </div>
-    <button class="dest-skip-btn" id="btnSkipDestination" onclick="skipDestination()">
-      Post without specifying destination
-    </button>
   </div>
 </div>
 
