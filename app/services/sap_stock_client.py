@@ -97,6 +97,8 @@ _cache: Dict = {
     "fetched_at": 0.0,    # monotonic time when cache was last populated
     "error":      None,   # last error string, or None
     "row_count":  0,      # total rows fetched in last successful cycle
+    "_fetching":  False,  # explicit flag — set synchronously before thread starts,
+                          # cleared in finally block; avoids thread.is_alive() race window
 }
 
 _fetch_lock   = threading.Lock()
@@ -360,7 +362,7 @@ def _aggregate(records: list) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Background fetch worker (unchanged from original)
+# Background fetch worker
 # ---------------------------------------------------------------------------
 
 def _do_fetch_background():
@@ -368,6 +370,12 @@ def _do_fetch_background():
     Worker function running in a daemon thread.
     Fetches all pages, aggregates, and updates the in-memory cache.
     Errors are stored in cache['error'] but never propagated.
+
+    NOTE: _cache["_fetching"] is set to True BEFORE this thread is started
+    (inside _trigger_background_fetch, under the lock) so that is_fetching()
+    returns True immediately — even before the OS has marked the thread alive.
+    This flag is the authoritative source for is_fetching(); thread.is_alive()
+    is only used as a fallback safety check.
     """
     global _fetch_thread
     try:
@@ -389,12 +397,22 @@ def _do_fetch_background():
         _cache["error"] = str(exc)
         logger.error(f"SAP stock background fetch failed: {exc}")
     finally:
+        # Clear both the thread reference and the explicit flag under the lock
         with _fetch_lock:
             _fetch_thread = None
+            _cache["_fetching"] = False
+        logger.info("SAP stock background fetch thread exiting — is_fetching reset to False")
 
 
 def _trigger_background_fetch():
-    """Start a background fetch thread if one is not already running."""
+    """
+    Start a background fetch thread if one is not already running.
+
+    KEY FIX: _cache["_fetching"] is set to True synchronously here, inside
+    the lock, BEFORE t.start() is called.  This guarantees that any call to
+    is_fetching() — even one that arrives microseconds after this function
+    returns — will see True without waiting for the OS to schedule the thread.
+    """
     global _fetch_thread
     with _fetch_lock:
         if _fetch_thread is not None and _fetch_thread.is_alive():
@@ -406,12 +424,15 @@ def _trigger_background_fetch():
             name="sap-stock-fetch",
         )
         _fetch_thread = t
+        # Set the explicit flag BEFORE starting the thread so that
+        # is_fetching() returns True immediately on the very first poll.
+        _cache["_fetching"] = True
         t.start()
-        logger.info("SAP stock background fetch thread started")
+        logger.info("SAP stock background fetch thread started (is_fetching=True set synchronously)")
 
 
 # ---------------------------------------------------------------------------
-# Public API (unchanged from original)
+# Public API
 # ---------------------------------------------------------------------------
 
 def fetch_stock(force_refresh: bool = False) -> list:
@@ -456,9 +477,19 @@ def last_error() -> str:
 
 
 def is_fetching() -> bool:
-    """Return True if a background SAP fetch thread is currently running."""
+    """
+    Return True if a background SAP fetch is currently in progress.
+
+    Uses the explicit _cache["_fetching"] boolean as the primary signal —
+    this is set synchronously (under the lock) before the thread is even
+    started, so there is zero race window between the kick-off request and
+    the first frontend poll.  thread.is_alive() is kept as a safety net in
+    case the thread dies without reaching the finally block.
+    """
     with _fetch_lock:
-        return _fetch_thread is not None and _fetch_thread.is_alive()
+        explicit_flag = _cache.get("_fetching", False)
+        thread_alive  = _fetch_thread is not None and _fetch_thread.is_alive()
+        return explicit_flag or thread_alive
 
 
 def get_cache_stats() -> dict:
