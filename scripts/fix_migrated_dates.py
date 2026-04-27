@@ -1,40 +1,65 @@
 """
 scripts/fix_migrated_dates.py
 
-ONE-TIME fix for migrated timestamps where DD.MM.YY (e.g. 12.4.26 = 12 Apr 2026)
-was read as MM/DD/YY (e.g. 4/12/26 = 4 Dec 2026), swapping day and month.
+Generalised fix for migrated timestamps where dates were written as DD.MM.YY
+but read as MM/DD/YY, swapping day and month.
 
-Affected rows: any timestamp_utc that falls between 2026-12-01 and 2026-12-12
-(day 13+ is impossible after a DD↔MM swap since no month has a 13th month).
+  Example corruptions:
+    12.4.26  (12 Apr)  →  stored as  4/12/26  (4 Dec)
+    10.4.26  (10 Apr)  →  stored as  4/10/26  (4 Oct)
+    11.4.26  (11 Apr)  →  stored as  4/11/26  (4 Nov)
+     1.4.26  ( 1 Apr)  →  stored as  4/01/26  (4 Jan)
+
+The pattern for a source month of M:
+  Corrupted rows have  local_day = M  and  local_month = original_day  (1–12)
+  so the fix is simply: swap local_month ↔ local_day back.
 
 Tables fixed:
   - movements.timestamp_utc
   - pallet_status.last_movement_time
 
-The fix swaps month ↔ day back to the correct April date while preserving
-the original wall-clock time in Dubai timezone exactly.
+Dubai wall-clock time (hour/minute/second) is always preserved exactly.
 
-Usage:
-    heroku run python scripts/fix_migrated_dates.py --app indus-warehouse-tracker
+──────────────────────────────────────────────────────────────────────────────
+USAGE
+──────────────────────────────────────────────────────────────────────────────
 
-    OR locally with DATABASE_URL set:
-    python scripts/fix_migrated_dates.py
+  Preview corrupted rows for source month April (default, no writes):
+    heroku run python scripts/fix_migrated_dates.py --month 4 --app indus-warehouse-tracker
 
-    To REVERSE (undo) the fix, add --reverse flag:
-    heroku run python scripts/fix_migrated_dates.py --reverse --app indus-warehouse-tracker
+  Apply the fix:
+    heroku run python scripts/fix_migrated_dates.py --month 4 --apply --app indus-warehouse-tracker
 
-SAFE GUARDS:
-  - Prints a full preview of affected rows BEFORE making any changes.
-  - Requires typing 'yes' to confirm before committing.
-  - Runs both tables in a single transaction — rolls back entirely if anything fails.
-  - --reverse flag re-runs the same swap logic on the now-corrected April rows,
-    returning them to their (wrong) December state if you need to undo.
+  Preview what a reverse/undo would touch:
+    heroku run python scripts/fix_migrated_dates.py --month 4 --reverse --app indus-warehouse-tracker
+
+  Apply the reverse (undo the fix):
+    heroku run python scripts/fix_migrated_dates.py --month 4 --reverse --apply --app indus-warehouse-tracker
+
+  Locally (DATABASE_URL must be set in .env):
+    python scripts/fix_migrated_dates.py --month 4
+    python scripts/fix_migrated_dates.py --month 4 --apply
+
+──────────────────────────────────────────────────────────────────────────────
+SAFE GUARDS
+──────────────────────────────────────────────────────────────────────────────
+  - Default is PREVIEW ONLY — no writes happen unless --apply is passed.
+  - Preview prints every affected row with current and corrected timestamps
+    before any change is made.
+  - Requires typing 'yes' to confirm even when --apply is passed.
+  - Both tables are updated inside a single transaction; any failure rolls
+    everything back leaving zero partial changes.
+  - --reverse undoes exactly what --apply did; it is symmetric.
 """
 
 import os
 import sys
+import argparse
 import psycopg2
 import psycopg2.extras
+
+
+TIMEZONE = "Asia/Dubai"
 
 
 # ── Connection ─────────────────────────────────────────────────────────────
@@ -49,95 +74,118 @@ def get_connection():
     return psycopg2.connect(uri, cursor_factory=psycopg2.extras.RealDictCursor)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── SQL helpers ────────────────────────────────────────────────────────────
+#
+# The corruption pattern for source month M:
+#   Forward (fix):   current local_day = M,  local_month in 1..12
+#   Reverse (undo):  current local_month = M, local_day in 1..12
+#
+# In both cases the repair is identical: swap local_month ↔ local_day.
+# We always extract date components in Dubai local time, then rebuild via
+# make_timestamptz(..., 'Asia/Dubai') so the wall-clock hour/min/sec is
+# untouched.
 
-def _where_clause(reverse: bool) -> tuple[str, dict]:
-    """
-    Return the WHERE clause and params that target the corrupted rows.
-
-    Forward pass:  targets Dec 2026 rows  (the wrongly-migrated dates)
-    Reverse pass:  targets Apr 2026 rows  (the corrected dates, to undo)
-    """
+def _movements_where(source_month: int, reverse: bool) -> str:
     if not reverse:
-        # Corrupted rows landed in December 2026 (month=12, day=1-12)
-        return (
-            "timestamp_utc >= %(start)s AND timestamp_utc < %(end)s",
-            {"start": "2026-12-01", "end": "2026-12-13"},
-        )
+        # corrupted: day-in-local = source_month, month can be 1–12
+        return f"""
+            EXTRACT(DAY   FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int = {source_month}
+            AND EXTRACT(MONTH FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int BETWEEN 1 AND 12
+            AND EXTRACT(YEAR  FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int = 2026
+        """
     else:
-        # Corrected rows are in April 2026 (month=4, day=1-12)
-        return (
-            "timestamp_utc >= %(start)s AND timestamp_utc < %(end)s",
-            {"start": "2026-04-01", "end": "2026-04-13"},
+        # corrected: month-in-local = source_month, day can be 1–12
+        return f"""
+            EXTRACT(MONTH FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int = {source_month}
+            AND EXTRACT(DAY   FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int BETWEEN 1 AND 12
+            AND EXTRACT(YEAR  FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int = 2026
+        """
+
+
+def _pallet_where(source_month: int, reverse: bool) -> str:
+    if not reverse:
+        return f"""
+            EXTRACT(DAY   FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int = {source_month}
+            AND EXTRACT(MONTH FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int BETWEEN 1 AND 12
+            AND EXTRACT(YEAR  FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int = 2026
+        """
+    else:
+        return f"""
+            EXTRACT(MONTH FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int = {source_month}
+            AND EXTRACT(DAY   FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int BETWEEN 1 AND 12
+            AND EXTRACT(YEAR  FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int = 2026
+        """
+
+
+def _swap_expr_movements() -> str:
+    """Build a make_timestamptz expression that swaps month ↔ day for movements."""
+    return f"""
+        make_timestamptz(
+            EXTRACT(YEAR   FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(DAY    FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(MONTH  FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(HOUR   FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(MINUTE FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(SECOND FROM (timestamp_utc AT TIME ZONE '{TIMEZONE}')),
+            '{TIMEZONE}'
         )
+    """
 
 
-SWAP_EXPR = """
-    make_timestamptz(
-        EXTRACT(YEAR   FROM timestamp_utc)::int,
-        EXTRACT(DAY    FROM timestamp_utc)::int,
-        EXTRACT(MONTH  FROM timestamp_utc)::int,
-        EXTRACT(HOUR   FROM (timestamp_utc AT TIME ZONE 'Asia/Dubai'))::int,
-        EXTRACT(MINUTE FROM (timestamp_utc AT TIME ZONE 'Asia/Dubai'))::int,
-        EXTRACT(SECOND FROM (timestamp_utc AT TIME ZONE 'Asia/Dubai')),
-        'Asia/Dubai'
-    )
-"""
-
-SWAP_EXPR_PS = """
-    make_timestamptz(
-        EXTRACT(YEAR   FROM last_movement_time)::int,
-        EXTRACT(DAY    FROM last_movement_time)::int,
-        EXTRACT(MONTH  FROM last_movement_time)::int,
-        EXTRACT(HOUR   FROM (last_movement_time AT TIME ZONE 'Asia/Dubai'))::int,
-        EXTRACT(MINUTE FROM (last_movement_time AT TIME ZONE 'Asia/Dubai'))::int,
-        EXTRACT(SECOND FROM (last_movement_time AT TIME ZONE 'Asia/Dubai')),
-        'Asia/Dubai'
-    )
-"""
+def _swap_expr_pallet() -> str:
+    """Build a make_timestamptz expression that swaps month ↔ day for pallet_status."""
+    return f"""
+        make_timestamptz(
+            EXTRACT(YEAR   FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(DAY    FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(MONTH  FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(HOUR   FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(MINUTE FROM (last_movement_time AT TIME ZONE '{TIMEZONE}'))::int,
+            EXTRACT(SECOND FROM (last_movement_time AT TIME ZONE '{TIMEZONE}')),
+            '{TIMEZONE}'
+        )
+    """
 
 
-# ── Preview ───────────────────────────────────────────────────────────────────
+# ── Preview ────────────────────────────────────────────────────────────────
 
-def preview_movements(cur, where: str, params: dict) -> int:
+def preview_movements(cur, where: str) -> int:
+    swap = _swap_expr_movements()
     sql = f"""
         SELECT
             id,
             handling_unit,
             movement_type,
-            timestamp_utc AT TIME ZONE 'Asia/Dubai'  AS current_dubai,
-            ({SWAP_EXPR}) AT TIME ZONE 'Asia/Dubai'  AS corrected_dubai
+            (timestamp_utc AT TIME ZONE '{TIMEZONE}')  AS current_local,
+            ({swap})         AT TIME ZONE '{TIMEZONE}'  AS corrected_local
         FROM movements
         WHERE {where}
         ORDER BY timestamp_utc
     """
-    cur.execute(sql, params)
+    cur.execute(sql)
     rows = cur.fetchall()
     if not rows:
         print("  (no rows matched in movements)")
         return 0
-    print(f"\n  {'ID':<6}  {'Handling Unit':<22}  {'Type':<10}  {'CURRENT (Dubai)':<28}  {'CORRECTED (Dubai)'}")
-    print("  " + "-" * 100)
+
+    hdr = f"  {'ID':<8}  {'Handling Unit':<24}  {'Type':<12}  {'CURRENT (Dubai)':<30}  CORRECTED (Dubai)"
+    print(hdr)
+    print("  " + "-" * 105)
     for r in rows:
         print(
-            f"  {r['id']:<6}  {r['handling_unit']:<22}  {r['movement_type']:<10}  "
-            f"{str(r['current_dubai']):<28}  {r['corrected_dubai']}"
+            f"  {r['id']:<8}  {r['handling_unit']:<24}  {r['movement_type']:<12}  "
+            f"{str(r['current_local']):<30}  {r['corrected_local']}"
         )
     return len(rows)
 
 
-def preview_pallet_status(cur, reverse: bool) -> int:
-    # pallet_status uses last_movement_time, need its own where clause
-    if not reverse:
-        where = "last_movement_time >= '2026-12-01' AND last_movement_time < '2026-12-13'"
-    else:
-        where = "last_movement_time >= '2026-04-01' AND last_movement_time < '2026-04-13'"
-
+def preview_pallet_status(cur, where: str) -> int:
+    swap = _swap_expr_pallet()
     sql = f"""
         SELECT
             handling_unit,
-            last_movement_time AT TIME ZONE 'Asia/Dubai'   AS current_dubai,
-            ({SWAP_EXPR_PS}) AT TIME ZONE 'Asia/Dubai'     AS corrected_dubai
+            (last_movement_time AT TIME ZONE '{TIMEZONE}')  AS current_local,
+            ({swap})            AT TIME ZONE '{TIMEZONE}'    AS corrected_local
         FROM pallet_status
         WHERE {where}
         ORDER BY last_movement_time
@@ -147,107 +195,135 @@ def preview_pallet_status(cur, reverse: bool) -> int:
     if not rows:
         print("  (no rows matched in pallet_status)")
         return 0
-    print(f"\n  {'Handling Unit':<24}  {'CURRENT (Dubai)':<28}  {'CORRECTED (Dubai)'}")
-    print("  " + "-" * 82)
+
+    hdr = f"  {'Handling Unit':<26}  {'CURRENT (Dubai)':<30}  CORRECTED (Dubai)"
+    print(hdr)
+    print("  " + "-" * 88)
     for r in rows:
         print(
-            f"  {r['handling_unit']:<24}  "
-            f"{str(r['current_dubai']):<28}  {r['corrected_dubai']}"
+            f"  {r['handling_unit']:<26}  "
+            f"{str(r['current_local']):<30}  {r['corrected_local']}"
         )
     return len(rows)
 
 
-# ── Fix ───────────────────────────────────────────────────────────────────────
+# ── Apply ──────────────────────────────────────────────────────────────────
 
-def apply_fix_movements(cur, where: str, params: dict) -> int:
-    sql = f"""
-        UPDATE movements
-        SET timestamp_utc = {SWAP_EXPR}
-        WHERE {where}
-    """
-    cur.execute(sql, params)
+def apply_movements(cur, where: str) -> int:
+    swap = _swap_expr_movements()
+    cur.execute(f"UPDATE movements SET timestamp_utc = {swap} WHERE {where}")
     return cur.rowcount
 
 
-def apply_fix_pallet_status(cur, reverse: bool) -> int:
-    if not reverse:
-        where = "last_movement_time >= '2026-12-01' AND last_movement_time < '2026-12-13'"
-    else:
-        where = "last_movement_time >= '2026-04-01' AND last_movement_time < '2026-04-13'"
-
-    sql = f"""
-        UPDATE pallet_status
-        SET last_movement_time = {SWAP_EXPR_PS}
-        WHERE {where}
-    """
-    cur.execute(sql)
+def apply_pallet_status(cur, where: str) -> int:
+    swap = _swap_expr_pallet()
+    cur.execute(f"UPDATE pallet_status SET last_movement_time = {swap} WHERE {where}")
     return cur.rowcount
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────
 
 def run():
-    reverse = "--reverse" in sys.argv
-    mode = "REVERSE (undoing the fix — restoring Dec 2026 dates)" if reverse else "FORWARD (fixing Dec 2026 → Apr 2026)"
+    parser = argparse.ArgumentParser(
+        description="Fix day/month-swapped timestamps from Excel migration."
+    )
+    parser.add_argument(
+        "--month", type=int, default=4,
+        help="Source month (the correct month the dates should be in). Default: 4 (April)."
+    )
+    parser.add_argument(
+        "--apply", action="store_true",
+        help="Apply the fix. Without this flag the script is preview-only."
+    )
+    parser.add_argument(
+        "--reverse", action="store_true",
+        help="Reverse/undo a previously applied fix for this source month."
+    )
+
+    # heroku run passes extra args like --app; ignore unknown ones
+    args, _ = parser.parse_known_args()
+
+    source_month = args.month
+    apply        = args.apply
+    reverse      = args.reverse
+
+    month_name = {
+        1:"January", 2:"February", 3:"March", 4:"April",
+        5:"May", 6:"June", 7:"July", 8:"August",
+        9:"September", 10:"October", 11:"November", 12:"December"
+    }.get(source_month, str(source_month))
+
+    direction = "REVERSE (undo)" if reverse else "FORWARD (fix)"
+    action    = "APPLY"          if apply   else "PREVIEW ONLY"
 
     print("=" * 70)
-    print(f"  fix_migrated_dates.py  —  mode: {mode}")
+    print(f"  fix_migrated_dates.py")
+    print(f"  Source month : {month_name} ({source_month})")
+    print(f"  Direction    : {direction}")
+    print(f"  Mode         : {action}")
     print("=" * 70)
+
+    if not apply:
+        print("\n  *** PREVIEW ONLY — no changes will be made ***")
+        print("  *** Re-run with --apply to commit changes.  ***\n")
 
     conn = get_connection()
-    cur = conn.cursor()
+    cur  = conn.cursor()
 
-    # ── Step 1: Preview ───────────────────────────────────────────────────
-    where, params = _where_clause(reverse)
+    mv_where = _movements_where(source_month, reverse)
+    ps_where = _pallet_where(source_month, reverse)
 
+    # ── Step 1: Preview ──────────────────────────────────────────────────
     print("\n[1/3]  PREVIEW — rows that will be changed\n")
     print("  movements table:")
-    mv_count = preview_movements(cur, where, params)
+    mv_count = preview_movements(cur, mv_where)
 
     print("\n  pallet_status table:")
-    ps_count = preview_pallet_status(cur, reverse)
+    ps_count = preview_pallet_status(cur, ps_where)
 
     total = mv_count + ps_count
-    print(f"\n  Total rows affected: {total}  ({mv_count} movements + {ps_count} pallet_status)")
+    print(f"\n  Total rows matched: {total}  ({mv_count} movements + {ps_count} pallet_status)")
 
     if total == 0:
-        print("\nNothing to fix. Exiting without changes.")
-        cur.close()
-        conn.close()
-        sys.exit(0)
+        print("\n  Nothing to change. Exiting without any database writes.")
+        cur.close(); conn.close(); sys.exit(0)
 
-    # ── Step 2: Confirm ───────────────────────────────────────────────────
+    if not apply:
+        print("\n  Preview complete. Run with --apply to commit these changes.")
+        cur.close(); conn.close(); sys.exit(0)
+
+    # ── Step 2: Confirm ──────────────────────────────────────────────────
     print("\n[2/3]  CONFIRM")
-    answer = input(f"\n  Type 'yes' to apply the {mode} to all {total} rows: ").strip().lower()
+    answer = input(
+        f"\n  Type 'yes' to {direction.lower()} {total} rows: "
+    ).strip().lower()
     if answer != "yes":
         print("  Aborted. No changes made.")
-        cur.close()
-        conn.close()
-        sys.exit(0)
+        cur.close(); conn.close(); sys.exit(0)
 
-    # ── Step 3: Apply in single transaction ───────────────────────────────
+    # ── Step 3: Apply in single transaction ──────────────────────────────
     print("\n[3/3]  APPLYING CHANGES ...")
     try:
-        mv_updated = apply_fix_movements(cur, where, params)
+        mv_updated = apply_movements(cur, mv_where)
         print(f"  ✓  movements      — {mv_updated} rows updated")
 
-        ps_updated = apply_fix_pallet_status(cur, reverse)
+        ps_updated = apply_pallet_status(cur, ps_where)
         print(f"  ✓  pallet_status  — {ps_updated} rows updated")
 
         conn.commit()
         print(f"\n  Committed. {mv_updated + ps_updated} rows updated successfully.")
 
         if not reverse:
-            print("\n  To UNDO this fix at any time, run:")
-            print("    heroku run python scripts/fix_migrated_dates.py --reverse --app indus-warehouse-tracker")
+            print(f"\n  To UNDO this fix, run:")
+            print(f"    heroku run python scripts/fix_migrated_dates.py --month {source_month} --reverse --apply --app indus-warehouse-tracker")
+        else:
+            print(f"\n  Reverse complete. Rows are back to their pre-fix state.")
 
     except Exception as exc:
         conn.rollback()
         print(f"\n  ERROR: {exc}")
         print("  Transaction rolled back. No changes were made.")
-        cur.close()
-        conn.close()
-        sys.exit(1)
+        cur.close(); conn.close(); sys.exit(1)
 
     cur.close()
     conn.close()
