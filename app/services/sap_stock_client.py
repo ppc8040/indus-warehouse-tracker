@@ -2,10 +2,7 @@
 SAP Material Stock API client — API_MATERIAL_STOCK_SRV (OData v2).
 
 Fetches unrestricted warehouse stock (MatlWrhsStkQtyInMatlBaseUnit) from
-Plants 1000 and 2000 for materials whose code starts with A, C, or I.
-
-The filter is pushed server-side via OData $filter so SAP returns only the
-relevant records — no full-table download and no client-side filtering.
+Plants 1000 and 2000 for ALL materials (no material-code restriction).
 
 Results are cached in-memory for SAP_STOCK_CACHE_TTL_SECONDS (default 300).
 Call fetch_stock(force_refresh=True) to bypass the cache on demand.
@@ -56,19 +53,18 @@ def _auth() -> HTTPBasicAuth:
 
 
 def _odata_filter() -> str:
-    plant_filter = "(Plant eq '1000' or Plant eq '2000')"
-    material_filter = (
-        "(Material ge 'A' and Material lt 'B')"
-        " or (Material ge 'C' and Material lt 'D')"
-        " or (Material ge 'I' and Material lt 'J')"
-    )
-    return f"{plant_filter} and ({material_filter})"
+    """
+    OData v2 $filter restricted to Plants 1000 and 2000 only.
+    No material-code restriction — fetches all materials in those plants.
+    """
+    return "(Plant eq '1000' or Plant eq '2000')"
 
 
 def _fetch_all_pages() -> list:
     """
     Page through A_MatlStkInAcctMod and return every record as a raw dict.
-    Uses $skiptoken-based OData v2 pagination.
+    Uses __next-link OData v2 pagination. Absolute URL is enforced on every
+    next_link to handle SAP returning relative paths.
     """
     url = f"{_BASE_URL}/A_MatlStkInAcctMod"
     params = {
@@ -103,20 +99,30 @@ def _fetch_all_pages() -> list:
         if not isinstance(results, list):
             raise SAPStockError(f"Unexpected response structure on page {page}")
 
+        logger.info(
+            "SAP stock fetch: page %d → %d records (total so far: %d)",
+            page, len(results), len(records) + len(results)
+        )
         records.extend(results)
-        logger.info("SAP stock fetch: page %d → %d records (total so far: %d)",
-                    page, len(results), len(records))
 
-        # Extract next_link from response (OData v2 pagination token)
+        # OData v2 next-link lives in d.__next
         next_link = body.get("d", {}).get("__next", None)
-        
-        # After extracting next_link, make it absolute if needed
-        if next_link and next_link.startswith("/"):
-            next_link = "https://my409486-api.s4hana.cloud.sap" + next_link
-        url = next_link if next_link else None
+
+        if next_link:
+            # Ensure absolute URL — SAP sometimes returns a relative path
+            if next_link.startswith("/"):
+                next_link = "https://my409486-api.s4hana.cloud.sap" + next_link
+            if "$filter" not in next_link:
+                logger.warning(
+                    "Page %d: next_link missing $filter param — data may be truncated.", page
+                )
+            url = next_link
+        else:
+            url = None
+            logger.info("SAP stock fetch complete: %d total raw records", len(records))
+
         params = None  # next_link already contains all query params
 
-    logger.info("SAP stock fetch complete: %d total raw records", len(records))
     return records
 
 
