@@ -126,6 +126,14 @@ STOCK_QTY_EXPR = """
     COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty::text,'[^0-9]','','g'),''),'0')::int
 """
 
+# Columns that should be written as integers in the Excel export.
+_INT_EXPORT_COLS = frozenset({
+    'pallet_qty',
+    'total_in_qty', 'total_out_qty', 'net_qty',
+    'pallets_in', 'pallets_out', 'location_count',
+    'total_in', 'total_out',
+})
+
 
 # ---------------------------------------------------------------------------
 # Core data endpoints
@@ -492,12 +500,21 @@ def api_export():
             ws.column_dimensions[get_column_letter(j)].width = 22
 
     def _write_rows(ws, headers, data, start_row=2):
-        """Write data rows with thin borders and plain white background."""
+        """
+        Write data rows with thin borders and plain white background.
+        Columns in _INT_EXPORT_COLS are written as integers (None → 0).
+        All other columns are written as strings (None → '').
+        handling_unit stays as a plain string (no numeric coercion).
+        """
         for i, row in enumerate(data, start=start_row):
             ws.row_dimensions[i].height = 18
             for j, h in enumerate(headers, start=1):
                 val = row.get(h)
-                cell = ws.cell(row=i, column=j, value=str(val) if val is not None else '')
+                if h in _INT_EXPORT_COLS:
+                    cell_val = _safe_int(val, default=0)
+                else:
+                    cell_val = str(val) if val is not None else ''
+                cell = ws.cell(row=i, column=j, value=cell_val)
                 cell.font      = DATA_FONT
                 cell.alignment = DATA_ALIGN
                 cell.border    = CELL_BORDER
@@ -507,8 +524,9 @@ def api_export():
     try:
         if sheet_name == 'movements':
             clauses, params = _build_movement_filters(request.args)
-            params['limit'] = request.args.get('limit', 5000, type=int)
             where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+            # No LIMIT: export returns ALL rows — all matching rows if filtered,
+            # entire table if unfiltered.
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
@@ -518,7 +536,7 @@ def api_export():
                                job_no, movement_type, operator_id, device_id,
                                sync_status, validation_status, location, from_location, to_location
                         FROM movements {where}
-                        ORDER BY timestamp_utc DESC LIMIT %(limit)s
+                        ORDER BY timestamp_utc DESC
                     """, params)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
             ws.title = 'Movements'
@@ -539,6 +557,7 @@ def api_export():
             if part: cl2.append("indus_part ILIKE %(part)s");   p2['part'] = f'%{part}%'
             if loc and loc != 'ALL': cl2.append("last_location=%(loc)s"); p2['loc'] = loc
             where2 = ('WHERE ' + ' AND '.join(cl2)) if cl2 else ''
+            # No LIMIT: export returns all matching pallet status rows.
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
