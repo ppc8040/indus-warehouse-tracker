@@ -634,102 +634,144 @@ async function loadErrors() {
   } catch (e) { errEl.innerHTML = '<div class="empty">Failed to load error log.</div>'; console.error('loadErrors', e); }
 }
 
-// ── SAP Reconciliation ───────────────────────────────────────────────────────
-// ── SAP Recon ─────────────────────────────────────────────────────────────
+// ── SAP Reconciliation ────────────────────────────────────────────────────────
 let _sapReconPollTimer = null;
+let _sapReconElapsedTimer = null;
 
 async function loadSapRecon(forceRefresh = false) {
-  const tbody    = document.getElementById('sapReconTbody');
-  const banner   = document.getElementById('sapReconBanner');   // your existing info banner
-  const countEl  = document.getElementById('sapReconCount');    // material count badge if present
+  const tbl = document.getElementById('tbl-saprecon');
 
-  // Clear any previous poll
-  if (_sapReconPollTimer) { clearInterval(_sapReconPollTimer); _sapReconPollTimer = null; }
+  // ── Stop any previous poll cycle ─────────────────────────────────────────
+  if (_sapReconPollTimer)    { clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null; }
+  if (_sapReconElapsedTimer) { clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null; }
 
-  // ── Step 1: Show loading spinner ─────────────────────────────────────
-  if (tbody) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="6" style="text-align:center; padding: 2rem; color: var(--color-text-muted);">
-          <div style="display:flex; flex-direction:column; align-items:center; gap:0.75rem;">
-            <div class="spinner" style="width:28px;height:28px;border:3px solid var(--color-border);border-top-color:var(--color-primary);border-radius:50%;animation:spin 0.8s linear infinite;"></div>
-            <span id="sapReconStatusMsg">Connecting to SAP S/4HANA…</span>
-            <span id="sapReconElapsed" style="font-size:var(--text-xs);color:var(--color-text-faint)"></span>
-          </div>
-        </td>
-      </tr>`;
-  }
+  // ── Reset meta strip ─────────────────────────────────────────────────────
+  ['rSapCount','rScanCount','rTotalRows','rCacheAge','rDiscCount']
+    .forEach(id => { document.getElementById(id).textContent = '\u2014'; });
+  const errBanner = document.getElementById('recon-err-banner');
+  errBanner.textContent = '';
+  errBanner.classList.remove('visible');
 
-  // ── Step 2: Kick off the background fetch ──────────────────────────
-  const kickUrl = forceRefresh ? './api/sap-recon?force_refresh=1' : './api/sap-recon';
-  fetch(kickUrl).catch(() => {}); // fire-and-forget — triggers background thread
+  // ── Show loading spinner inside the table wrapper ─────────────────────────
+  tbl.innerHTML = `
+    <div class="empty" style="padding:40px 24px;">
+      <div style="display:inline-flex;flex-direction:column;align-items:center;gap:12px;">
+        <div style="width:32px;height:32px;border:3px solid var(--border);
+                    border-top-color:var(--sap);border-radius:50%;
+                    animation:spin 0.8s linear infinite;"></div>
+        <span id="sapReconStatusMsg" style="color:var(--muted);font-size:12px;">
+          Connecting to SAP S/4HANA&hellip;
+        </span>
+        <span id="sapReconElapsed" style="font-size:11px;color:var(--muted);opacity:.6;"></span>
+      </div>
+    </div>`;
 
-  // ── Step 3: Poll status every 5 seconds ────────────────────────────
+  // ── Fire-and-forget: kick the backend fetch (triggers background thread) ──
+  const kickUrl = forceRefresh
+    ? '/admin/api/sap-recon?force_refresh=1'
+    : '/admin/api/sap-recon';
+  fetch(kickUrl).catch(() => {});
+
+  // ── Elapsed counter (updates every second so users see progress) ──────────
   const startedAt = Date.now();
-
-  function _updateElapsed() {
+  _sapReconElapsedTimer = setInterval(() => {
     const el = document.getElementById('sapReconElapsed');
     if (!el) return;
     const secs = Math.round((Date.now() - startedAt) / 1000);
     const m = Math.floor(secs / 60), s = secs % 60;
-    el.textContent = `Time elapsed: ${m}m ${String(s).padStart(2,'0')}s — SAP fetch can take 2–5 min`;
-  }
+    el.textContent = `Elapsed: ${m}m ${String(s).padStart(2,'0')}s \u2014 SAP fetch typically takes 2\u20135 min`;
+  }, 1000);
 
-  const elapsedTimer = setInterval(_updateElapsed, 1000);
-
+  // ── Poll /api/sap-recon-status every 5 seconds ────────────────────────────
   _sapReconPollTimer = setInterval(async () => {
     try {
-      const statusResp = await fetch('./api/sap-recon-status');
+      const statusResp = await fetch('/admin/api/sap-recon-status');
       if (!statusResp.ok) return;
       const status = await statusResp.json();
 
-      // Update the spinner message with live material count
+      // Update spinner message with live material count
       const msgEl = document.getElementById('sapReconStatusMsg');
       if (msgEl) {
         if (status.is_fetching) {
-          const pagesEst = status.material_count > 0
-            ? ` — ${status.material_count} materials loaded so far`
-            : '';
-          msgEl.textContent = `Fetching SAP stock data${pagesEst}…`;
-        } else if (!status.has_data && status.error) {
-          msgEl.textContent = `SAP fetch failed: ${status.error}`;
+          const progress = status.material_count > 0
+            ? ` \u2014 ${status.material_count} materials loaded so far\u2026`
+            : '\u2026';
+          msgEl.textContent = `Fetching SAP stock data${progress}`;
         }
       }
 
-      // ── Done: is_fetching=false AND has_data=true ────────────────
+      // ── SUCCESS: fetch done and data is in cache ──────────────────────────
       if (!status.is_fetching && status.has_data) {
-        clearInterval(_sapReconPollTimer);
-        clearInterval(elapsedTimer);
-        _sapReconPollTimer = null;
+        clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null;
+        clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null;
 
-        // Final fetch to get the full reconciliation data
-        const dataResp = await fetch('./api/sap-recon');
-        const data = await dataResp.json();
-        renderSapRecon(data);  // your existing render function
+        // Final call to get the full reconciliation payload
+        try {
+          const dataResp = await fetch('/admin/api/sap-recon');
+          if (!dataResp.ok) throw new Error(`HTTP ${dataResp.status}`);
+          const data = await dataResp.json();
+          _renderReconData(data);
+        } catch (fetchErr) {
+          tbl.innerHTML = `<div class="empty" style="color:var(--err);">
+            Failed to load SAP recon data: ${fetchErr.message}<br>
+            <button onclick="loadSapRecon(true)" class="btn btn-sap" style="margin-top:10px;">
+              &#8635; Retry
+            </button></div>`;
+        }
+        return;
       }
 
-      // ── Error: fetch finished but no data ───────────────────────
+      // ── ERROR: fetch finished but cache still empty ───────────────────────
       if (!status.is_fetching && !status.has_data) {
-        clearInterval(_sapReconPollTimer);
-        clearInterval(elapsedTimer);
-        _sapReconPollTimer = null;
+        clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null;
+        clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null;
 
-        if (tbody) {
-          tbody.innerHTML = `
-            <tr>
-              <td colspan="6" style="text-align:center;padding:2rem;color:var(--color-error);">
-                SAP stock fetch failed${status.error ? ': ' + status.error : ''}.<br>
-                <button onclick="loadSapRecon(true)" style="margin-top:0.5rem;" class="btn btn-sm btn-primary">Retry</button>
-              </td>
-            </tr>`;
+        const errMsg = status.error ? `: ${status.error}` : '';
+        tbl.innerHTML = `<div class="empty" style="color:var(--err);">
+          SAP stock fetch failed${errMsg}<br>
+          <button onclick="loadSapRecon(true)" class="btn btn-sap" style="margin-top:10px;">
+            &#8635; Retry
+          </button></div>`;
+
+        if (status.error) {
+          errBanner.textContent = `&#9888; SAP Error: ${status.error}`;
+          errBanner.classList.add('visible');
         }
       }
 
-    } catch (e) {
-      console.warn('SAP recon status poll error:', e);
+    } catch (pollErr) {
+      console.warn('SAP recon status poll error:', pollErr);
     }
-  }, 5000); // poll every 5 seconds
+  }, 5000);
 }
+
+// Populate _reconRows and re-render the table + meta strip
+function _renderReconData(data) {
+  _reconRows = data.rows || [];
+
+  // Update meta strip
+  const sapCount  = data.sap_material_count    || 0;
+  const scanCount = data.scanner_material_count || 0;
+  const discCount = _reconRows.filter(r => r.variance_vs_1000 !== 0).length;
+  const ageRaw    = data.cache_age_seconds || 0;
+  const ageMin    = Math.floor(ageRaw / 60), ageSec = Math.round(ageRaw % 60);
+
+  document.getElementById('rSapCount').textContent   = sapCount;
+  document.getElementById('rScanCount').textContent  = scanCount;
+  document.getElementById('rTotalRows').textContent  = _reconRows.length;
+  document.getElementById('rCacheAge').textContent   = `${ageMin}m ${String(ageSec).padStart(2,'0')}s ago`;
+  document.getElementById('rDiscCount').textContent  = discCount;
+
+  // Show SAP error (partial data) if present
+  if (data.error) {
+    const errBanner = document.getElementById('recon-err-banner');
+    errBanner.textContent = `&#9888; SAP fetch error (partial data): ${data.error}`;
+    errBanner.classList.add('visible');
+  }
+
+  renderReconTable();
+}
+
 function renderReconTable() {
   const el     = document.getElementById('tbl-saprecon');
   const search = (document.getElementById('rSearch').value || '').trim().toLowerCase();
@@ -748,8 +790,8 @@ function renderReconTable() {
   }
 
   // Apply variance filter
-  if (filter === 'DISC')      rows = rows.filter(r => r.variance_vs_1000 !== 0);
-  else if (filter === 'NEG')  rows = rows.filter(r => r.variance_vs_1000 < 0);
+  if (filter === 'DISC')       rows = rows.filter(r => r.variance_vs_1000 !== 0);
+  else if (filter === 'NEG')   rows = rows.filter(r => r.variance_vs_1000 < 0);
   else if (filter === 'EXCESS') rows = rows.filter(r => r.variance_vs_1000 > 0);
   else if (filter === 'SAP_ONLY')  rows = rows.filter(r => r.scanner_qty === 0 && r.sap_qty_1000 > 0);
   else if (filter === 'SCAN_ONLY') rows = rows.filter(r => r.sap_qty_1000 === 0 && r.scanner_qty > 0);
@@ -771,10 +813,8 @@ function renderReconTable() {
 
   for (const r of rows) {
     const v = r.variance_vs_1000;
-    // Row class: negative variance = scanner LESS than SAP (shortage); positive = excess
     const rowCls = v < 0 ? 'neg-row' : v > 0 ? 'excess-row' : '';
 
-    // Variance display
     let varDisplay, statusTag;
     if (v === 0) {
       varDisplay = `<span style="color:var(--ok);font-weight:600">0</span>`;
@@ -787,10 +827,9 @@ function renderReconTable() {
       statusTag  = tag('EXCESS', 'twarn');
     }
 
-    // Highlight scanner qty 0 when SAP has stock (not scanned)
     const sqDisplay = r.scanner_qty === 0 && r.sap_qty_1000 > 0
       ? `<span style="color:var(--muted)">0</span>`
-      : `<span style="color:${r.scanner_qty > 0 ? 'var(--ok)' : 'var(--muted)'}">${r.scanner_qty}</span>`;
+      : `<span style="color:${r.scanner_qty > 0 ? 'var(--ok)' : 'var(--muted)'}"> ${r.scanner_qty}</span>`;
 
     h += `<tr class="${rowCls}">
       <td><strong>${r.indus_part}</strong></td>
@@ -925,7 +964,7 @@ function loadAll() {
   loadStock();
   loadTotalStock();
   // SAP Recon is NOT auto-loaded on page load — only when the tab is clicked.
-  // This avoids a ~30s SAP API call on every dashboard open.
+  // This avoids a ~2-5 min SAP API call on every dashboard open.
 }
 document.addEventListener('DOMContentLoaded', loadAll);
 </script>
