@@ -1,15 +1,20 @@
 """
 SAP Material Stock API client — API_MATERIAL_STOCK_SRV (OData v2).
 
-Fetches unrestricted warehouse stock (MatlWrhsStkQtyInMatlBaseUnit) from
-Plants 1000 and 2000.  The OData $filter is plant-only to avoid SAP
-silently truncating results with a complex ge/lt material-range filter.
-Material-prefix filtering (A, C, I only) is applied in Python after the
-full paginated fetch.
+Fetches unrestricted warehouse stock (MatlWrhsStkQtyInMatlBaseUnit) for all
+plants.  NO $filter is sent to SAP — this matches the reference BOM script
+approach and prevents SAP from silently truncating or rejecting the request
+when a filter is combined with large result sets.
+
+All filtering is done in Python after the full paginated fetch:
+  - Plant filter  : keep only Plant '1000' and '2000'
+  - Material filter: keep only materials starting with A, C, or I (Indus prefixes)
 
 Heroku enforces a 30-second HTTP response deadline.  To work around this,
 all SAP fetches run in a daemon background thread so the Flask route always
 returns immediately from the in-memory cache while the thread populates it.
+The full fetch takes 2-5 minutes — the frontend polls /api/sap-recon-status
+and shows a loading state until is_fetching=False and data is present.
 
   fetch_stock()              → returns cache immediately (may be empty on
                                 first call; triggers background refresh)
@@ -36,13 +41,15 @@ logger = logging.getLogger(__name__)
 _BASE_URL  = "https://my409486-api.s4hana.cloud.sap/sap/opu/odata/sap/API_MATERIAL_STOCK_SRV"
 _USERNAME  = "POWERBI_INTEGRATION"
 _PASSWORD  = "d>xEX$dgfFjjw2=2<kbNkH-gPyu-+XnVJF%xJr)v"
-_TIMEOUT   = 120  # seconds per individual HTTP request to SAP
-_PAGE_SIZE = 1000 # $top per page — SAP OData v2 max is usually 1000
+_TIMEOUT   = 180  # seconds per individual HTTP request to SAP (3 min — large pages)
+_PAGE_SIZE = 500  # $top per page (matches reference script BATCHSIZE=500)
 
-SAP_STOCK_CACHE_TTL_SECONDS = 300  # 5 minutes
+SAP_STOCK_CACHE_TTL_SECONDS = 300  # 5 minutes — re-fetch after cache expires
 
-# Material code first-letter whitelist — only codes starting with these
-# letters are Indus part numbers and should appear in the SAP Recon tab.
+# Plants to keep after fetch (all others discarded in Python)
+_VALID_PLANTS = frozenset({"1000", "2000"})
+
+# Material code first-letter whitelist — only Indus part codes
 _INDUS_PREFIXES = frozenset("ACI")
 
 # ---------------------------------------------------------------------------
@@ -50,13 +57,13 @@ _INDUS_PREFIXES = frozenset("ACI")
 # ---------------------------------------------------------------------------
 
 _cache: Dict = {
-    "data":       None,   # list[dict] — the merged rows
-    "fetched_at": 0.0,    # monotonic epoch when cache was last populated
+    "data":       None,   # list[dict] — the aggregated rows
+    "fetched_at": 0.0,    # monotonic time when cache was last populated
     "error":      None,   # last error string, or None
 }
 
-_fetch_lock   = threading.Lock()   # prevents duplicate concurrent fetches
-_fetch_thread = None               # currently-running background thread (or None)
+_fetch_lock   = threading.Lock()
+_fetch_thread = None  # currently-running background thread (or None)
 
 
 class SAPStockError(Exception):
@@ -71,96 +78,104 @@ def _auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(_USERNAME, _PASSWORD)
 
 
-def _odata_filter() -> str:
-    """
-    OData v2 $filter: Plants 1000 and 2000 only.
-
-    Material-prefix filtering is intentionally NOT done here — the SAP OData
-    layer silently truncates results when a complex ge/lt material range is
-    combined with the plant filter.  Python-side filtering in _aggregate()
-    is used instead to guarantee completeness.
-    """
-    return "(Plant eq '1000' or Plant eq '2000')"
-
-
 def _fetch_all_pages() -> list:
     """
-    Page through A_MatlStkInAcctMod and return every record as a raw dict.
-    Runs entirely in a background thread so Heroku's 30-second HTTP timeout
-    never applies to this function.
+    Page through A_MatlStkInAcctMod using $skip/$top with NO $filter.
+    Stops when a page returns fewer records than _PAGE_SIZE (last page).
+    This matches the reference fetchmaterialstockdata() approach exactly.
     """
-    url = f"{_BASE_URL}/A_MatlStkInAcctMod"
-    params = {
-        "$format": "json",
-        "$select": "Material,Plant,MatlWrhsStkQtyInMatlBaseUnit",
-        "$filter": _odata_filter(),
-        "$top":    str(_PAGE_SIZE),
-    }
+    endpoint = f"{_BASE_URL}/A_MatlStkInAcctMod"
+    select_fields = (
+        "Material,Plant,StorageLocation,Batch,"
+        "InventorySpecialStockType,InventoryStockType,"
+        "MaterialBaseUnit,MatlWrhsStkQtyInMatlBaseUnit"
+    )
     headers = {"Accept": "application/json"}
     auth    = _auth()
-    records = []
-    page    = 0
+    all_records = []
+    skip = 0
 
-    while url:
-        page += 1
-        logger.info("SAP stock fetch: page %d url=%s", page, url)
+    while True:
+        params = {
+            "$format": "json",
+            "$select": select_fields,
+            "$top":    str(_PAGE_SIZE),
+            "$skip":   str(skip),
+        }
+        page_num = (skip // _PAGE_SIZE) + 1
+        logger.info(
+            "SAP stock fetch: page %d (skip=%d, top=%d)",
+            page_num, skip, _PAGE_SIZE
+        )
         try:
             resp = requests.get(
-                url, params=params if page == 1 else None,
+                endpoint, params=params,
                 headers=headers, auth=auth, timeout=_TIMEOUT
             )
             resp.raise_for_status()
         except requests.RequestException as exc:
-            raise SAPStockError(f"HTTP error on page {page}: {exc}") from exc
+            raise SAPStockError(
+                f"HTTP error on page {page_num} (skip={skip}): {exc}"
+            ) from exc
 
         try:
             body = resp.json()
         except ValueError as exc:
-            raise SAPStockError(f"Invalid JSON on page {page}: {exc}") from exc
+            raise SAPStockError(
+                f"Invalid JSON on page {page_num} (skip={skip}): {exc}"
+            ) from exc
 
         results = body.get("d", {}).get("results", [])
         if not isinstance(results, list):
-            raise SAPStockError(f"Unexpected response structure on page {page}")
+            raise SAPStockError(
+                f"Unexpected response structure on page {page_num}: "
+                f"'d.results' is not a list"
+            )
 
         logger.info(
             "SAP stock fetch: page %d → %d records (total so far: %d)",
-            page, len(results), len(records) + len(results)
+            page_num, len(results), len(all_records) + len(results)
         )
-        records.extend(results)
+        all_records.extend(results)
 
-        next_link = body.get("d", {}).get("__next", None)
-        if next_link:
-            if next_link.startswith("/"):
-                next_link = "https://my409486-api.s4hana.cloud.sap" + next_link
-            if "$filter" not in next_link:
-                logger.warning(
-                    "Page %d: next_link missing $filter — data may be truncated.", page
-                )
-            url = next_link
-        else:
-            url = None
-            logger.info("SAP stock fetch complete: %d total raw records", len(records))
+        # Stop when we get fewer records than requested — this is the last page
+        if len(results) < _PAGE_SIZE:
+            logger.info(
+                "SAP stock fetch complete: %d total raw records across %d pages",
+                len(all_records), page_num
+            )
+            break
 
-        params = None  # next_link already carries all query params
+        skip += _PAGE_SIZE
 
-    return records
+    return all_records
 
 
 def _aggregate(records: list) -> list:
     """
-    Aggregate raw SAP records into one row per Material.
-    Only keeps materials starting with A, C, or I (Indus prefixes).
-    Returns a list of dicts sorted by material code.
+    Filter and aggregate raw SAP records into one row per Material.
+
+    Filters applied (Python-side, after full fetch):
+      1. Plant must be '1000' or '2000'
+      2. Material must start with A, C, or I
+
+    Aggregation: sum MatlWrhsStkQtyInMatlBaseUnit per plant per material.
+    Returns list of dicts sorted by material code.
     """
     agg: Dict[str, Dict] = {}
 
     for rec in records:
         mat   = (rec.get("Material") or "").strip().upper()
         plant = (rec.get("Plant")    or "").strip()
+
         if not mat:
             continue
 
-        # Python-side prefix filter: keep A*, C*, I* only
+        # Plant filter: only 1000 and 2000
+        if plant not in _VALID_PLANTS:
+            continue
+
+        # Material prefix filter: A, C, I only
         if mat[0] not in _INDUS_PREFIXES:
             continue
 
@@ -177,25 +192,32 @@ def _aggregate(records: list) -> list:
         elif plant == "2000":
             agg[mat]["sap_qty_2000"] += qty
 
-    return sorted(agg.values(), key=lambda r: r["material"])
+    result = sorted(agg.values(), key=lambda r: r["material"])
+    logger.info(
+        "SAP stock aggregate: %d raw records → %d Indus materials (Plants 1000+2000)",
+        len(records), len(result)
+    )
+    return result
 
 
 def _do_fetch_background():
     """
-    Worker function that runs in a daemon thread.
-    Fetches all pages from SAP, aggregates, and updates the in-memory cache.
-    Errors are logged and stored in _cache['error'] but never propagated
-    (the thread must not crash the dyno).
+    Worker function running in a daemon thread.
+    Fetches all pages, aggregates, and updates the in-memory cache.
+    Errors are stored in cache['error'] but never propagated.
     """
     global _fetch_thread
     try:
-        logger.info("SAP stock background fetch started")
+        logger.info("SAP stock background fetch started (no $filter, full pagination)")
         raw    = _fetch_all_pages()
         result = _aggregate(raw)
         _cache["data"]       = result
         _cache["fetched_at"] = time.monotonic()
         _cache["error"]      = None
-        logger.info("SAP stock background fetch complete: %d materials", len(result))
+        logger.info(
+            "SAP stock background fetch complete: %d materials cached",
+            len(result)
+        )
     except Exception as exc:  # noqa: BLE001
         _cache["error"] = str(exc)
         logger.error("SAP stock background fetch failed: %s", exc)
@@ -205,16 +227,17 @@ def _do_fetch_background():
 
 
 def _trigger_background_fetch():
-    """
-    Start a new background fetch thread if one is not already running.
-    """
+    """Start a background fetch thread if one is not already running."""
     global _fetch_thread
     with _fetch_lock:
         if _fetch_thread is not None and _fetch_thread.is_alive():
-            logger.debug("SAP stock background fetch already in progress — skipping")
+            logger.debug("SAP stock background fetch already running — skipping")
             return
-        t = threading.Thread(target=_do_fetch_background, daemon=True,
-                             name="sap-stock-fetch")
+        t = threading.Thread(
+            target=_do_fetch_background,
+            daemon=True,
+            name="sap-stock-fetch",
+        )
         _fetch_thread = t
         t.start()
         logger.info("SAP stock background fetch thread started")
@@ -230,12 +253,11 @@ def fetch_stock(force_refresh: bool = False) -> list:
     while the background thread is still running).
 
     Always triggers a background refresh when:
-      - force_refresh=True (user clicked Refresh button), OR
-      - cache is empty, OR
+      - force_refresh=True (user clicked Refresh), OR
+      - cache is empty (first call), OR
       - cache is older than SAP_STOCK_CACHE_TTL_SECONDS
 
-    Returns immediately — never blocks on the SAP HTTP call, so Heroku's
-    30-second response deadline is never breached.
+    Returns immediately — never blocks on the SAP HTTP call.
     """
     now = time.monotonic()
     cache_stale = (
@@ -246,7 +268,10 @@ def fetch_stock(force_refresh: bool = False) -> list:
     if force_refresh or cache_stale:
         _trigger_background_fetch()
     else:
-        logger.debug("SAP stock: returning cached data (%d rows)", len(_cache["data"]))
+        logger.debug(
+            "SAP stock: returning cached data (%d rows, age %.0fs)",
+            len(_cache["data"]), now - _cache["fetched_at"]
+        )
 
     return _cache["data"] or []
 
