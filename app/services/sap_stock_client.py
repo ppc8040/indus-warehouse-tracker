@@ -107,9 +107,10 @@ def _fetch_all_pages() -> list:
         logger.info("SAP stock fetch: page %d → %d records (total so far: %d)",
                     page, len(results), len(records))
 
-        # OData v2 next-link lives in d.__next
-        next_link = body.get("d", {}).get("__next")
-        url    = next_link if next_link else None
+        # After extracting next_link, make it absolute if needed
+        if next_link and next_link.startswith("/"):
+            next_link = "https://my409486-api.s4hana.cloud.sap" + next_link
+        url = next_link if next_link else None
         params = None  # next_link already contains all query params
 
     logger.info("SAP stock fetch complete: %d total raw records", len(records))
