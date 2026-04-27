@@ -68,7 +68,7 @@ _PASSWORD  = "d>xEX$dgfFjjw2=2<kbNkH-gPyu-+XnVJF%xJr)v"
 _TIMEOUT   = 300
 
 # Page size: 500 rows per request (balanced between SAP limit and network efficiency)
-_PAGE_SIZE = 500
+_PAGE_SIZE = 1000
 
 # Expected minimum row count for sanity check (you have 200K+ lines)
 # If final count is less than this, log a warning
