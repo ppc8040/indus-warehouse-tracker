@@ -101,7 +101,7 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
         if db_url.startswith("postgres://"):
             db_url = "postgresql://" + db_url[len("postgres://"):]
 
-        # NOTE: do NOT pass sslmode as a kwarg — Heroku’s DSN already
+        # NOTE: do NOT pass sslmode as a kwarg — Heroku's DSN already
         # contains sslmode=require in the query string. Passing it again
         # as a keyword argument causes a libpq conflict that breaks every
         # connection silently.
@@ -448,14 +448,18 @@ def _parse_ts(value) -> datetime:
 def _row_to_dict(row) -> dict:
     """
     Convert a psycopg2 RealDictRow to a plain Python dict.
-    datetime values are serialised to ISO strings for Flask jsonify.
+    datetime values are formatted as "D MMM YYYY, HH:MM" (24-hour, no seconds)
+    for display in API responses and the admin dashboard.
+    Seconds are preserved in the database (TIMESTAMPTZ) but not shown.
     """
     if row is None:
         return {}
     out = {}
     for k, v in dict(row).items():
         if isinstance(v, datetime):
-            out[k] = v.isoformat()
+            # Format: "27 Apr 2026, 09:33" — day without leading zero,
+            # abbreviated month, 24-hour clock, no seconds.
+            out[k] = v.strftime("%-d %b %Y, %H:%M")
         else:
             out[k] = v
     return out
