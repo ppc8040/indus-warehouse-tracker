@@ -29,6 +29,7 @@ PUBLIC API:
   cache_age_seconds()              → float
   last_error()                     → str
   live_record_count()              → int  (records fetched so far THIS run)
+  fetch_started()                  → bool (True once a fetch has been triggered)
 """
 
 import logging
@@ -54,9 +55,8 @@ _PASSWORD  = "d>xEX$dgfFjjw2=2<kbNkH-gPyu-+XnVJF%xJr)v"
 # so a slow SAP page doesn't abort the whole fetch unnecessarily.
 _TIMEOUT_PER_PAGE = 300
 
-# Page size: 500 rows matches the reference BOM script's batch_size=500.
-# Smaller pages are more reliable on slow SAP connections.
-_PAGE_SIZE = 500
+# Page size: 1000 rows per page for faster overall fetch.
+_PAGE_SIZE = 1000
 
 # Cache time-to-live: 5 minutes.  After this the next fetch_stock() call
 # will kick off a new background refresh automatically.
@@ -82,6 +82,8 @@ _cache: Dict = {
     "error":        None,   # str | None — last unrecoverable error message
     "_fetching":    False,  # bool — True while background thread is running
     "_live_count":  0,      # int — raw records fetched SO FAR in current run
+    "_started":     False,  # bool — True once a fetch has ever been triggered
+                            #        (distinguishes "not yet started" from "failed with no data")
 }
 
 _lock         = threading.Lock()
@@ -386,6 +388,9 @@ def _trigger_background_fetch():
     The _fetching flag is set synchronously under the lock BEFORE t.start()
     so that is_fetching() returns True immediately on the first status poll,
     even if the OS hasn't scheduled the new thread yet.
+
+    _started is set to True here so the status endpoint can distinguish
+    "fetch not yet kicked off" from "fetch finished with error".
     """
     global _fetch_thread
     with _lock:
@@ -402,7 +407,8 @@ def _trigger_background_fetch():
         )
         _fetch_thread          = t
         _cache["_fetching"]    = True
-        _cache["_live_count"]  = 0   # reset live counter for new run
+        _cache["_started"]     = True   # mark that a fetch has been triggered
+        _cache["_live_count"]  = 0       # reset live counter for new run
 
     t.start()
     print("[SAP STOCK] Background fetch thread launched (is_fetching=True set synchronously).")
@@ -456,6 +462,16 @@ def is_fetching() -> bool:
         flag         = _cache.get("_fetching", False)
         thread_alive = _fetch_thread is not None and _fetch_thread.is_alive()
     return flag or thread_alive
+
+
+def fetch_started() -> bool:
+    """
+    True once a background fetch has been triggered at least once.
+    Used by the status endpoint to distinguish 'not yet started'
+    from 'finished with error / no data'.
+    """
+    with _lock:
+        return bool(_cache.get("_started", False))
 
 
 def cache_age_seconds() -> float:
