@@ -2,8 +2,11 @@
 SAP Material Stock API client — API_MATERIAL_STOCK_SRV (OData v2).
 
 Fetches unrestricted warehouse stock (MatlWrhsStkQtyInMatlBaseUnit) from
-Plants 1000 and 2000, restricted to Indus material codes starting with
-A, C, or I (covers ACN*, AEW*, AJF*, AJM*, AHR*, CXX*, IXX*, etc.).
+Plants 1000 and 2000.  The OData $filter is kept minimal (plant only) to
+avoid SAP truncating results with a complex ge/lt material range filter.
+
+Material-prefix filtering (A, C, I) is applied in Python after the full
+paginated fetch, ensuring no Indus materials are silently dropped.
 
 Results are cached in-memory for SAP_STOCK_CACHE_TTL_SECONDS (default 300).
 Call fetch_stock(force_refresh=True) to bypass the cache on demand.
@@ -30,6 +33,10 @@ _PAGE_SIZE = 1000 # $top per page — SAP OData v2 max is usually 1000
 
 SAP_STOCK_CACHE_TTL_SECONDS = 300  # 5 minutes
 
+# Material code first-letter whitelist — only codes starting with these
+# letters are Indus part numbers and should appear in the SAP Recon tab.
+_INDUS_PREFIXES = frozenset("ACI")
+
 # ---------------------------------------------------------------------------
 # In-memory cache
 # ---------------------------------------------------------------------------
@@ -55,22 +62,14 @@ def _auth() -> HTTPBasicAuth:
 
 def _odata_filter() -> str:
     """
-    OData v2 $filter for Plants 1000 and 2000, restricted to Indus material
-    codes that start with A, C, or I.
+    OData v2 $filter: Plants 1000 and 2000 only.
 
-    OData v2 does not support startswith() on all SAP systems, so we use
-    ge/lt range pairs instead:
-      A* → Material ge 'A' and Material lt 'B'
-      C* → Material ge 'C' and Material lt 'D'
-      I* → Material ge 'I' and Material lt 'J'
+    Material-prefix filtering is intentionally NOT done here — the SAP OData
+    layer silently truncates results when a complex ge/lt material range is
+    combined with the plant filter.  Python-side filtering in _aggregate()
+    is used instead to guarantee completeness.
     """
-    plant_filter = "(Plant eq '1000' or Plant eq '2000')"
-    material_filter = (
-        "(Material ge 'A' and Material lt 'B')"
-        " or (Material ge 'C' and Material lt 'D')"
-        " or (Material ge 'I' and Material lt 'J')"
-    )
-    return f"{plant_filter} and ({material_filter})"
+    return "(Plant eq '1000' or Plant eq '2000')"
 
 
 def _fetch_all_pages() -> list:
@@ -145,6 +144,10 @@ def _aggregate(records: list) -> list:
       - sap_qty_1000: total MatlWrhsStkQtyInMatlBaseUnit for Plant 1000
       - sap_qty_2000: total MatlWrhsStkQtyInMatlBaseUnit for Plant 2000
 
+    Only materials whose code starts with A, C, or I are kept — these are
+    the Indus part number prefixes.  All other SAP materials (internal codes,
+    consumables, etc.) are silently discarded.
+
     Returns a list of dicts sorted by material code.
     """
     agg: Dict[str, Dict] = {}
@@ -153,6 +156,10 @@ def _aggregate(records: list) -> list:
         mat   = (rec.get("Material") or "").strip().upper()
         plant = (rec.get("Plant")    or "").strip()
         if not mat:
+            continue
+
+        # Python-side prefix filter: keep A*, C*, I* only
+        if mat[0] not in _INDUS_PREFIXES:
             continue
 
         try:
