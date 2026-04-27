@@ -389,10 +389,14 @@ def api_stock_summary():
     if loc and loc != 'ALL': clauses.append("location = %(loc)s"); params['loc'] = loc
     where = 'WHERE ' + ' AND '.join(clauses)
     qty = STOCK_QTY_EXPR
+    # GROUP BY indus_part + location only — customer_part is MAX()-aggregated.
+    # Grouping by customer_part caused split rows when the same part/location
+    # had movements with different or blank customer_part values, producing a
+    # false negative-stock alert that never cleared after corrective stock-in.
     sql = f"""
         SELECT
             COALESCE(NULLIF(indus_part,''),   'Unknown') AS indus_part,
-            COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
+            COALESCE(NULLIF(MAX(customer_part),''),'Unknown') AS customer_part,
             COALESCE(NULLIF(location,''),     'Unknown') AS location,
             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
             SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
@@ -402,7 +406,7 @@ def api_stock_summary():
             COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out
         FROM movements
         {where}
-        GROUP BY indus_part, customer_part, location
+        GROUP BY indus_part, location
         ORDER BY indus_part, location
     """
     try:
@@ -437,10 +441,12 @@ def api_total_stock():
         params['part'] = f'%{part}%'
     where = 'WHERE ' + ' AND '.join(clauses)
     qty = STOCK_QTY_EXPR
+    # GROUP BY indus_part only — customer_part is MAX()-aggregated for the same
+    # reason as api_stock_summary: avoids row-splitting on blank/varying customer_part.
     sql = f"""
         SELECT
             COALESCE(NULLIF(indus_part,''),   'Unknown') AS indus_part,
-            COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
+            COALESCE(NULLIF(MAX(customer_part),''),'Unknown') AS customer_part,
             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
             SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
@@ -450,7 +456,7 @@ def api_total_stock():
             COUNT(DISTINCT location) AS location_count
         FROM movements
         {where}
-        GROUP BY indus_part, customer_part
+        GROUP BY indus_part
         ORDER BY indus_part
     """
     try:
@@ -602,9 +608,9 @@ def api_export():
                 with conn.cursor() as cur:
                     cur.execute(f"""
                         SELECT
-                            COALESCE(NULLIF(indus_part,''),'Unknown')    AS indus_part,
-                            COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
-                            COALESCE(NULLIF(location,''),'Unknown')      AS location,
+                            COALESCE(NULLIF(indus_part,''),'Unknown')         AS indus_part,
+                            COALESCE(NULLIF(MAX(customer_part),''),'Unknown') AS customer_part,
+                            COALESCE(NULLIF(location,''),'Unknown')           AS location,
                             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
                             SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
                             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
@@ -612,7 +618,7 @@ def api_export():
                             COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN'  THEN handling_unit END) AS pallets_in,
                             COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out
                         FROM movements {where3}
-                        GROUP BY indus_part, customer_part, location
+                        GROUP BY indus_part, location
                         ORDER BY indus_part, location
                     """, p3)
                     data = [dict(r) for r in cur.fetchall()]
@@ -636,8 +642,8 @@ def api_export():
                 with conn.cursor() as cur:
                     cur.execute(f"""
                         SELECT
-                            COALESCE(NULLIF(indus_part,''),'Unknown')    AS indus_part,
-                            COALESCE(NULLIF(customer_part,''),'Unknown') AS customer_part,
+                            COALESCE(NULLIF(indus_part,''),'Unknown')         AS indus_part,
+                            COALESCE(NULLIF(MAX(customer_part),''),'Unknown') AS customer_part,
                             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
                             SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
                             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
@@ -646,7 +652,7 @@ def api_export():
                             COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out,
                             COUNT(DISTINCT location) AS location_count
                         FROM movements {where4}
-                        GROUP BY indus_part, customer_part
+                        GROUP BY indus_part
                         ORDER BY indus_part
                     """, p4)
                     data = [dict(r) for r in cur.fetchall()]
