@@ -3,7 +3,7 @@ Admin dashboard — basic HTTP auth protected.
 
 Features:
   - Filtered movements endpoint (HU, part, date, type, location)
-  - Stock summary by material + location
+  - Stock summary pivoted by material — one row per part, one column per location
   - Total stock summary across all locations
   - Negative stock detection in error log + Stock tab banner
   - Excel export (filter-aware, server-side via openpyxl)
@@ -126,12 +126,18 @@ STOCK_QTY_EXPR = """
     COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty::text,'[^0-9]','','g'),''),'0')::int
 """
 
+# Known warehouse locations used for the pivot in api_stock_summary.
+# Order here determines the column order in the UI and Excel export.
+STOCK_LOCATIONS = ['M4', 'M5', 'M6', 'M4_STORE', 'M16_STORE']
+
 # Columns written as integers in the Excel export.
 _INT_EXPORT_COLS = frozenset({
     'pallet_qty',
     'total_in_qty', 'total_out_qty', 'net_qty',
     'pallets_in', 'pallets_out', 'location_count',
     'total_in', 'total_out',
+    # pivot stock columns
+    'm4_stock', 'm5_stock', 'm6_stock', 'm4_store_stock', 'm16_store_stock', 'total_stock',
 })
 
 # Columns that carry formatted datetime strings ("27 Apr 2026, 09:33").
@@ -375,51 +381,87 @@ def api_conn_test():
 
 
 # ---------------------------------------------------------------------------
-# Stock summary (by material + location)
+# Stock summary — pivoted: one row per indus_part, one column per location
 # ---------------------------------------------------------------------------
 
 @admin_bp.route('/api/stock-summary')
 @_auth_required
 def api_stock_summary():
+    """
+    Returns one row per unique indus_part with a column per known location:
+      m4_stock, m5_stock, m6_stock, m4_store_stock, m16_store_stock, total_stock
+
+    The optional ?location= filter restricts which movements feed the aggregation
+    (useful for scoping) but the pivot shape is always returned with all columns.
+    The optional ?part= filter restricts to matching indus_part values.
+
+    negative_stock in the response lists rows+location where any location column < 0.
+    """
     part = (request.args.get('part') or '').strip()
     loc  = (request.args.get('location') or '').strip()
     clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
     params  = {}
-    if part: clauses.append("indus_part ILIKE %(part)s");   params['part'] = f'%{part}%'
-    if loc and loc != 'ALL': clauses.append("location = %(loc)s"); params['loc'] = loc
+    if part:
+        clauses.append("indus_part ILIKE %(part)s")
+        params['part'] = f'%{part}%'
+    if loc and loc != 'ALL':
+        clauses.append("location = %(loc)s")
+        params['loc'] = loc
     where = 'WHERE ' + ' AND '.join(clauses)
     qty = STOCK_QTY_EXPR
-    # GROUP BY indus_part + location only — customer_part is MAX()-aggregated.
-    # Grouping by customer_part caused split rows when the same part/location
-    # had movements with different or blank customer_part values, producing a
-    # false negative-stock alert that never cleared after corrective stock-in.
+
+    # Pivot: one row per indus_part, net qty per location as separate columns.
+    # location values are upper-cased in the CASE so matching is case-insensitive.
     sql = f"""
         SELECT
-            COALESCE(NULLIF(indus_part,''),   'Unknown') AS indus_part,
-            COALESCE(NULLIF(MAX(customer_part),''),'Unknown') AS customer_part,
-            COALESCE(NULLIF(location,''),     'Unknown') AS location,
-            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
-            SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
+            COALESCE(NULLIF(indus_part, ''), 'Unknown') AS indus_part,
+            SUM(CASE WHEN UPPER(location)='M4'
+                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                     ELSE 0 END) AS m4_stock,
+            SUM(CASE WHEN UPPER(location)='M5'
+                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                     ELSE 0 END) AS m5_stock,
+            SUM(CASE WHEN UPPER(location)='M6'
+                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                     ELSE 0 END) AS m6_stock,
+            SUM(CASE WHEN UPPER(location)='M4_STORE'
+                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                     ELSE 0 END) AS m4_store_stock,
+            SUM(CASE WHEN UPPER(location)='M16_STORE'
+                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                     ELSE 0 END) AS m16_store_stock,
             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
-            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty,
-            COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN'  THEN handling_unit END) AS pallets_in,
-            COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out
+            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_stock
         FROM movements
         {where}
-        GROUP BY indus_part, location
-        ORDER BY indus_part, location
+        GROUP BY indus_part
+        ORDER BY indus_part
     """
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = [dict(r) for r in cur.fetchall()]
-        neg = [
-            {"indus_part": r["indus_part"], "location": r["location"],
-             "total_in": r["total_in_qty"], "total_out": r["total_out_qty"],
-             "net_qty": r["net_qty"]}
-            for r in rows if _safe_int(r.get("net_qty")) < 0
+
+        # Build negative stock list: one entry per (part, location) pair in deficit.
+        loc_col_map = [
+            ('M4',       'm4_stock'),
+            ('M5',       'm5_stock'),
+            ('M6',       'm6_stock'),
+            ('M4_STORE', 'm4_store_stock'),
+            ('M16_STORE','m16_store_stock'),
         ]
+        neg = []
+        for r in rows:
+            for loc_name, col in loc_col_map:
+                val = _safe_int(r.get(col))
+                if val < 0:
+                    neg.append({
+                        "indus_part": r["indus_part"],
+                        "location":   loc_name,
+                        "net_qty":    val,
+                    })
+
         return jsonify({"rows": rows, "negative_stock": neg})
     except Exception as e:
         logger.error("api_stock_summary: %s", e)
@@ -526,8 +568,6 @@ def api_export():
                 if h in _INT_EXPORT_COLS:
                     cell_val = _safe_int(val, default=0)
                 elif h in _DT_EXPORT_COLS:
-                    # val is already a formatted string like "27 Apr 2026, 09:33"
-                    # parse it back to a naive datetime for openpyxl
                     try:
                         cell_val = datetime.strptime(str(val), _DT_PARSE_FMT)
                     except (ValueError, TypeError):
@@ -597,38 +637,48 @@ def api_export():
             filename = 'pallet_status_export.xlsx'
 
         elif sheet_name == 'stock':
+            # Pivot export: one row per indus_part, one column per location
             part = (request.args.get('part') or '').strip()
             loc  = (request.args.get('location') or '').strip()
             cl3 = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
             p3  = {}
-            if part: cl3.append("indus_part ILIKE %(part)s");   p3['part'] = f'%{part}%'
+            if part: cl3.append("indus_part ILIKE %(part)s"); p3['part'] = f'%{part}%'
             if loc and loc != 'ALL': cl3.append("location=%(loc)s"); p3['loc'] = loc
             where3 = 'WHERE ' + ' AND '.join(cl3)
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
                         SELECT
-                            COALESCE(NULLIF(indus_part,''),'Unknown')         AS indus_part,
-                            COALESCE(NULLIF(MAX(customer_part),''),'Unknown') AS customer_part,
-                            COALESCE(NULLIF(location,''),'Unknown')           AS location,
-                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END) AS total_in_qty,
-                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_out_qty,
+                            COALESCE(NULLIF(indus_part,''),'Unknown') AS indus_part,
+                            SUM(CASE WHEN UPPER(location)='M4'
+                                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                                     ELSE 0 END) AS m4_stock,
+                            SUM(CASE WHEN UPPER(location)='M5'
+                                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                                     ELSE 0 END) AS m5_stock,
+                            SUM(CASE WHEN UPPER(location)='M6'
+                                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                                     ELSE 0 END) AS m6_stock,
+                            SUM(CASE WHEN UPPER(location)='M4_STORE'
+                                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                                     ELSE 0 END) AS m4_store_stock,
+                            SUM(CASE WHEN UPPER(location)='M16_STORE'
+                                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                                     ELSE 0 END) AS m16_store_stock,
                             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
-                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty,
-                            COUNT(DISTINCT CASE WHEN movement_type='STOCK_IN'  THEN handling_unit END) AS pallets_in,
-                            COUNT(DISTINCT CASE WHEN movement_type='STOCK_OUT' THEN handling_unit END) AS pallets_out
+                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS total_stock
                         FROM movements {where3}
-                        GROUP BY indus_part, location
-                        ORDER BY indus_part, location
+                        GROUP BY indus_part
+                        ORDER BY indus_part
                     """, p3)
                     data = [dict(r) for r in cur.fetchall()]
-            ws.title = 'Stock Summary'
-            headers = ['indus_part','customer_part','location','total_in_qty',
-                       'total_out_qty','net_qty','pallets_in','pallets_out']
+            ws.title = 'Stock by Location'
+            headers = ['indus_part','m4_stock','m5_stock','m6_stock',
+                       'm4_store_stock','m16_store_stock','total_stock']
             ws.append(headers)
             _apply_header(ws, len(headers))
             _write_rows(ws, headers, data)
-            filename = 'stock_summary_export.xlsx'
+            filename = 'stock_by_location_export.xlsx'
 
         elif sheet_name == 'total_stock':
             part = (request.args.get('part') or '').strip()

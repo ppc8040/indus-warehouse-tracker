@@ -73,28 +73,31 @@
     .neg-banner th{color:#f87171;background:#3d0f0f}
     .neg-banner td{color:var(--neg);background:#2d0a0a;border-color:#7f1d1d}
     .neg-banner tbody tr:hover td{background:#3d0f0f!important}
+    /* Stock pivot table: right-align numeric stock columns */
+    .stock-num{text-align:right;font-variant-numeric:tabular-nums}
+    .stock-total{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
   </style>
 </head>
 <body>
 
 <header class="hdr">
-  <h1>🏭 Indus Warehouse — Admin Dashboard</h1>
+  <h1>&#127981; Indus Warehouse &#8212; Admin Dashboard</h1>
   <div class="hdr-right">
-    <button class="btn btn-primary" onclick="loadAll()">⟳ Refresh</button>
-    <span class="conn" id="connStatus">● checking...</span>
+    <button class="btn btn-primary" onclick="loadAll()">&#8635; Refresh</button>
+    <span class="conn" id="connStatus">&#9679; checking...</span>
   </div>
 </header>
 
 <div class="kpi-grid">
-  <div class="kpi"><div class="kpi-num" id="kMov">—</div><div class="kpi-lbl">Total Movements</div></div>
-  <div class="kpi"><div class="kpi-num ok" id="kIn">—</div><div class="kpi-lbl">Pallets IN</div></div>
-  <div class="kpi"><div class="kpi-num err" id="kOut">—</div><div class="kpi-lbl">Pallets OUT</div></div>
-  <div class="kpi"><div class="kpi-num warn" id="kOver">—</div><div class="kpi-lbl">Overrides</div></div>
-  <div class="kpi"><div class="kpi-num err" id="kErr">—</div><div class="kpi-lbl">Errors</div></div>
-  <div class="kpi"><div class="kpi-num neg" id="kNeg">—</div><div class="kpi-lbl">Neg. Stock Alerts</div></div>
-  <div class="kpi"><div class="kpi-num info" id="kIvtToday">—</div><div class="kpi-lbl">IVT Today</div></div>
-  <div class="kpi"><div class="kpi-num info" id="kIvtTotal">—</div><div class="kpi-lbl">IVT Total</div></div>
-  <div class="kpi"><div class="kpi-num warn" id="kPend">—</div><div class="kpi-lbl">Pending Sync</div></div>
+  <div class="kpi"><div class="kpi-num" id="kMov">&#8212;</div><div class="kpi-lbl">Total Movements</div></div>
+  <div class="kpi"><div class="kpi-num ok" id="kIn">&#8212;</div><div class="kpi-lbl">Pallets IN</div></div>
+  <div class="kpi"><div class="kpi-num err" id="kOut">&#8212;</div><div class="kpi-lbl">Pallets OUT</div></div>
+  <div class="kpi"><div class="kpi-num warn" id="kOver">&#8212;</div><div class="kpi-lbl">Overrides</div></div>
+  <div class="kpi"><div class="kpi-num err" id="kErr">&#8212;</div><div class="kpi-lbl">Errors</div></div>
+  <div class="kpi"><div class="kpi-num neg" id="kNeg">&#8212;</div><div class="kpi-lbl">Neg. Stock Alerts</div></div>
+  <div class="kpi"><div class="kpi-num info" id="kIvtToday">&#8212;</div><div class="kpi-lbl">IVT Today</div></div>
+  <div class="kpi"><div class="kpi-num info" id="kIvtTotal">&#8212;</div><div class="kpi-lbl">IVT Total</div></div>
+  <div class="kpi"><div class="kpi-num warn" id="kPend">&#8212;</div><div class="kpi-lbl">Pending Sync</div></div>
 </div>
 
 <div class="filter-bar" id="filterBar">
@@ -132,13 +135,13 @@
 </div>
 
 <div class="tabs">
-  <button class="tab on"  onclick="switchTab('movements',this)">📦 Movements</button>
-  <button class="tab"     onclick="switchTab('statuses',this)">🟢 Pallet Status</button>
-  <button class="tab"     onclick="switchTab('stock',this)">📈 Stock by Location</button>
-  <button class="tab"     onclick="switchTab('totalstock',this)">🗃 Total Stock</button>
-  <button class="tab"     onclick="switchTab('analytics',this)">📊 Analytics</button>
-  <button class="tab"     onclick="switchTab('ivt',this)">🔍 IVT Scans</button>
-  <button class="tab"     onclick="switchTab('errors',this)">⚠️ Errors</button>
+  <button class="tab on"  onclick="switchTab('movements',this)">&#128230; Movements</button>
+  <button class="tab"     onclick="switchTab('statuses',this)">&#128994; Pallet Status</button>
+  <button class="tab"     onclick="switchTab('stock',this)">&#128200; Stock by Location</button>
+  <button class="tab"     onclick="switchTab('totalstock',this)">&#128451; Total Stock</button>
+  <button class="tab"     onclick="switchTab('analytics',this)">&#128202; Analytics</button>
+  <button class="tab"     onclick="switchTab('ivt',this)">&#128269; IVT Scans</button>
+  <button class="tab"     onclick="switchTab('errors',this)">&#9888;&#65039; Errors</button>
 </div>
 
 <!-- Movements -->
@@ -147,7 +150,7 @@
     <h2>Movement Log</h2>
     <button class="btn btn-green" onclick="exportSheet('movements')">&#8659; Export Excel</button>
   </div>
-  <div class="tbl-wrap" id="tbl-movements"><div class="empty">Loading…</div></div>
+  <div class="tbl-wrap" id="tbl-movements"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Pallet Status -->
@@ -156,43 +159,43 @@
     <h2>Pallet Status</h2>
     <button class="btn btn-green" onclick="exportSheet('statuses')">&#8659; Export Excel</button>
   </div>
-  <div class="tbl-wrap" id="tbl-statuses"><div class="empty">Loading…</div></div>
+  <div class="tbl-wrap" id="tbl-statuses"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Stock by Location -->
 <div class="tab-pane" id="pane-stock">
   <div class="tab-hdr">
-    <h2>Stock Summary — by Material &amp; Location</h2>
+    <h2>Stock by Location</h2>
     <button class="btn btn-green" onclick="exportSheet('stock')">&#8659; Export Excel</button>
   </div>
   <p style="font-size:11px;color:var(--muted);margin-bottom:10px">
-    Net Qty = total IN − total OUT per location.
-    <span style="color:var(--neg)">Red rows = negative stock.</span>
-    Filters (Part, Location) apply.
+    Net stock per material per location (IN &#8722; OUT).
+    <span style="color:var(--neg)">Red rows = one or more locations in deficit.</span>
+    Filter by Part or Location.
   </p>
-  <!-- Negative stock alert banner — shown only when alerts exist -->
+  <!-- Negative stock alert banner -->
   <div class="neg-banner" id="neg-stock-banner">
-    <div class="neg-banner-title">⚠ Negative Stock Detected</div>
+    <div class="neg-banner-title">&#9888; Negative Stock Detected</div>
     <div class="tbl-wrap" id="neg-stock-banner-tbl"></div>
   </div>
-  <div class="tbl-wrap" id="tbl-stock"><div class="empty">Loading…</div></div>
+  <div class="tbl-wrap" id="tbl-stock"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Total Stock -->
 <div class="tab-pane" id="pane-totalstock">
   <div class="tab-hdr">
-    <h2>Total Stock — All Locations Combined</h2>
+    <h2>Total Stock &#8212; All Locations Combined</h2>
     <button class="btn btn-green" onclick="exportSheet('total_stock')">&#8659; Export Excel</button>
   </div>
   <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Overall net qty per material across every location. <span style="color:var(--neg)">Red = total negative stock.</span> Filter by Part only.</p>
-  <div class="tbl-wrap" id="tbl-totalstock"><div class="empty">Loading…</div></div>
+  <div class="tbl-wrap" id="tbl-totalstock"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Analytics -->
 <div class="tab-pane" id="pane-analytics">
   <div class="chart-grid">
     <div class="chart-card" style="grid-column:1/-1">
-      <h3>Daily Movement Volume — last 30 days</h3>
+      <h3>Daily Movement Volume &#8212; last 30 days</h3>
       <div class="chart-wrap"><canvas id="cVelocity"></canvas></div>
     </div>
     <div class="chart-card">
@@ -204,8 +207,8 @@
       <div class="chart-wrap"><canvas id="cParts"></canvas></div>
     </div>
     <div class="chart-card" style="grid-column:1/-1">
-      <h3>Operator Activity — last 30 days</h3>
-      <div id="tbl-operators"><div class="empty">Loading…</div></div>
+      <h3>Operator Activity &#8212; last 30 days</h3>
+      <div id="tbl-operators"><div class="empty">Loading&#8230;</div></div>
     </div>
   </div>
 </div>
@@ -218,11 +221,11 @@
   </div>
   <div class="chart-grid" style="margin-bottom:14px">
     <div class="chart-card">
-      <h3>IVT Daily Scans — last 14 days</h3>
+      <h3>IVT Daily Scans &#8212; last 14 days</h3>
       <div class="chart-wrap"><canvas id="cIvt"></canvas></div>
     </div>
   </div>
-  <div class="tbl-wrap" id="tbl-ivt"><div class="empty">Loading…</div></div>
+  <div class="tbl-wrap" id="tbl-ivt"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Errors -->
@@ -233,19 +236,18 @@
   </div>
   <div style="margin-bottom:16px">
     <p style="font-size:11px;font-weight:600;color:var(--neg);text-transform:uppercase;
-              letter-spacing:.05em;margin-bottom:8px">⚠ Negative Stock Alerts</p>
-    <div class="tbl-wrap" id="tbl-neg-stock"><div class="empty">Loading…</div></div>
+              letter-spacing:.05em;margin-bottom:8px">&#9888; Negative Stock Alerts</p>
+    <div class="tbl-wrap" id="tbl-neg-stock"><div class="empty">Loading&#8230;</div></div>
   </div>
   <p style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
             letter-spacing:.05em;margin-bottom:8px">Movement Errors &amp; Validation Failures</p>
-  <div class="tbl-wrap" id="tbl-errors"><div class="empty">Loading…</div></div>
+  <div class="tbl-wrap" id="tbl-errors"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <script>
 const charts = {};
 let filterTimer = null;
 
-// Map each tab name to the function that loads its data.
 const TAB_LOADERS = {
   movements:  () => loadMovements(),
   statuses:   () => loadStatuses(),
@@ -301,7 +303,7 @@ function exportSheet(sheet) {
 
 function tag(t, c) { return `<span class="tag ${c}">${t}</span>`; }
 function fmtTime(iso) {
-  if (!iso) return '—';
+  if (!iso) return '&#8212;';
   try {
     return new Date(iso).toLocaleString('en-GB', {
       day: '2-digit', month: 'short', year: 'numeric',
@@ -315,9 +317,9 @@ async function checkConn() {
   const el = document.getElementById('connStatus');
   try {
     const d = await fetch('/admin/api/connection-test').then(r => r.json());
-    el.textContent = d.status === 'ok' && d.db ? '● DB Connected' : '● DB Error';
+    el.textContent = d.status === 'ok' && d.db ? '\u25CF DB Connected' : '\u25CF DB Error';
     el.className = 'conn ' + (d.status === 'ok' && d.db ? 'ok' : 'err');
-  } catch { el.textContent = '● Offline'; el.className = 'conn err'; }
+  } catch { el.textContent = '\u25CF Offline'; el.className = 'conn err'; }
 }
 
 async function loadStats() {
@@ -325,7 +327,7 @@ async function loadStats() {
     const r = await fetch('/admin/api/stats');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
-    const set = (id, val, fallback = '—') =>
+    const set = (id, val, fallback = '&#8212;') =>
       document.getElementById(id).textContent = (val !== null && val !== undefined) ? val : fallback;
     set('kMov',      d.total_movements);
     set('kIn',       d.pallets_in);
@@ -345,10 +347,9 @@ async function loadStats() {
 
 async function loadMovements() {
   const el = document.getElementById('tbl-movements');
-  el.innerHTML = '<div class="empty">Loading…</div>';
+  el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
     const d = await fetch('/admin/api/movements?limit=200&' + filterQS()).then(r => r.json());
-    // Sort descending by timestamp so newest movement is always first
     const rows = (d.movements || []).sort((a, b) => {
       const ta = a.timestamp_dubai ? new Date(a.timestamp_dubai).getTime() : 0;
       const tb = b.timestamp_dubai ? new Date(b.timestamp_dubai).getTime() : 0;
@@ -363,17 +364,17 @@ async function loadMovements() {
       const sync = (m.sync_status || '').toUpperCase();
       const syncTag = sync === 'SYNCED' ? tag('SYNCED','tok') : tag(sync || '?','twarn');
       const vs = (m.validation_status || '').toUpperCase();
-      const valTag = vs === 'VALID' ? tag('VALID','tok') : vs === 'OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs || '—','terr');
+      const valTag = vs === 'VALID' ? tag('VALID','tok') : vs === 'OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs || '&#8212;','terr');
       h += `<tr>
         <td>${fmtTime(m.timestamp_dubai)}</td>
         <td><strong>${m.handling_unit || ''}</strong></td>
-        <td>${m.indus_part || '—'}</td>
-        <td>${m.pallet_qty || '—'}</td>
+        <td>${m.indus_part || '&#8212;'}</td>
+        <td>${m.pallet_qty || '&#8212;'}</td>
         <td>${typeTag}</td>
-        <td>${m.location || '—'}</td>
-        <td>${m.from_location || '—'}</td>
-        <td>${m.to_location || '—'}</td>
-        <td>${m.operator_id || '—'}</td>
+        <td>${m.location || '&#8212;'}</td>
+        <td>${m.from_location || '&#8212;'}</td>
+        <td>${m.to_location || '&#8212;'}</td>
+        <td>${m.operator_id || '&#8212;'}</td>
         <td>${syncTag}</td>
         <td>${valTag}</td>
       </tr>`;
@@ -384,7 +385,7 @@ async function loadMovements() {
 
 async function loadStatuses() {
   const el = document.getElementById('tbl-statuses');
-  el.innerHTML = '<div class="empty">Loading…</div>';
+  el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
     const f = getFilters();
     const qs = new URLSearchParams(
@@ -398,29 +399,32 @@ async function loadStatuses() {
       <th>Location</th><th>Indus Part</th><th>Qty</th></tr></thead><tbody>`;
     for (const s of rows) {
       const cs = (s.current_status || '').toUpperCase();
-      const stTag = cs === 'IN_WAREHOUSE' ? tag('IN','tok') : cs === 'OUT_OF_WAREHOUSE' ? tag('OUT','terr') : tag(cs || '—','tinfo');
+      const stTag = cs === 'IN_WAREHOUSE' ? tag('IN','tok') : cs === 'OUT_OF_WAREHOUSE' ? tag('OUT','terr') : tag(cs || '&#8212;','tinfo');
       const mt = (s.last_movement_type || '').toUpperCase();
-      const mtTag = mt === 'STOCK_IN' ? tag('IN','tok') : mt === 'STOCK_OUT' ? tag('OUT','terr') : tag(mt || '—','tinfo');
+      const mtTag = mt === 'STOCK_IN' ? tag('IN','tok') : mt === 'STOCK_OUT' ? tag('OUT','terr') : tag(mt || '&#8212;','tinfo');
       h += `<tr>
         <td><strong>${s.handling_unit || ''}</strong></td>
         <td>${stTag}</td><td>${mtTag}</td>
         <td>${fmtTime(s.last_movement_time_dubai)}</td>
-        <td>${s.last_location || '—'}</td>
-        <td>${s.indus_part || '—'}</td>
-        <td>${s.pallet_qty || '—'}</td>
+        <td>${s.last_location || '&#8212;'}</td>
+        <td>${s.indus_part || '&#8212;'}</td>
+        <td>${s.pallet_qty || '&#8212;'}</td>
       </tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
   } catch (e) { el.innerHTML = '<div class="empty">Failed to load statuses.</div>'; console.error('loadStatuses', e); }
 }
 
+// ── Stock by Location (pivot) ────────────────────────────────────────────────
+// Columns: Indus Part | M4 | M5 | M6 | M4_STORE | M16_STORE | Total Stock
+// One row per unique indus_part. Any location column < 0 flags the row red.
 async function loadStock() {
-  const el = document.getElementById('tbl-stock');
-  const banner = document.getElementById('neg-stock-banner');
-  const bannerTbl = document.getElementById('neg-stock-banner-tbl');
-  el.innerHTML = '<div class="empty">Loading…</div>';
+  const el      = document.getElementById('tbl-stock');
+  const banner  = document.getElementById('neg-stock-banner');
+  const bannerT = document.getElementById('neg-stock-banner-tbl');
+  el.innerHTML  = '<div class="empty">Loading&#8230;</div>';
   try {
-    const f = getFilters();
+    const f  = getFilters();
     const qs = new URLSearchParams(
       Object.fromEntries(Object.entries({ part: f.part, location: f.location })
         .filter(([, v]) => v && v !== 'ALL'))
@@ -429,47 +433,72 @@ async function loadStock() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const d = await resp.json();
     if (d.error) throw new Error(d.error);
-    const rows = d.rows || [];
+    const rows    = d.rows    || [];
     const negRows = d.negative_stock || [];
 
+    // ---- Negative stock banner ----
     if (negRows.length > 0) {
-      let nb = `<table><thead><tr><th>Indus Part</th><th>Location</th><th>Total IN</th><th>Total OUT</th><th>Net Qty (deficit)</th></tr></thead><tbody>`;
+      let nb = `<table><thead><tr>
+        <th>Indus Part</th><th>Location</th><th>Net Qty (deficit)</th>
+      </tr></thead><tbody>`;
       for (const r of negRows) {
         nb += `<tr>
-          <td><strong>${r.indus_part || '—'}</strong></td>
-          <td>${r.location || '—'}</td>
-          <td>${r.total_in ?? 0}</td>
-          <td>${r.total_out ?? 0}</td>
-          <td><span style="color:var(--neg);font-weight:700">${r.net_qty} ⚠</span></td>
+          <td><strong>${r.indus_part || '&#8212;'}</strong></td>
+          <td>${r.location || '&#8212;'}</td>
+          <td><span style="color:var(--neg);font-weight:700">${r.net_qty} &#9888;</span></td>
         </tr>`;
       }
-      bannerTbl.innerHTML = nb + '</tbody></table>';
+      bannerT.innerHTML = nb + '</tbody></table>';
       banner.classList.add('visible');
     } else {
       banner.classList.remove('visible');
-      bannerTbl.innerHTML = '';
+      bannerT.innerHTML = '';
     }
 
-    if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found. Post some STOCK_IN / STOCK_OUT movements first.</div>'; return; }
-    let h = `<table><thead><tr><th>Indus Part</th><th>Customer Part</th><th>Location</th>
-      <th>Total IN Qty</th><th>Total OUT Qty</th><th>Net Qty</th><th>Pallets IN</th><th>Pallets OUT</th></tr></thead><tbody>`;
-    for (const r of rows) {
-      const net = parseInt(r.net_qty ?? 0);
-      const negCls = net < 0 ? 'neg-row' : '';
-      const netDisplay = net < 0
-        ? `<span style="color:var(--neg);font-weight:700">${net} ⚠</span>`
-        : `<span style="color:var(--ok);font-weight:600">${net}</span>`;
-      h += `<tr class="${negCls}">
-        <td><strong>${r.indus_part}</strong></td>
-        <td>${r.customer_part || '—'}</td>
-        <td>${r.location}</td>
-        <td class="ok">${r.total_in_qty}</td>
-        <td class="err">${r.total_out_qty}</td>
-        <td>${netDisplay}</td>
-        <td>${r.pallets_in}</td>
-        <td>${r.pallets_out}</td>
-      </tr>`;
+    // ---- Main pivot table ----
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No stock data found. Post some STOCK_IN / STOCK_OUT movements first.</div>';
+      return;
     }
+
+    const LOC_COLS = [
+      { key: 'm4_stock',       label: 'M4' },
+      { key: 'm5_stock',       label: 'M5' },
+      { key: 'm6_stock',       label: 'M6' },
+      { key: 'm4_store_stock', label: 'M4_STORE' },
+      { key: 'm16_store_stock',label: 'M16_STORE' },
+    ];
+
+    let h = `<table><thead><tr>
+      <th>Indus Part</th>`;
+    for (const c of LOC_COLS) h += `<th style="text-align:right">${c.label} Stock</th>`;
+    h += `<th style="text-align:right">Total Indus Stock</th></tr></thead><tbody>`;
+
+    for (const r of rows) {
+      // Flag the row red if any individual location is in deficit
+      const isNeg = LOC_COLS.some(c => parseInt(r[c.key] ?? 0) < 0)
+                    || parseInt(r.total_stock ?? 0) < 0;
+      const rowCls = isNeg ? 'neg-row' : '';
+
+      h += `<tr class="${rowCls}">
+        <td><strong>${r.indus_part}</strong></td>`;
+
+      for (const c of LOC_COLS) {
+        const v = parseInt(r[c.key] ?? 0);
+        const color = v < 0 ? 'color:var(--neg);font-weight:700' :
+                      v > 0 ? 'color:var(--ok)'                  : 'color:var(--muted)';
+        const suffix = v < 0 ? ' &#9888;' : '';
+        h += `<td class="stock-num" style="${color}">${v}${suffix}</td>`;
+      }
+
+      const total = parseInt(r.total_stock ?? 0);
+      const totalColor = total < 0 ? 'color:var(--neg);font-weight:700' :
+                         total > 0 ? 'color:var(--ok);font-weight:700'  : 'color:var(--muted)';
+      const totalSuffix = total < 0 ? ' &#9888;' : '';
+      h += `<td class="stock-total" style="${totalColor}">${total}${totalSuffix}</td>`;
+      h += `</tr>`;
+    }
+
     el.innerHTML = h + '</tbody></table>';
   } catch (e) {
     el.innerHTML = `<div class="empty">Failed to load stock summary: ${e.message}</div>`;
@@ -480,7 +509,7 @@ async function loadStock() {
 
 async function loadTotalStock() {
   const el = document.getElementById('tbl-totalstock');
-  el.innerHTML = '<div class="empty">Loading…</div>';
+  el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
     const f = getFilters();
     const qs = new URLSearchParams(
@@ -501,11 +530,11 @@ async function loadTotalStock() {
       const net = parseInt(r.net_qty ?? 0);
       const negCls = net < 0 ? 'neg-row' : '';
       const netDisplay = net < 0
-        ? `<span style="color:var(--neg);font-weight:700">${net} ⚠</span>`
+        ? `<span style="color:var(--neg);font-weight:700">${net} &#9888;</span>`
         : `<span style="color:var(--ok);font-weight:600">${net}</span>`;
       h += `<tr class="${negCls}">
         <td><strong>${r.indus_part}</strong></td>
-        <td>${r.customer_part || '—'}</td>
+        <td>${r.customer_part || '&#8212;'}</td>
         <td class="ok">${r.total_in_qty}</td>
         <td class="err">${r.total_out_qty}</td>
         <td>${netDisplay}</td>
@@ -524,42 +553,42 @@ async function loadTotalStock() {
 async function loadErrors() {
   const errEl = document.getElementById('tbl-errors');
   const negEl = document.getElementById('tbl-neg-stock');
-  errEl.innerHTML = '<div class="empty">Loading…</div>';
-  negEl.innerHTML = '<div class="empty">Loading…</div>';
+  errEl.innerHTML = '<div class="empty">Loading&#8230;</div>';
+  negEl.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
     const d = await fetch('/admin/api/errors').then(r => r.json());
     const negRows = d.negative_stock || [];
     if (!negRows.length) {
-      negEl.innerHTML = '<div class="empty" style="color:var(--ok)">✅ No negative stock detected.</div>';
+      negEl.innerHTML = '<div class="empty" style="color:var(--ok)">&#9989; No negative stock detected.</div>';
     } else {
       let h = `<table><thead><tr><th>Indus Part</th><th>Location</th><th>Total IN Qty</th><th>Total OUT Qty</th><th>Net Qty (deficit)</th></tr></thead><tbody>`;
       for (const r of negRows) {
         h += `<tr>
-          <td><strong style="color:var(--neg)">${r.indus_part || '—'}</strong></td>
-          <td>${r.location || '—'}</td>
+          <td><strong style="color:var(--neg)">${r.indus_part || '&#8212;'}</strong></td>
+          <td>${r.location || '&#8212;'}</td>
           <td class="ok">${r.total_in || 0}</td>
           <td class="err">${r.total_out || 0}</td>
-          <td><span style="color:var(--neg);font-weight:700">${r.net_qty} ⚠</span></td>
+          <td><span style="color:var(--neg);font-weight:700">${r.net_qty} &#9888;</span></td>
         </tr>`;
       }
       negEl.innerHTML = h + '</tbody></table>';
     }
     const rows = d.errors || [];
-    if (!rows.length) { errEl.innerHTML = '<div class="empty">🎉 No movement errors logged.</div>'; return; }
+    if (!rows.length) { errEl.innerHTML = '<div class="empty">&#127881; No movement errors logged.</div>'; return; }
     let h = `<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Movement Type</th>
       <th>Validation</th><th>Operator</th><th>Location</th><th>Sync</th></tr></thead><tbody>`;
     for (const e of rows) {
       const mt = (e.movement_type || '').toUpperCase();
-      const mtTag = mt === 'ERROR' ? tag('ERROR','terr') : mt === 'STOCK_IN' ? tag('IN','tok') : tag(mt || '—','tinfo');
+      const mtTag = mt === 'ERROR' ? tag('ERROR','terr') : mt === 'STOCK_IN' ? tag('IN','tok') : tag(mt || '&#8212;','tinfo');
       const vs = (e.validation_status || '').toUpperCase();
-      const vsTag = vs === 'VALID' ? tag('VALID','tok') : vs === 'OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs || '—','terr');
+      const vsTag = vs === 'VALID' ? tag('VALID','tok') : vs === 'OVERRIDE' ? tag('OVERRIDE','twarn') : tag(vs || '&#8212;','terr');
       h += `<tr>
         <td>${fmtTime(e.timestamp_dubai)}</td>
         <td><strong>${e.handling_unit || ''}</strong></td>
         <td>${mtTag}</td><td>${vsTag}</td>
-        <td>${e.operator_id || '—'}</td>
-        <td>${e.location || '—'}</td>
-        <td>${e.sync_status || '—'}</td>
+        <td>${e.operator_id || '&#8212;'}</td>
+        <td>${e.location || '&#8212;'}</td>
+        <td>${e.sync_status || '&#8212;'}</td>
       </tr>`;
     }
     errEl.innerHTML = h + '</tbody></table>';
@@ -670,7 +699,7 @@ async function loadIvt() {
     if (!rows.length) { el.innerHTML = '<div class="empty">No IVT scans yet.</div>'; return; }
     let h = `<table><thead><tr><th>Code</th><th>Scanned At</th><th>Location</th></tr></thead><tbody>`;
     for (const r of rows) {
-      h += `<tr><td style="font-family:monospace;font-size:11px">${r.code}</td><td>${r.scanned_date || '—'}</td><td>${r.location || '—'}</td></tr>`;
+      h += `<tr><td style="font-family:monospace;font-size:11px">${r.code}</td><td>${r.scanned_date || '&#8212;'}</td><td>${r.location || '&#8212;'}</td></tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
   } catch (e) { console.error('IVT', e); }
