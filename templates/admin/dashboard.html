@@ -3,13 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Indus Warehouse — Admin</title>
+  <title>Indus Warehouse &#8212; Admin</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
     :root{
       --bg:#0f1117;--surface:#1a1d27;--surface2:#22263a;--border:#2e3347;
       --text:#e2e8f0;--muted:#8892a4;--ok:#22c55e;--err:#ef4444;
       --warn:#f59e0b;--info:#60a5fa;--primary:#6366f1;--neg:#fca5a5;
+      --sap:#a78bfa;
     }
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;min-height:100vh}
@@ -23,11 +24,12 @@
     .btn{border:none;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;font-weight:500;transition:opacity .15s}
     .btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{opacity:.85}
     .btn-green{background:#166534;color:#86efac}.btn-green:hover{background:#14532d}
+    .btn-sap{background:#4c1d95;color:#ddd6fe;border:1px solid #6d28d9}.btn-sap:hover{background:#5b21b6}
     .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;padding:16px 24px 6px}
     .kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
     .kpi-num{font-size:26px;font-weight:700;line-height:1.1}
     .kpi-lbl{font-size:10px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
-    .ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}.info{color:var(--info)}.neg{color:var(--neg)}
+    .ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}.info{color:var(--info)}.neg{color:var(--neg)}.sap{color:var(--sap)}
     .filter-bar{display:flex;gap:8px;padding:10px 24px;background:var(--surface);
                 border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:flex-end}
     .filter-bar label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
@@ -53,17 +55,19 @@
     .tok{background:#14532d;color:#86efac}.terr{background:#7f1d1d;color:#fca5a5}
     .twarn{background:#78350f;color:#fde68a}.tinfo{background:#1e3a5f;color:#93c5fd}
     .tneg{background:#7f1d1d;color:#fca5a5;border:1px solid #ef4444}
+    .tsap{background:#4c1d95;color:#ddd6fe}
     .chart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px}
     .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px}
     .chart-card h3{font-size:11px;font-weight:600;margin-bottom:10px;color:var(--muted);
                    text-transform:uppercase;letter-spacing:.05em}
     .chart-wrap{position:relative;height:200px}
     tr.neg-row td{color:var(--neg)!important;background:#2d0a0a!important}
+    tr.excess-row td{color:#fde68a!important;background:#2d1f00!important}
     .empty{padding:36px;text-align:center;color:var(--muted);font-size:13px}
     .tab-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
     .tab-hdr h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+    .tab-hdr-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .kpi-err{font-size:11px;color:var(--err)}
-    /* Negative stock alert banner */
     .neg-banner{display:none;background:#2d0a0a;border:1px solid #ef4444;border-radius:8px;
                 padding:12px 16px;margin-bottom:14px}
     .neg-banner.visible{display:block}
@@ -73,9 +77,21 @@
     .neg-banner th{color:#f87171;background:#3d0f0f}
     .neg-banner td{color:var(--neg);background:#2d0a0a;border-color:#7f1d1d}
     .neg-banner tbody tr:hover td{background:#3d0f0f!important}
-    /* Stock pivot table: right-align numeric stock columns */
     .stock-num{text-align:right;font-variant-numeric:tabular-nums}
     .stock-total{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+    /* SAP Recon tab styles */
+    .recon-meta{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:11px;color:var(--muted)}
+    .recon-meta span{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 10px}
+    .recon-meta .sap{color:var(--sap)}
+    .recon-search{background:var(--surface2);border:1px solid var(--border);color:var(--text);
+                  border-radius:5px;padding:5px 10px;font-size:12px;width:220px;margin-bottom:10px}
+    .recon-search:focus{outline:1px solid var(--primary)}
+    .recon-filter{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}
+    .recon-filter select{background:var(--surface2);border:1px solid var(--border);color:var(--text);
+                         border-radius:5px;padding:5px 8px;font-size:12px}
+    .recon-err-banner{background:#1e0d3a;border:1px solid #6d28d9;border-radius:8px;
+                      padding:10px 14px;margin-bottom:12px;font-size:11px;color:#c4b5fd;display:none}
+    .recon-err-banner.visible{display:block}
   </style>
 </head>
 <body>
@@ -142,6 +158,7 @@
   <button class="tab"     onclick="switchTab('analytics',this)">&#128202; Analytics</button>
   <button class="tab"     onclick="switchTab('ivt',this)">&#128269; IVT Scans</button>
   <button class="tab"     onclick="switchTab('errors',this)">&#9888;&#65039; Errors</button>
+  <button class="tab"     onclick="switchTab('saprecon',this)">&#128260; SAP Recon</button>
 </div>
 
 <!-- Movements -->
@@ -173,7 +190,6 @@
     <span style="color:var(--neg)">Red rows = one or more locations in deficit.</span>
     Filter by Part or Location.
   </p>
-  <!-- Negative stock alert banner -->
   <div class="neg-banner" id="neg-stock-banner">
     <div class="neg-banner-title">&#9888; Negative Stock Detected</div>
     <div class="tbl-wrap" id="neg-stock-banner-tbl"></div>
@@ -244,9 +260,48 @@
   <div class="tbl-wrap" id="tbl-errors"><div class="empty">Loading&#8230;</div></div>
 </div>
 
+<!-- SAP Recon -->
+<div class="tab-pane" id="pane-saprecon">
+  <div class="tab-hdr">
+    <h2>&#128260; SAP Reconciliation</h2>
+    <div class="tab-hdr-actions">
+      <button class="btn btn-sap" onclick="loadSapRecon(true)">&#8635; Refresh from SAP</button>
+      <button class="btn btn-green" onclick="exportSheet('sap_recon')">&#8659; Export Excel</button>
+    </div>
+  </div>
+
+  <!-- Error banner for SAP fetch failures -->
+  <div class="recon-err-banner" id="recon-err-banner"></div>
+
+  <!-- Meta stats row -->
+  <div class="recon-meta" id="recon-meta">
+    <span>SAP Materials: <strong class="sap" id="rSapCount">&#8212;</strong></span>
+    <span>Scanner Materials: <strong id="rScanCount">&#8212;</strong></span>
+    <span>Total Rows: <strong id="rTotalRows">&#8212;</strong></span>
+    <span>Cache Age: <strong id="rCacheAge">&#8212;</strong></span>
+    <span>Discrepancies: <strong class="neg" id="rDiscCount">&#8212;</strong></span>
+  </div>
+
+  <!-- Search + filter row -->
+  <div class="recon-filter">
+    <input class="recon-search" type="text" id="rSearch" placeholder="Search material..." oninput="renderReconTable()">
+    <select id="rFilter" onchange="renderReconTable()">
+      <option value="ALL">All rows</option>
+      <option value="DISC">Discrepancies only (variance &#8800; 0)</option>
+      <option value="NEG">Negative variance only (scanner &lt; SAP)</option>
+      <option value="EXCESS">Excess only (scanner &gt; SAP)</option>
+      <option value="SAP_ONLY">In SAP only (not scanned)</option>
+      <option value="SCAN_ONLY">In scanner only (not in SAP)</option>
+    </select>
+  </div>
+
+  <div class="tbl-wrap" id="tbl-saprecon"><div class="empty">Click the tab to load SAP data&#8230;</div></div>
+</div>
+
 <script>
 const charts = {};
 let filterTimer = null;
+let _reconRows  = [];   // full recon dataset, cached in-memory for client-side filtering
 
 const TAB_LOADERS = {
   movements:  () => loadMovements(),
@@ -256,6 +311,7 @@ const TAB_LOADERS = {
   analytics:  () => loadAnalytics(),
   ivt:        () => loadIvt(),
   errors:     () => loadErrors(),
+  saprecon:   () => loadSapRecon(false),
 };
 
 function switchTab(name, el) {
@@ -415,9 +471,6 @@ async function loadStatuses() {
   } catch (e) { el.innerHTML = '<div class="empty">Failed to load statuses.</div>'; console.error('loadStatuses', e); }
 }
 
-// ── Stock by Location (pivot) ────────────────────────────────────────────────
-// Columns: Indus Part | M4 | M5 | M6 | M4_STORE | M16_STORE | Total Stock
-// One row per unique indus_part. Any location column < 0 flags the row red.
 async function loadStock() {
   const el      = document.getElementById('tbl-stock');
   const banner  = document.getElementById('neg-stock-banner');
@@ -436,7 +489,6 @@ async function loadStock() {
     const rows    = d.rows    || [];
     const negRows = d.negative_stock || [];
 
-    // ---- Negative stock banner ----
     if (negRows.length > 0) {
       let nb = `<table><thead><tr>
         <th>Indus Part</th><th>Location</th><th>Net Qty (deficit)</th>
@@ -455,9 +507,8 @@ async function loadStock() {
       bannerT.innerHTML = '';
     }
 
-    // ---- Main pivot table ----
     if (!rows.length) {
-      el.innerHTML = '<div class="empty">No stock data found. Post some STOCK_IN / STOCK_OUT movements first.</div>';
+      el.innerHTML = '<div class="empty">No stock data found.</div>';
       return;
     }
 
@@ -469,36 +520,23 @@ async function loadStock() {
       { key: 'm16_store_stock',label: 'M16_STORE' },
     ];
 
-    let h = `<table><thead><tr>
-      <th>Indus Part</th>`;
+    let h = `<table><thead><tr><th>Indus Part</th>`;
     for (const c of LOC_COLS) h += `<th style="text-align:right">${c.label} Stock</th>`;
     h += `<th style="text-align:right">Total Indus Stock</th></tr></thead><tbody>`;
 
     for (const r of rows) {
-      // Flag the row red if any individual location is in deficit
-      const isNeg = LOC_COLS.some(c => parseInt(r[c.key] ?? 0) < 0)
-                    || parseInt(r.total_stock ?? 0) < 0;
+      const isNeg = LOC_COLS.some(c => parseInt(r[c.key] ?? 0) < 0) || parseInt(r.total_stock ?? 0) < 0;
       const rowCls = isNeg ? 'neg-row' : '';
-
-      h += `<tr class="${rowCls}">
-        <td><strong>${r.indus_part}</strong></td>`;
-
+      h += `<tr class="${rowCls}"><td><strong>${r.indus_part}</strong></td>`;
       for (const c of LOC_COLS) {
         const v = parseInt(r[c.key] ?? 0);
-        const color = v < 0 ? 'color:var(--neg);font-weight:700' :
-                      v > 0 ? 'color:var(--ok)'                  : 'color:var(--muted)';
-        const suffix = v < 0 ? ' &#9888;' : '';
-        h += `<td class="stock-num" style="${color}">${v}${suffix}</td>`;
+        const color = v < 0 ? 'color:var(--neg);font-weight:700' : v > 0 ? 'color:var(--ok)' : 'color:var(--muted)';
+        h += `<td class="stock-num" style="${color}">${v}${v < 0 ? ' &#9888;' : ''}</td>`;
       }
-
       const total = parseInt(r.total_stock ?? 0);
-      const totalColor = total < 0 ? 'color:var(--neg);font-weight:700' :
-                         total > 0 ? 'color:var(--ok);font-weight:700'  : 'color:var(--muted)';
-      const totalSuffix = total < 0 ? ' &#9888;' : '';
-      h += `<td class="stock-total" style="${totalColor}">${total}${totalSuffix}</td>`;
-      h += `</tr>`;
+      const totalColor = total < 0 ? 'color:var(--neg);font-weight:700' : total > 0 ? 'color:var(--ok);font-weight:700' : 'color:var(--muted)';
+      h += `<td class="stock-total" style="${totalColor}">${total}${total < 0 ? ' &#9888;' : ''}</td></tr>`;
     }
-
     el.innerHTML = h + '</tbody></table>';
   } catch (e) {
     el.innerHTML = `<div class="empty">Failed to load stock summary: ${e.message}</div>`;
@@ -595,6 +633,121 @@ async function loadErrors() {
   } catch (e) { errEl.innerHTML = '<div class="empty">Failed to load error log.</div>'; console.error('loadErrors', e); }
 }
 
+// ── SAP Reconciliation ───────────────────────────────────────────────────────
+async function loadSapRecon(forceRefresh) {
+  const el     = document.getElementById('tbl-saprecon');
+  const errBnr = document.getElementById('recon-err-banner');
+  el.innerHTML = '<div class="empty">&#128260; Fetching SAP stock data&#8230; this may take up to 30 seconds on first load.</div>';
+  errBnr.classList.remove('visible');
+
+  try {
+    const qs  = forceRefresh ? '?force_refresh=1' : '';
+    const resp = await fetch('/admin/api/sap-recon' + qs);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+
+    // Show SAP fetch error as a banner (non-fatal — we still show scanner data)
+    if (d.error) {
+      errBnr.textContent = '\u26A0\uFE0F SAP fetch error: ' + d.error + ' — showing scanner data only.';
+      errBnr.classList.add('visible');
+    }
+
+    _reconRows = d.rows || [];
+
+    // Update meta strip
+    document.getElementById('rSapCount').textContent   = d.sap_material_count  ?? '&#8212;';
+    document.getElementById('rScanCount').textContent  = d.scanner_material_count ?? '&#8212;';
+    document.getElementById('rTotalRows').textContent  = _reconRows.length;
+    const age = d.cache_age_seconds;
+    document.getElementById('rCacheAge').textContent   =
+      age === 0 ? 'just fetched' : age < 60 ? age + 's ago' : Math.round(age/60) + 'm ago';
+    const discCount = _reconRows.filter(r => r.variance_vs_1000 !== 0).length;
+    document.getElementById('rDiscCount').textContent  = discCount;
+
+    renderReconTable();
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Failed to load SAP recon: ${e.message}</div>`;
+    console.error('loadSapRecon', e);
+  }
+}
+
+function renderReconTable() {
+  const el     = document.getElementById('tbl-saprecon');
+  const search = (document.getElementById('rSearch').value || '').trim().toLowerCase();
+  const filter = document.getElementById('rFilter').value;
+
+  if (!_reconRows.length) return;
+
+  let rows = _reconRows;
+
+  // Apply search
+  if (search) {
+    rows = rows.filter(r =>
+      (r.indus_part || '').toLowerCase().includes(search) ||
+      (r.customer_part || '').toLowerCase().includes(search)
+    );
+  }
+
+  // Apply variance filter
+  if (filter === 'DISC')      rows = rows.filter(r => r.variance_vs_1000 !== 0);
+  else if (filter === 'NEG')  rows = rows.filter(r => r.variance_vs_1000 < 0);
+  else if (filter === 'EXCESS') rows = rows.filter(r => r.variance_vs_1000 > 0);
+  else if (filter === 'SAP_ONLY')  rows = rows.filter(r => r.scanner_qty === 0 && r.sap_qty_1000 > 0);
+  else if (filter === 'SCAN_ONLY') rows = rows.filter(r => r.sap_qty_1000 === 0 && r.scanner_qty > 0);
+
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">No rows match the current filter / search.</div>';
+    return;
+  }
+
+  let h = `<table><thead><tr>
+    <th>Indus Part</th>
+    <th>Customer Part</th>
+    <th style="text-align:right">Scanner Net Qty</th>
+    <th style="text-align:right">SAP Plant 1000</th>
+    <th style="text-align:right">SAP Plant 2000</th>
+    <th style="text-align:right">Variance (Scanner &#8722; SAP 1000)</th>
+    <th>Status</th>
+  </tr></thead><tbody>`;
+
+  for (const r of rows) {
+    const v = r.variance_vs_1000;
+    // Row class: negative variance = scanner LESS than SAP (shortage); positive = excess
+    const rowCls = v < 0 ? 'neg-row' : v > 0 ? 'excess-row' : '';
+
+    // Variance display
+    let varDisplay, statusTag;
+    if (v === 0) {
+      varDisplay = `<span style="color:var(--ok);font-weight:600">0</span>`;
+      statusTag  = tag('MATCH', 'tok');
+    } else if (v < 0) {
+      varDisplay = `<span style="color:var(--neg);font-weight:700">${v} &#9660;</span>`;
+      statusTag  = tag('SHORTAGE', 'terr');
+    } else {
+      varDisplay = `<span style="color:var(--warn);font-weight:700">+${v} &#9650;</span>`;
+      statusTag  = tag('EXCESS', 'twarn');
+    }
+
+    // Highlight scanner qty 0 when SAP has stock (not scanned)
+    const sqDisplay = r.scanner_qty === 0 && r.sap_qty_1000 > 0
+      ? `<span style="color:var(--muted)">0</span>`
+      : `<span style="color:${r.scanner_qty > 0 ? 'var(--ok)' : 'var(--muted)'}">${r.scanner_qty}</span>`;
+
+    h += `<tr class="${rowCls}">
+      <td><strong>${r.indus_part}</strong></td>
+      <td>${r.customer_part || '&#8212;'}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${sqDisplay}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--sap)">${r.sap_qty_1000}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--sap)">${r.sap_qty_2000}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${varDisplay}</td>
+      <td>${statusTag}</td>
+    </tr>`;
+  }
+
+  el.innerHTML = h + '</tbody></table>';
+}
+
+// ── Analytics ────────────────────────────────────────────────────────────────
 async function loadVelocity() {
   try {
     const d = await fetch('/admin/api/analytics/velocity').then(r => r.json());
@@ -712,6 +865,8 @@ function loadAll() {
   loadStatuses();
   loadStock();
   loadTotalStock();
+  // SAP Recon is NOT auto-loaded on page load — only when the tab is clicked.
+  // This avoids a ~30s SAP API call on every dashboard open.
 }
 document.addEventListener('DOMContentLoaded', loadAll);
 </script>

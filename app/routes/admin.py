@@ -8,6 +8,7 @@ Features:
   - Negative stock detection in error log + Stock tab banner
   - Excel export (filter-aware, server-side via openpyxl)
   - Analytics: velocity, by-location, by-part, operators, IVT
+  - SAP Recon: compares scanner net qty vs SAP plant stock (Plants 1000 & 2000)
 """
 import io
 import logging
@@ -138,18 +139,17 @@ _INT_EXPORT_COLS = frozenset({
     'total_in', 'total_out',
     # pivot stock columns
     'm4_stock', 'm5_stock', 'm6_stock', 'm4_store_stock', 'm16_store_stock', 'total_stock',
+    # SAP recon columns
+    'scanner_qty', 'sap_qty_1000', 'sap_qty_2000', 'variance_vs_1000',
 })
 
 # Columns that carry formatted datetime strings ("27 Apr 2026, 09:33").
-# In the Excel export these are parsed back to real datetime objects so
-# Excel treats them as sortable/filterable date-time values, not plain text.
-# Number format applied: DD MMM YYYY HH:MM (matches the display format).
 _DT_EXPORT_COLS = frozenset({
     'timestamp_dubai',
     'last_movement_time_dubai',
 })
-_DT_EXPORT_FMT  = 'DD MMM YYYY HH:MM'   # openpyxl number_format string
-_DT_PARSE_FMT   = '%d %b %Y, %H:%M'     # strptime pattern for "27 Apr 2026, 09:33"
+_DT_EXPORT_FMT  = 'DD MMM YYYY HH:MM'
+_DT_PARSE_FMT   = '%d %b %Y, %H:%M'
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,6 @@ def api_errors():
     Error log combining:
       1. Movement rows with movement_type='ERROR' or invalid validation_status
       2. Materials/locations where net stock (IN - OUT) < 0 (negative stock alerts)
-    Qty aggregation is robust: blank/non-numeric pallet_qty treated as 0.
     """
     limit = request.args.get('limit', 200, type=int)
     qty = STOCK_QTY_EXPR
@@ -387,16 +386,6 @@ def api_conn_test():
 @admin_bp.route('/api/stock-summary')
 @_auth_required
 def api_stock_summary():
-    """
-    Returns one row per unique indus_part with a column per known location:
-      m4_stock, m5_stock, m6_stock, m4_store_stock, m16_store_stock, total_stock
-
-    The optional ?location= filter restricts which movements feed the aggregation
-    (useful for scoping) but the pivot shape is always returned with all columns.
-    The optional ?part= filter restricts to matching indus_part values.
-
-    negative_stock in the response lists rows+location where any location column < 0.
-    """
     part = (request.args.get('part') or '').strip()
     loc  = (request.args.get('location') or '').strip()
     clauses = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
@@ -410,8 +399,6 @@ def api_stock_summary():
     where = 'WHERE ' + ' AND '.join(clauses)
     qty = STOCK_QTY_EXPR
 
-    # Pivot: one row per indus_part, net qty per location as separate columns.
-    # location values are upper-cased in the CASE so matching is case-insensitive.
     sql = f"""
         SELECT
             COALESCE(NULLIF(indus_part, ''), 'Unknown') AS indus_part,
@@ -443,7 +430,6 @@ def api_stock_summary():
                 cur.execute(sql, params)
                 rows = [dict(r) for r in cur.fetchall()]
 
-        # Build negative stock list: one entry per (part, location) pair in deficit.
         loc_col_map = [
             ('M4',       'm4_stock'),
             ('M5',       'm5_stock'),
@@ -483,8 +469,6 @@ def api_total_stock():
         params['part'] = f'%{part}%'
     where = 'WHERE ' + ' AND '.join(clauses)
     qty = STOCK_QTY_EXPR
-    # GROUP BY indus_part only — customer_part is MAX()-aggregated for the same
-    # reason as api_stock_summary: avoids row-splitting on blank/varying customer_part.
     sql = f"""
         SELECT
             COALESCE(NULLIF(indus_part,''),   'Unknown') AS indus_part,
@@ -513,7 +497,118 @@ def api_total_stock():
 
 
 # ---------------------------------------------------------------------------
-# Excel export — clean formatting: coloured header row + cell borders only
+# SAP Reconciliation endpoint
+# ---------------------------------------------------------------------------
+
+@admin_bp.route('/api/sap-recon')
+@_auth_required
+def api_sap_recon():
+    """
+    Returns a full outer join of:
+      - Scanner net qty per indus_part (from movements table)
+      - SAP plant stock per material (Plants 1000 + 2000, from sap_stock_client)
+
+    Query param:
+      ?force_refresh=1  — bypass the 5-min SAP cache and re-fetch live
+
+    Response JSON:
+      {
+        "rows": [
+          {
+            "indus_part":     "ACN1375",
+            "customer_part":  "...",
+            "scanner_qty":    287,
+            "sap_qty_1000":   287.0,
+            "sap_qty_2000":   0.0,
+            "variance_vs_1000": 0,   -- scanner_qty minus sap_qty_1000
+          },
+          ...
+        ],
+        "cache_age_seconds": 42,
+        "sap_material_count": 1850,
+        "scanner_material_count": 95,
+        "error": null
+      }
+    """
+    from app.services.sap_stock_client import (
+        fetch_stock, cache_age_seconds, last_error, SAPStockError
+    )
+
+    force = request.args.get('force_refresh', '0') == '1'
+
+    # ── 1. Fetch SAP stock (cached or live) ──────────────────────────────────
+    sap_rows  = []
+    sap_error = None
+    try:
+        sap_rows = fetch_stock(force_refresh=force)
+    except SAPStockError as exc:
+        sap_error = str(exc)
+        logger.error("api_sap_recon SAP fetch failed: %s", exc)
+
+    # Build SAP lookup: material -> {sap_qty_1000, sap_qty_2000}
+    sap_map = {
+        r['material']: r
+        for r in sap_rows
+    }
+
+    # ── 2. Fetch scanner net qty per indus_part ──────────────────────────────
+    qty = STOCK_QTY_EXPR
+    scanner_sql = f"""
+        SELECT
+            UPPER(COALESCE(NULLIF(indus_part,''), 'Unknown')) AS indus_part,
+            COALESCE(NULLIF(MAX(customer_part),''), '') AS customer_part,
+            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
+        FROM movements
+        WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
+        GROUP BY indus_part
+        ORDER BY indus_part
+    """
+    scanner_map = {}
+    try:
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(scanner_sql)
+                for row in cur.fetchall():
+                    d = dict(row)
+                    scanner_map[d['indus_part']] = d
+    except Exception as e:
+        logger.error("api_sap_recon scanner query failed: %s", e)
+        return jsonify({"rows": [], "error": str(e)}), 500
+
+    # ── 3. Full outer join on material code ──────────────────────────────────
+    all_materials = sorted(set(sap_map.keys()) | set(scanner_map.keys()))
+
+    rows = []
+    for mat in all_materials:
+        sap  = sap_map.get(mat, {})
+        scan = scanner_map.get(mat, {})
+
+        scanner_qty   = _safe_int(scan.get('net_qty', 0))
+        sap_qty_1000  = round(float(sap.get('sap_qty_1000', 0) or 0))
+        sap_qty_2000  = round(float(sap.get('sap_qty_2000', 0) or 0))
+        variance      = scanner_qty - sap_qty_1000
+
+        rows.append({
+            'indus_part':       mat,
+            'customer_part':    scan.get('customer_part', ''),
+            'scanner_qty':      scanner_qty,
+            'sap_qty_1000':     sap_qty_1000,
+            'sap_qty_2000':     sap_qty_2000,
+            'variance_vs_1000': variance,
+        })
+
+    return jsonify({
+        'rows':                   rows,
+        'cache_age_seconds':      round(cache_age_seconds()),
+        'sap_material_count':     len(sap_map),
+        'scanner_material_count': len(scanner_map),
+        'error':                  sap_error,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Excel export
 # ---------------------------------------------------------------------------
 
 @admin_bp.route('/api/export')
@@ -553,14 +648,6 @@ def api_export():
             ws.column_dimensions[get_column_letter(j)].width = 22
 
     def _write_rows(ws, headers, data, start_row=2):
-        """
-        Write data rows with thin borders.
-        - _INT_EXPORT_COLS  → integer value (None → 0)
-        - _DT_EXPORT_COLS   → real datetime object with DD MMM YYYY HH:MM number
-                              format so Excel treats it as a sortable date-time,
-                              not plain text. Falls back to string on parse error.
-        - everything else   → string (None → '')
-        """
         for i, row in enumerate(data, start=start_row):
             ws.row_dimensions[i].height = 18
             for j, h in enumerate(headers, start=1):
@@ -637,7 +724,6 @@ def api_export():
             filename = 'pallet_status_export.xlsx'
 
         elif sheet_name == 'stock':
-            # Pivot export: one row per indus_part, one column per location
             part = (request.args.get('part') or '').strip()
             loc  = (request.args.get('location') or '').strip()
             cl3 = ["movement_type IN ('STOCK_IN','STOCK_OUT')"]
@@ -771,6 +857,67 @@ def api_export():
             _apply_header(ws, len(headers))
             _write_rows(ws, headers, data)
             filename = 'ivt_scans_export.xlsx'
+
+        elif sheet_name == 'sap_recon':
+            # Re-use cached SAP data; don't force a fresh pull on export
+            from app.services.sap_stock_client import fetch_stock, SAPStockError
+            sap_map = {}
+            try:
+                for r in fetch_stock(force_refresh=False):
+                    sap_map[r['material']] = r
+            except SAPStockError as exc:
+                logger.warning("sap_recon export: SAP fetch failed: %s", exc)
+
+            scanner_data = []
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        SELECT
+                            UPPER(COALESCE(NULLIF(indus_part,''),'Unknown')) AS indus_part,
+                            COALESCE(NULLIF(MAX(customer_part),''),'') AS customer_part,
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                            - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
+                        FROM movements
+                        WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
+                        GROUP BY indus_part ORDER BY indus_part
+                    """)
+                    scanner_data = [dict(r) for r in cur.fetchall()]
+
+            scanner_map = {r['indus_part']: r for r in scanner_data}
+            all_mats = sorted(set(sap_map.keys()) | set(scanner_map.keys()))
+            export_rows = []
+            for mat in all_mats:
+                sap  = sap_map.get(mat, {})
+                scan = scanner_map.get(mat, {})
+                sq   = _safe_int(scan.get('net_qty', 0))
+                s1   = round(float(sap.get('sap_qty_1000', 0) or 0))
+                s2   = round(float(sap.get('sap_qty_2000', 0) or 0))
+                export_rows.append({
+                    'indus_part':       mat,
+                    'customer_part':    scan.get('customer_part', ''),
+                    'scanner_qty':      sq,
+                    'sap_qty_1000':     s1,
+                    'sap_qty_2000':     s2,
+                    'variance_vs_1000': sq - s1,
+                })
+
+            ws.title = 'SAP Recon'
+            headers = ['indus_part','customer_part','scanner_qty',
+                       'sap_qty_1000','sap_qty_2000','variance_vs_1000']
+            ws.append(headers)
+            _apply_header(ws, len(headers))
+            _write_rows(ws, headers, export_rows)
+
+            # Conditional formatting: red fill for negative variance rows
+            NEG_FILL = PatternFill('solid', fgColor='2D0A0A')
+            NEG_FONT = Font(size=10, name='Calibri', color='FCA5A5')
+            for i, row in enumerate(export_rows, start=2):
+                if _safe_int(row.get('variance_vs_1000', 0)) < 0:
+                    for j in range(1, len(headers) + 1):
+                        ws.cell(row=i, column=j).fill = NEG_FILL
+                        ws.cell(row=i, column=j).font = NEG_FONT
+
+            filename = 'sap_recon_export.xlsx'
 
         else:
             return jsonify({"error": f"Unknown sheet: {sheet_name}"}), 400
