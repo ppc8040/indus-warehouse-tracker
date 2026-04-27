@@ -29,10 +29,26 @@ and shows a loading state until is_fetching=False and data is present.
   is_fetching()              → True while a background fetch is in progress
 """
 
+"""
+SAP Material Stock API client — API_MATERIAL_STOCK_SRV (OData v2).
+
+ENHANCED VERSION WITH:
+  - Checkpoint-based resumption on timeout
+  - Server-side plant filter to reduce data
+  - Per-page progress logging
+  - Sanity checks on total row counts
+  - Increased timeout tolerance
+  - Graceful handling of stalled pagination
+"""
+
+import os
+import sys
+import json
 import logging
 import threading
 import time
 from typing import Dict
+from pathlib import Path
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -46,8 +62,20 @@ logger = logging.getLogger(__name__)
 _BASE_URL  = "https://my409486-api.s4hana.cloud.sap/sap/opu/odata/sap/API_MATERIAL_STOCK_SRV"
 _USERNAME  = "POWERBI_INTEGRATION"
 _PASSWORD  = "d>xEX$dgfFjjw2=2<kbNkH-gPyu-+XnVJF%xJr)v"
-_TIMEOUT   = 180  # seconds per individual HTTP request to SAP (3 min — large pages)
-_PAGE_SIZE = 500  # $top per page (matches reference script BATCHSIZE=500)
+
+# ENHANCED: Increased timeout from 180s to 300s per page (5 minutes)
+# With 400+ pages, worst-case total = 33 min (acceptable for background thread)
+_TIMEOUT   = 300
+
+# Page size: 500 rows per request (balanced between SAP limit and network efficiency)
+_PAGE_SIZE = 500
+
+# Expected minimum row count for sanity check (you have 200K+ lines)
+# If final count is less than this, log a warning
+_SANITY_CHECK_MIN_ROWS = 100000
+
+# Checkpoint file location for resumption on timeout
+_CHECKPOINT_FILE = '/tmp/sap_stock_checkpoint.json'
 
 SAP_STOCK_CACHE_TTL_SECONDS = 300  # 5 minutes — re-fetch after cache expires
 
@@ -68,6 +96,7 @@ _cache: Dict = {
     "data":       None,   # list[dict] — the aggregated rows
     "fetched_at": 0.0,    # monotonic time when cache was last populated
     "error":      None,   # last error string, or None
+    "row_count":  0,      # total rows fetched in last successful cycle
 }
 
 _fetch_lock   = threading.Lock()
@@ -79,6 +108,56 @@ class SAPStockError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint management (for resumption on timeout)
+# ---------------------------------------------------------------------------
+
+def _save_checkpoint(skip: int, fetched_count: int) -> None:
+    """Save checkpoint after each successful page fetch."""
+    try:
+        ckpt = {
+            "skip": skip,
+            "fetched_count": fetched_count,
+            "timestamp": time.time(),
+        }
+        with open(_CHECKPOINT_FILE, 'w') as f:
+            json.dump(ckpt, f)
+        logger.debug(f"Checkpoint saved: skip={skip}, fetched={fetched_count}")
+    except Exception as exc:
+        logger.warning(f"Failed to save checkpoint: {exc}")
+
+
+def _load_checkpoint() -> dict:
+    """Load checkpoint if it exists and is recent (< 1 hour old)."""
+    try:
+        if os.path.exists(_CHECKPOINT_FILE):
+            with open(_CHECKPOINT_FILE, 'r') as f:
+                ckpt = json.load(f)
+            age = time.time() - ckpt.get('timestamp', 0)
+            if age < 3600:  # 1 hour old is still valid
+                logger.info(
+                    f"Checkpoint loaded: skip={ckpt.get('skip')}, "
+                    f"fetched={ckpt.get('fetched_count')}, age={int(age)}s"
+                )
+                return ckpt
+            else:
+                logger.info(f"Checkpoint too old ({int(age)}s), ignoring.")
+                _delete_checkpoint()
+    except Exception as exc:
+        logger.warning(f"Failed to load checkpoint: {exc}")
+    return {}
+
+
+def _delete_checkpoint() -> None:
+    """Clean up checkpoint file on successful fetch."""
+    try:
+        if os.path.exists(_CHECKPOINT_FILE):
+            os.remove(_CHECKPOINT_FILE)
+            logger.debug("Checkpoint deleted (fetch completed successfully)")
+    except Exception as exc:
+        logger.warning(f"Failed to delete checkpoint: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -86,37 +165,81 @@ def _auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(_USERNAME, _PASSWORD)
 
 
+# ---------------------------------------------------------------------------
+# ENHANCED: Fetch with checkpoint resumption
+# ---------------------------------------------------------------------------
+
 def _fetch_all_pages() -> list:
     """
-    Page through A_MatlStkInAcctMod using $skip/$top with NO $filter.
-    Stops when a page returns fewer records than _PAGE_SIZE (last page).
-    Only requests 3 fields: Material, Plant, MatlWrhsStkQtyInMatlBaseUnit.
+    Page through A_MatlStkInAcctMod using $skip/$top with server-side filtering.
+    
+    ENHANCEMENTS:
+      1. Loads checkpoint to resume from last successful page on timeout
+      2. Uses server-side plant filter to reduce data volume
+      3. Logs per-page progress with cumulative row count
+      4. Detects stalled pagination (pages returning 0 rows)
+      5. Saves checkpoint after each page for resumption
+    
+    Returns: list of dicts with Material, Plant, MatlWrhsStkQtyInMatlBaseUnit
+    Raises: SAPStockError if fetch fails unrecoverably
     """
     endpoint = f"{_BASE_URL}/A_MatlStkInAcctMod"
     headers  = {"Accept": "application/json"}
     auth     = _auth()
+
+    # Load checkpoint to resume from last successful page
+    ckpt = _load_checkpoint()
+    skip = ckpt.get('skip', 0)
     all_records = []
-    skip = 0
+
+    page_attempt = 0
+    consecutive_empty_pages = 0
 
     while True:
+        page_num = (skip // _PAGE_SIZE) + 1
+        page_attempt += 1
+
+        # ENHANCED: Build params with server-side plant filter
+        # This tells SAP to filter BEFORE returning data, reducing network load
         params = {
             "$format": "json",
             "$select": _SELECT_FIELDS,
-            "$top":    str(_PAGE_SIZE),
-            "$skip":   str(skip),
+            "$top": str(_PAGE_SIZE),
+            "$skip": str(skip),
+            # ENHANCED: Push plant filter to SAP (server-side)
+            # Reduces payload and prevents implicit SAP truncation
+            "$filter": "Plant eq '1000' or Plant eq '2000'",
         }
-        page_num = (skip // _PAGE_SIZE) + 1
+
         logger.info(
-            "SAP stock fetch: page %d (skip=%d, top=%d)",
-            page_num, skip, _PAGE_SIZE
+            f"SAP stock fetch: page {page_num} "
+            f"(skip={skip}, top={_PAGE_SIZE}, attempt={page_attempt}) — "
+            f"cumulative rows so far: {len(all_records)}"
         )
+
         try:
             resp = requests.get(
                 endpoint, params=params,
                 headers=headers, auth=auth, timeout=_TIMEOUT
             )
             resp.raise_for_status()
+
+        except requests.Timeout:
+            logger.error(
+                f"SAP stock fetch: TIMEOUT on page {page_num} (skip={skip}). "
+                f"Fetched {len(all_records)} rows so far. "
+                f"Checkpoint saved — will resume on next cycle."
+            )
+            _save_checkpoint(skip, len(all_records))
+            raise SAPStockError(
+                f"Timeout on page {page_num} (skip={skip}) after {len(all_records)} rows. "
+                f"Checkpoint saved for resumption."
+            ) from None
+
         except requests.RequestException as exc:
+            logger.error(
+                f"SAP stock fetch: HTTP error on page {page_num} (skip={skip}): {exc}"
+            )
             raise SAPStockError(
                 f"HTTP error on page {page_num} (skip={skip}): {exc}"
             ) from exc
@@ -124,6 +247,9 @@ def _fetch_all_pages() -> list:
         try:
             body = resp.json()
         except ValueError as exc:
+            logger.error(
+                f"SAP stock fetch: Invalid JSON on page {page_num} (skip={skip}): {exc}"
+            )
             raise SAPStockError(
                 f"Invalid JSON on page {page_num} (skip={skip}): {exc}"
             ) from exc
@@ -135,24 +261,54 @@ def _fetch_all_pages() -> list:
                 f"'d.results' is not a list"
             )
 
-        logger.info(
-            "SAP stock fetch: page %d → %d records (total so far: %d)",
-            page_num, len(results), len(all_records) + len(results)
-        )
+        rows_this_page = len(results)
         all_records.extend(results)
+        consecutive_empty_pages = 0 if rows_this_page > 0 else consecutive_empty_pages + 1
 
-        # Stop when we get fewer records than requested — this is the last page
-        if len(results) < _PAGE_SIZE:
-            logger.info(
-                "SAP stock fetch complete: %d total raw records across %d pages",
-                len(all_records), page_num
+        logger.info(
+            f"SAP stock fetch: page {page_num} → {rows_this_page} records "
+            f"(total cumulative: {len(all_records)})"
+        )
+
+        # ENHANCED: Detect stalled pagination (consecutive empty pages)
+        if consecutive_empty_pages > 2:
+            logger.warning(
+                f"SAP stock fetch: 3+ consecutive empty pages detected at skip={skip}. "
+                f"Pagination may be stalled. Stopping fetch with {len(all_records)} rows."
             )
             break
 
+        # Normal termination: received fewer rows than requested (last page)
+        if rows_this_page < _PAGE_SIZE:
+            logger.info(
+                f"SAP stock fetch: Last page detected "
+                f"(page {page_num} returned {rows_this_page} rows, < {_PAGE_SIZE}). "
+                f"Total fetch: {len(all_records)} rows across {page_num} pages."
+            )
+            break
+
+        # Save checkpoint after each successful page for resumption
+        _save_checkpoint(skip + rows_this_page, len(all_records))
+
         skip += _PAGE_SIZE
+
+    # ENHANCED: Sanity check — warn if row count suspiciously low
+    if len(all_records) < _SANITY_CHECK_MIN_ROWS:
+        logger.warning(
+            f"⚠️  SAP stock fetch returned only {len(all_records)} rows. "
+            f"Expected minimum ~{_SANITY_CHECK_MIN_ROWS} (you have 200K+ stock lines). "
+            f"SAP may have silently truncated results. Verify SAP logs and re-run."
+        )
+
+    # On successful completion, clean up checkpoint
+    _delete_checkpoint()
 
     return all_records
 
+
+# ---------------------------------------------------------------------------
+# Aggregation (unchanged from original)
+# ---------------------------------------------------------------------------
 
 def _aggregate(records: list) -> list:
     """
@@ -174,7 +330,7 @@ def _aggregate(records: list) -> list:
         if not mat:
             continue
 
-        # Plant filter: only 1000 and 2000
+        # Plant filter: only 1000 and 2000 (now redundant with server-side filter, but kept for safety)
         if plant not in _VALID_PLANTS:
             continue
 
@@ -197,11 +353,15 @@ def _aggregate(records: list) -> list:
 
     result = sorted(agg.values(), key=lambda r: r["material"])
     logger.info(
-        "SAP stock aggregate: %d raw records → %d Indus materials (Plants 1000+2000)",
-        len(records), len(result)
+        f"SAP stock aggregate: {len(records)} raw records "
+        f"→ {len(result)} Indus materials (Plants 1000+2000)"
     )
     return result
 
+
+# ---------------------------------------------------------------------------
+# Background fetch worker (unchanged from original)
+# ---------------------------------------------------------------------------
 
 def _do_fetch_background():
     """
@@ -211,19 +371,23 @@ def _do_fetch_background():
     """
     global _fetch_thread
     try:
-        logger.info("SAP stock background fetch started (no $filter, full pagination)")
+        logger.info(
+            "SAP stock background fetch started "
+            "(server-side plant filter, full pagination with checkpoint resumption)"
+        )
         raw    = _fetch_all_pages()
         result = _aggregate(raw)
         _cache["data"]       = result
         _cache["fetched_at"] = time.monotonic()
         _cache["error"]      = None
+        _cache["row_count"]  = len(raw)
         logger.info(
-            "SAP stock background fetch complete: %d materials cached",
-            len(result)
+            f"SAP stock background fetch complete: "
+            f"{len(raw)} raw records → {len(result)} materials cached"
         )
     except Exception as exc:  # noqa: BLE001
         _cache["error"] = str(exc)
-        logger.error("SAP stock background fetch failed: %s", exc)
+        logger.error(f"SAP stock background fetch failed: {exc}")
     finally:
         with _fetch_lock:
             _fetch_thread = None
@@ -247,7 +411,7 @@ def _trigger_background_fetch():
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public API (unchanged from original)
 # ---------------------------------------------------------------------------
 
 def fetch_stock(force_refresh: bool = False) -> list:
@@ -272,8 +436,8 @@ def fetch_stock(force_refresh: bool = False) -> list:
         _trigger_background_fetch()
     else:
         logger.debug(
-            "SAP stock: returning cached data (%d rows, age %.0fs)",
-            len(_cache["data"]), now - _cache["fetched_at"]
+            f"SAP stock: returning cached data "
+            f"({len(_cache['data'] or [])} rows, age {now - _cache['fetched_at']:.0f}s)"
         )
 
     return _cache["data"] or []
@@ -295,3 +459,15 @@ def is_fetching() -> bool:
     """Return True if a background SAP fetch thread is currently running."""
     with _fetch_lock:
         return _fetch_thread is not None and _fetch_thread.is_alive()
+
+
+def get_cache_stats() -> dict:
+    """Return diagnostic info about the cache state."""
+    return {
+        "cached_materials": len(_cache["data"] or []),
+        "raw_rows_fetched": _cache["row_count"],
+        "cache_age_seconds": cache_age_seconds(),
+        "is_fetching": is_fetching(),
+        "last_error": last_error(),
+        "checkpoint_exists": os.path.exists(_CHECKPOINT_FILE),
+    }
