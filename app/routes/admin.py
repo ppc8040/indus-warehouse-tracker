@@ -126,13 +126,24 @@ STOCK_QTY_EXPR = """
     COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty::text,'[^0-9]','','g'),''),'0')::int
 """
 
-# Columns that should be written as integers in the Excel export.
+# Columns written as integers in the Excel export.
 _INT_EXPORT_COLS = frozenset({
     'pallet_qty',
     'total_in_qty', 'total_out_qty', 'net_qty',
     'pallets_in', 'pallets_out', 'location_count',
     'total_in', 'total_out',
 })
+
+# Columns that carry formatted datetime strings ("27 Apr 2026, 09:33").
+# In the Excel export these are parsed back to real datetime objects so
+# Excel treats them as sortable/filterable date-time values, not plain text.
+# Number format applied: DD MMM YYYY HH:MM (matches the display format).
+_DT_EXPORT_COLS = frozenset({
+    'timestamp_dubai',
+    'last_movement_time_dubai',
+})
+_DT_EXPORT_FMT  = 'DD MMM YYYY HH:MM'   # openpyxl number_format string
+_DT_PARSE_FMT   = '%d %b %Y, %H:%M'     # strptime pattern for "27 Apr 2026, 09:33"
 
 
 # ---------------------------------------------------------------------------
@@ -475,36 +486,32 @@ def api_export():
     ws = wb.active
 
     # ---- Styling constants ------------------------------------------------
-    # Header: deep navy background, white bold text
-    HDR_FILL = PatternFill('solid', fgColor='1E3A5F')
-    HDR_FONT = Font(bold=True, color='FFFFFF', size=10, name='Calibri')
+    HDR_FILL  = PatternFill('solid', fgColor='1E3A5F')
+    HDR_FONT  = Font(bold=True, color='FFFFFF', size=10, name='Calibri')
     HDR_ALIGN = Alignment(horizontal='center', vertical='center', wrap_text=True)
-
-    # Data cells: plain white background, normal Calibri text
     DATA_FONT  = Font(size=10, name='Calibri')
     DATA_ALIGN = Alignment(vertical='center')
-
-    # Thin border for every cell
     _thin = Side(style='thin', color='CCCCCC')
     CELL_BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 
     def _apply_header(ws, num_cols, row_height=22):
-        """Style the first (header) row and set column widths."""
         ws.row_dimensions[1].height = row_height
         for cell in ws[1]:
-            cell.fill   = HDR_FILL
-            cell.font   = HDR_FONT
+            cell.fill      = HDR_FILL
+            cell.font      = HDR_FONT
             cell.alignment = HDR_ALIGN
-            cell.border = CELL_BORDER
+            cell.border    = CELL_BORDER
         for j in range(1, num_cols + 1):
             ws.column_dimensions[get_column_letter(j)].width = 22
 
     def _write_rows(ws, headers, data, start_row=2):
         """
-        Write data rows with thin borders and plain white background.
-        Columns in _INT_EXPORT_COLS are written as integers (None → 0).
-        All other columns are written as strings (None → '').
-        handling_unit stays as a plain string (no numeric coercion).
+        Write data rows with thin borders.
+        - _INT_EXPORT_COLS  → integer value (None → 0)
+        - _DT_EXPORT_COLS   → real datetime object with DD MMM YYYY HH:MM number
+                              format so Excel treats it as a sortable date-time,
+                              not plain text. Falls back to string on parse error.
+        - everything else   → string (None → '')
         """
         for i, row in enumerate(data, start=start_row):
             ws.row_dimensions[i].height = 18
@@ -512,12 +519,22 @@ def api_export():
                 val = row.get(h)
                 if h in _INT_EXPORT_COLS:
                     cell_val = _safe_int(val, default=0)
+                elif h in _DT_EXPORT_COLS:
+                    # val is already a formatted string like "27 Apr 2026, 09:33"
+                    # parse it back to a naive datetime for openpyxl
+                    try:
+                        cell_val = datetime.strptime(str(val), _DT_PARSE_FMT)
+                    except (ValueError, TypeError):
+                        cell_val = str(val) if val is not None else ''
                 else:
                     cell_val = str(val) if val is not None else ''
+
                 cell = ws.cell(row=i, column=j, value=cell_val)
                 cell.font      = DATA_FONT
                 cell.alignment = DATA_ALIGN
                 cell.border    = CELL_BORDER
+                if h in _DT_EXPORT_COLS and isinstance(cell_val, datetime):
+                    cell.number_format = _DT_EXPORT_FMT
 
     qty = STOCK_QTY_EXPR
 
@@ -525,8 +542,6 @@ def api_export():
         if sheet_name == 'movements':
             clauses, params = _build_movement_filters(request.args)
             where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
-            # No LIMIT: export returns ALL rows — all matching rows if filtered,
-            # entire table if unfiltered.
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
@@ -557,7 +572,6 @@ def api_export():
             if part: cl2.append("indus_part ILIKE %(part)s");   p2['part'] = f'%{part}%'
             if loc and loc != 'ALL': cl2.append("last_location=%(loc)s"); p2['loc'] = loc
             where2 = ('WHERE ' + ' AND '.join(cl2)) if cl2 else ''
-            # No LIMIT: export returns all matching pallet status rows.
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
@@ -799,8 +813,8 @@ def api_operators():
                 rows = []
                 for r in cur.fetchall():
                     d = dict(r)
-                    if hasattr(d.get('last_active'), 'isoformat'):
-                        d['last_active'] = d['last_active'].isoformat()
+                    if isinstance(d.get('last_active'), datetime):
+                        d['last_active'] = d['last_active'].strftime('%-d %b %Y, %H:%M')
                     rows.append(d)
         return jsonify({"rows": rows})
     except Exception as e:
