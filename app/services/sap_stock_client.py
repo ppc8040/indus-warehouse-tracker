@@ -107,6 +107,9 @@ def _fetch_all_pages() -> list:
         logger.info("SAP stock fetch: page %d → %d records (total so far: %d)",
                     page, len(results), len(records))
 
+        # Extract next_link from response (OData v2 pagination token)
+        next_link = body.get("d", {}).get("__next", None)
+        
         # After extracting next_link, make it absolute if needed
         if next_link and next_link.startswith("/"):
             next_link = "https://my409486-api.s4hana.cloud.sap" + next_link
