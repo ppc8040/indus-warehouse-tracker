@@ -793,7 +793,7 @@ def api_export():
                                      THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
                                      ELSE 0 END) AS m4_stock,
                             SUM(CASE WHEN UPPER(location)='M5'
- clearly                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
+                                     THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
                                      ELSE 0 END) AS m5_stock,
                             SUM(CASE WHEN UPPER(location)='M6'
                                      THEN (CASE WHEN movement_type='STOCK_IN' THEN {qty} ELSE -{qty} END)
@@ -953,6 +953,27 @@ def api_export():
                     'sap_qty_2000':     s2,
                     'variance_vs_1000': sq - s1,
                 })
+
+            # ── Apply SAP Recon-specific filters (mirrors client-side logic) ──
+            search_q   = (request.args.get('search') or '').strip().lower()
+            var_filter = (request.args.get('variance_filter') or 'ALL').strip().upper()
+
+            if search_q:
+                export_rows = [
+                    r for r in export_rows
+                    if search_q in (r['indus_part'] or '').lower()
+                    or search_q in (r['customer_part'] or '').lower()
+                ]
+            if var_filter == 'DISC':
+                export_rows = [r for r in export_rows if r['variance_vs_1000'] != 0]
+            elif var_filter == 'NEG':
+                export_rows = [r for r in export_rows if r['variance_vs_1000'] < 0]
+            elif var_filter == 'EXCESS':
+                export_rows = [r for r in export_rows if r['variance_vs_1000'] > 0]
+            elif var_filter == 'SAP_ONLY':
+                export_rows = [r for r in export_rows if r['scanner_qty'] == 0 and r['sap_qty_1000'] > 0]
+            elif var_filter == 'SCAN_ONLY':
+                export_rows = [r for r in export_rows if r['sap_qty_1000'] == 0 and r['scanner_qty'] > 0]
 
             ws.title = 'SAP Recon'
             headers = ['indus_part','customer_part','scanner_qty',
