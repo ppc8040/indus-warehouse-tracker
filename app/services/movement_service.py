@@ -12,25 +12,24 @@ Movement rules:
     An IN followed by an OUT (or vice versa) is a valid cycle — not a dup.
     Overrides bypass transition checks but NEVER bypass duplicate checks.
 
-  Location lock (STOCK_OUT — ABSOLUTE, NO OVERRIDE):
-    A STOCK_OUT must be scanned at the same location the pallet was
-    stocked IN.  This check runs before the override path and cannot be
-    bypassed by any supervisor override.  Allowing a cross-location
-    STOCK_OUT would deduct stock from the wrong zone and inflate stock
-    at the IN zone, causing permanent data inconsistency in the
-    Stock by Location dashboard.
+  Absolute hard blocks (no override possible):
+    1. STOCK_OUT location mismatch:
+       A STOCK_OUT must be scanned at the same location the pallet was
+       stocked IN. Allowing a cross-location OUT deducts stock from zone B
+       while the IN was recorded at zone A, producing phantom negative stock.
+       The operator must go to the correct zone.
 
-    If a pallet genuinely needs to be moved to a different zone before
-    going out, the operator must first do a new STOCK_IN scan at the
-    destination zone (which creates a fresh location record) and then
-    do the STOCK_OUT from that zone.
+    2. STOCK_OUT on a never-seen HU:
+       A STOCK_OUT for an HU that has never had a STOCK_IN creates a
+       debit with no matching credit, causing permanent negative stock in
+       the Stock by Location pivot. The operator must do STOCK_IN first.
 
   Transition rules (skipped for supervisor overrides):
     STOCK_IN:
       Blocked if the same HU + Indus_Part + Qty is already IN.
       Different part/qty on the same HU = new pallet run → allowed.
     STOCK_OUT:
-      Blocked if already OUT, or if the HU has never been seen.
+      Blocked if already OUT.
       Outgoing part/qty must match stored values (wrong-label guard).
 
   Location rules:
@@ -158,8 +157,10 @@ def process_movement(
     operator_id       : Worker identifier (default 'WORKER')
     device_id         : Device name / ID (optional)
     is_override       : True when a supervisor overrides a blocked scan.
-                        NOTE: is_override does NOT bypass the location lock
-                        on STOCK_OUT.  That check is absolute.
+                        NOTE: is_override does NOT bypass:
+                          — location lock (STOCK_OUT from wrong zone)
+                          — never-seen HU STOCK_OUT (no IN on record)
+                        Both of these are absolute hard blocks.
     override_reason   : Free-text reason for the override (optional)
     client_timestamp  : ISO timestamp from the device (falls back to server time)
     idempotency_key   : Client-generated key for offline dedup (logged only)
@@ -205,42 +206,61 @@ def process_movement(
     timestamp = client_timestamp or now_utc.isoformat()
     event_id = str(uuid.uuid4())[:12].upper()
 
-    # ── 3. ABSOLUTE location lock for STOCK_OUT (no override possible) ────
+    # ── 3. Absolute hard blocks for STOCK_OUT (no override possible) ──────
     #
-    # A STOCK_OUT must be scanned from the SAME location the pallet was
-    # stocked IN.  This is checked here — before the duplicate check and
-    # before the override gate — so is_override cannot bypass it.
+    # These two checks run BEFORE the duplicate check and BEFORE the
+    # override gate.  is_override has no effect on them.
     #
-    # Rationale: allowing a cross-location OUT deducts stock from zone B
-    # while the IN was recorded at zone A, producing phantom negative stock
-    # at B and inflated stock at A.  This cannot be corrected without a
-    # manual SQL fix.  The operator must go to the correct zone.
+    # Block A — location mismatch:
+    #   A STOCK_OUT must be scanned from the same zone the pallet was
+    #   stocked IN.  Deducting from a different zone produces phantom
+    #   negative stock that can only be fixed with a manual SQL patch.
+    #
+    # Block B — never-seen HU:
+    #   A STOCK_OUT for an HU that has never had a STOCK_IN writes a
+    #   debit with no matching credit, creating permanent negative stock
+    #   in the Stock by Location pivot.
     if movement == 'STOCK_OUT':
         try:
             current_for_lock = get_pallet_status(hu)
         except DbError as exc:
-            logger.error("get_pallet_status (location lock) failed for %s: %s", hu, exc)
+            logger.error("get_pallet_status (hard block) failed for %s: %s", hu, exc)
             return Result(False, 'failed_write_logged',
                           'System temporarily unavailable. Please try again.',
                           {'needs_sync': True})
 
-        if current_for_lock:
-            stored_location = _normalise(current_for_lock.get('last_location', ''))
-            if stored_location and stored_location != _normalise(loc):
-                msg = (
-                    f"Cannot do Stock OUT here. "
-                    f"Pallet {hu} was stocked IN at {stored_location}. "
-                    f"Go to {stored_location} and scan from there."
-                )
-                _log_error(
-                    'LOCATION_MISMATCH',
-                    hu,
-                    f"STOCK_OUT blocked: pallet stored at {stored_location}, "
-                    f"scanned at {loc}. Override not permitted.",
-                )
-                return Result(False, 'rejected_validation', msg,
-                              {'stored_location': stored_location,
-                               'scanned_location': loc})
+        # Block B — never stocked IN
+        if not current_for_lock:
+            msg = (
+                f"Pallet {hu} has never been stocked IN. "
+                f"Do Stock IN first."
+            )
+            _log_error(
+                'NO_STOCK_IN_ON_RECORD',
+                hu,
+                f"STOCK_OUT blocked: HU has no prior STOCK_IN. "
+                f"Override not permitted.",
+            )
+            return Result(False, 'rejected_validation', msg,
+                          {'reason': 'no_stock_in_on_record'})
+
+        # Block A — location mismatch
+        stored_location = _normalise(current_for_lock.get('last_location', ''))
+        if stored_location and stored_location != _normalise(loc):
+            msg = (
+                f"Cannot do Stock OUT here. "
+                f"Pallet {hu} was stocked IN at {stored_location}. "
+                f"Go to {stored_location} and scan from there."
+            )
+            _log_error(
+                'LOCATION_MISMATCH',
+                hu,
+                f"STOCK_OUT blocked: pallet stored at {stored_location}, "
+                f"scanned at {loc}. Override not permitted.",
+            )
+            return Result(False, 'rejected_validation', msg,
+                          {'stored_location': stored_location,
+                           'scanned_location': loc})
 
     # ── 4. Duplicate check (always — overrides included) ──────────────────
     dup_err = _check_duplicate(hu, movement)
@@ -331,9 +351,6 @@ def process_movement(
             last_location=loc,
         )
     except DbError as exc:
-        # Movement was written — log the status-update failure but don't
-        # surface it as an error to the worker. Status will self-heal on
-        # the next movement for this HU.
         logger.error("upsert_pallet_status failed (movement already written): %s", exc)
 
     logger.info(
@@ -426,7 +443,6 @@ def get_destinations() -> list:
 
 # ---------------------------------------------------------------------------
 # BUG FIX: un-suffixed aliases so admin.py can import without _service suffix.
-# Both names are valid — existing callers of the _service variants are unaffected.
 # ---------------------------------------------------------------------------
 
 def get_recent_movements_public(limit: int = 50) -> list:
@@ -506,9 +522,15 @@ def _check_transition(
     Validate the movement transition using pallet_status data.
     Only called when is_override=False.
 
-    NOTE: The location lock for STOCK_OUT is enforced BEFORE this function
-    is called (in process_movement step 3) and is absolute — it is not
-    duplicated here to avoid confusion.
+    NOTE: Two STOCK_OUT checks are absolute and are enforced BEFORE this
+    function is called (process_movement step 3):
+      — location mismatch (LOCATION_MISMATCH)
+      — never-seen HU (NO_STOCK_IN_ON_RECORD)
+    Neither appears here to avoid duplication and confusion.
+
+    The 'never seen' state (cur_state in NONE/UNKNOWN) therefore only
+    reaches this function for STOCK_IN, which is always allowed for a
+    brand-new HU.
 
     Returns an error message string if blocked, None if allowed.
     """
@@ -533,10 +555,6 @@ def _check_transition(
         if cur_state == 'STOCK_OUT':
             return (f"Pallet {hu} is already OUT of the warehouse. "
                     f"Use supervisor override if needed.")
-
-        if cur_state in ('NONE', '', 'NOT IN SYSTEM', 'UNKNOWN'):
-            return (f"Pallet {hu} was never stocked IN. "
-                    f"Do Stock IN first, or use supervisor override.")
 
         # Pallet is currently IN — validate outgoing scan matches stored identity
         if current_row:
