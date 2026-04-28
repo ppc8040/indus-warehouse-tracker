@@ -192,22 +192,75 @@ def api_movements():
 @admin_bp.route('/api/pallet-statuses')
 @_auth_required
 def api_pallet_statuses():
-    hu   = (request.args.get('hu')   or '').strip()
-    part = (request.args.get('part') or '').strip()
+    """
+    Returns the true latest status for every HU by deriving it live from the
+    movements table (DISTINCT ON handling_unit ORDER BY timestamp_utc DESC).
+
+    This replaces a direct read of pallet_status.current_status, which can
+    drift and show IN_WAREHOUSE for pallets that have already been STOCK_OUT.
+
+    The pallet_status table is still used as a fallback JOIN to fill in
+    indus_part / pallet_qty / last_location when the movements row is missing
+    those fields (e.g. older records).
+
+    Filters: hu, part, location  (location matches last_location / movements.location)
+    """
+    hu   = (request.args.get('hu')       or '').strip()
+    part = (request.args.get('part')     or '').strip()
     loc  = (request.args.get('location') or '').strip()
-    clauses, params = [], {}
-    if hu:   clauses.append("handling_unit ILIKE %(hu)s");   params['hu']   = f'%{hu}%'
-    if part: clauses.append("indus_part ILIKE %(part)s");   params['part'] = f'%{part}%'
-    if loc and loc != 'ALL': clauses.append("last_location = %(loc)s"); params['loc'] = loc
-    where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+
+    # Build optional WHERE clauses applied AFTER the DISTINCT ON subquery
+    outer_clauses = []
+    params = {}
+    if hu:
+        outer_clauses.append("m.handling_unit ILIKE %(hu)s")
+        params['hu'] = f'%{hu}%'
+    if part:
+        outer_clauses.append(
+            "(COALESCE(m.indus_part, ps.indus_part)) ILIKE %(part)s"
+        )
+        params['part'] = f'%{part}%'
+    if loc and loc != 'ALL':
+        outer_clauses.append(
+            "COALESCE(NULLIF(m.location,''), ps.last_location) = %(loc)s"
+        )
+        params['loc'] = loc
+
+    outer_where = ('WHERE ' + ' AND '.join(outer_clauses)) if outer_clauses else ''
+
     sql = f"""
-        SELECT handling_unit, current_status, last_event_id,
-               last_movement_type,
-               last_movement_time AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
-               indus_part, pallet_qty, last_location
-        FROM pallet_status
-        {where}
-        ORDER BY last_movement_time DESC NULLS LAST
+        WITH latest_movement AS (
+            -- One row per HU: the single most-recent non-ERROR movement
+            SELECT DISTINCT ON (handling_unit)
+                handling_unit,
+                movement_type        AS last_movement_type,
+                timestamp_utc        AS last_movement_time,
+                location,
+                indus_part,
+                pallet_qty,
+                event_id             AS last_event_id
+            FROM movements
+            WHERE movement_type IN ('STOCK_IN', 'STOCK_OUT')
+            ORDER BY handling_unit, timestamp_utc DESC
+        )
+        SELECT
+            m.handling_unit,
+            -- Derive current_status from the latest movement type
+            CASE
+                WHEN m.last_movement_type = 'STOCK_IN'  THEN 'IN_WAREHOUSE'
+                WHEN m.last_movement_type = 'STOCK_OUT' THEN 'OUT_OF_WAREHOUSE'
+                ELSE 'UNKNOWN'
+            END                                                         AS current_status,
+            m.last_event_id,
+            m.last_movement_type,
+            m.last_movement_time AT TIME ZONE 'Asia/Dubai'             AS last_movement_time_dubai,
+            COALESCE(NULLIF(m.indus_part,  ''), ps.indus_part)         AS indus_part,
+            COALESCE(NULLIF(m.pallet_qty::text, ''), ps.pallet_qty::text) AS pallet_qty,
+            COALESCE(NULLIF(m.location,    ''), ps.last_location)      AS last_location
+        FROM latest_movement m
+        LEFT JOIN pallet_status ps USING (handling_unit)
+        {outer_where}
+        ORDER BY m.last_movement_time DESC NULLS LAST
     """
     try:
         with _get_conn() as conn:
@@ -301,11 +354,18 @@ def api_stats():
                     logger.warning("stats total_movements: %s", e)
 
                 try:
+                    # Derive IN/OUT counts live from movements (same logic as pallet status tab)
                     cur.execute("""
+                        WITH latest AS (
+                            SELECT DISTINCT ON (handling_unit) movement_type
+                            FROM movements
+                            WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
+                            ORDER BY handling_unit, timestamp_utc DESC
+                        )
                         SELECT
-                            SUM(CASE WHEN current_status='IN_WAREHOUSE'     THEN 1 ELSE 0 END) AS cnt_in,
-                            SUM(CASE WHEN current_status='OUT_OF_WAREHOUSE' THEN 1 ELSE 0 END) AS cnt_out
-                        FROM pallet_status
+                            SUM(CASE WHEN movement_type='STOCK_IN'  THEN 1 ELSE 0 END) AS cnt_in,
+                            SUM(CASE WHEN movement_type='STOCK_OUT' THEN 1 ELSE 0 END) AS cnt_out
+                        FROM latest
                     """)
                     row = cur.fetchone()
                     if row:
@@ -750,22 +810,55 @@ def api_export():
             filename = 'movements_export.xlsx'
 
         elif sheet_name == 'statuses':
+            # Export uses the same live-derived logic as api_pallet_statuses
             hu   = (request.args.get('hu')   or '').strip()
             part = (request.args.get('part') or '').strip()
             loc  = (request.args.get('location') or '').strip()
-            cl2, p2 = [], {}
-            if hu:   cl2.append("handling_unit ILIKE %(hu)s");  p2['hu']   = f'%{hu}%'
-            if part: cl2.append("indus_part ILIKE %(part)s");   p2['part'] = f'%{part}%'
-            if loc and loc != 'ALL': cl2.append("last_location=%(loc)s"); p2['loc'] = loc
-            where2 = ('WHERE ' + ' AND '.join(cl2)) if cl2 else ''
+            outer_clauses, p2 = [], {}
+            if hu:
+                outer_clauses.append("m.handling_unit ILIKE %(hu)s")
+                p2['hu'] = f'%{hu}%'
+            if part:
+                outer_clauses.append("(COALESCE(m.indus_part, ps.indus_part)) ILIKE %(part)s")
+                p2['part'] = f'%{part}%'
+            if loc and loc != 'ALL':
+                outer_clauses.append(
+                    "COALESCE(NULLIF(m.location,''), ps.last_location) = %(loc)s"
+                )
+                p2['loc'] = loc
+            outer_where2 = ('WHERE ' + ' AND '.join(outer_clauses)) if outer_clauses else ''
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
-                        SELECT handling_unit, current_status, last_movement_type,
-                               last_movement_time AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
-                               indus_part, pallet_qty, last_location
-                        FROM pallet_status {where2}
-                        ORDER BY last_movement_time DESC NULLS LAST
+                        WITH latest_movement AS (
+                            SELECT DISTINCT ON (handling_unit)
+                                handling_unit,
+                                movement_type AS last_movement_type,
+                                timestamp_utc AS last_movement_time,
+                                location,
+                                indus_part,
+                                pallet_qty,
+                                event_id AS last_event_id
+                            FROM movements
+                            WHERE movement_type IN ('STOCK_IN', 'STOCK_OUT')
+                            ORDER BY handling_unit, timestamp_utc DESC
+                        )
+                        SELECT
+                            m.handling_unit,
+                            CASE
+                                WHEN m.last_movement_type = 'STOCK_IN'  THEN 'IN_WAREHOUSE'
+                                WHEN m.last_movement_type = 'STOCK_OUT' THEN 'OUT_OF_WAREHOUSE'
+                                ELSE 'UNKNOWN'
+                            END AS current_status,
+                            m.last_movement_type,
+                            m.last_movement_time AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
+                            COALESCE(NULLIF(m.indus_part,''), ps.indus_part) AS indus_part,
+                            COALESCE(NULLIF(m.pallet_qty::text,''), ps.pallet_qty::text) AS pallet_qty,
+                            COALESCE(NULLIF(m.location,''), ps.last_location) AS last_location
+                        FROM latest_movement m
+                        LEFT JOIN pallet_status ps USING (handling_unit)
+                        {outer_where2}
+                        ORDER BY m.last_movement_time DESC NULLS LAST
                     """, p2)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
             ws.title = 'Pallet Status'
@@ -1040,11 +1133,41 @@ def api_by_location():
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
+                # Derive live from movements — same as pallet status tab
                 cur.execute("""
-                    SELECT COALESCE(NULLIF(last_location,''),'Unknown') AS location,
+                    WITH latest AS (
+                        SELECT DISTINCT ON (handling_unit)
+                            handling_unit, location
+                        FROM movements
+                        WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
+                        ORDER BY handling_unit, timestamp_utc DESC
+                    ),
+                    currently_in AS (
+                        SELECT l.location
+                        FROM latest l
+                        JOIN movements m
+                          ON m.handling_unit = l.handling_unit
+                         AND m.location      = l.location
+                        WHERE m.movement_type = (
+                            SELECT movement_type
+                            FROM movements m2
+                            WHERE m2.handling_unit = l.handling_unit
+                            ORDER BY timestamp_utc DESC
+                            LIMIT 1
+                        )
+                        AND (
+                            SELECT movement_type
+                            FROM movements m3
+                            WHERE m3.handling_unit = l.handling_unit
+                            ORDER BY timestamp_utc DESC
+                            LIMIT 1
+                        ) = 'STOCK_IN'
+                    )
+                    SELECT COALESCE(NULLIF(location,''),'Unknown') AS location,
                            COUNT(*) AS pallet_count
-                    FROM pallet_status WHERE current_status='IN_WAREHOUSE'
-                    GROUP BY last_location ORDER BY pallet_count DESC
+                    FROM currently_in
+                    GROUP BY location
+                    ORDER BY pallet_count DESC
                 """)
                 rows = [dict(r) for r in cur.fetchall()]
         return jsonify({"rows": rows})
