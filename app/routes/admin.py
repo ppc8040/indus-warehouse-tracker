@@ -194,10 +194,11 @@ def api_movements():
 def api_pallet_statuses():
     """
     Returns the true latest status for every HU by deriving it live from the
-    movements table (DISTINCT ON handling_unit ORDER BY timestamp_utc DESC).
+    movements table (DISTINCT ON handling_unit ORDER BY timestamp_utc DESC, id DESC).
 
-    This replaces a direct read of pallet_status.current_status, which can
-    drift and show IN_WAREHOUSE for pallets that have already been STOCK_OUT.
+    The id DESC tiebreaker ensures deterministic row selection when two movements
+    share an identical timestamp_utc (e.g. a STOCK_IN and STOCK_OUT scanned within
+    the same second) — the row with the higher id (inserted later) wins.
 
     The pallet_status table is still used as a fallback JOIN to fill in
     indus_part / pallet_qty / last_location when the movements row is missing
@@ -230,7 +231,9 @@ def api_pallet_statuses():
 
     sql = f"""
         WITH latest_movement AS (
-            -- One row per HU: the single most-recent non-ERROR movement
+            -- One row per HU: the single most-recent non-ERROR movement.
+            -- id DESC tiebreaker prevents arbitrary selection when timestamp_utc
+            -- values collide (e.g. simultaneous IN/OUT within the same second).
             SELECT DISTINCT ON (handling_unit)
                 handling_unit,
                 movement_type        AS last_movement_type,
@@ -241,7 +244,7 @@ def api_pallet_statuses():
                 event_id             AS last_event_id
             FROM movements
             WHERE movement_type IN ('STOCK_IN', 'STOCK_OUT')
-            ORDER BY handling_unit, timestamp_utc DESC
+            ORDER BY handling_unit, timestamp_utc DESC, id DESC
         )
         SELECT
             m.handling_unit,
@@ -354,13 +357,14 @@ def api_stats():
                     logger.warning("stats total_movements: %s", e)
 
                 try:
-                    # Derive IN/OUT counts live from movements (same logic as pallet status tab)
+                    # id DESC tiebreaker prevents arbitrary winner when two movements
+                    # share an identical timestamp_utc (e.g. same-second IN/OUT pair).
                     cur.execute("""
                         WITH latest AS (
                             SELECT DISTINCT ON (handling_unit) movement_type
                             FROM movements
                             WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-                            ORDER BY handling_unit, timestamp_utc DESC
+                            ORDER BY handling_unit, timestamp_utc DESC, id DESC
                         )
                         SELECT
                             SUM(CASE WHEN movement_type='STOCK_IN'  THEN 1 ELSE 0 END) AS cnt_in,
@@ -810,7 +814,8 @@ def api_export():
             filename = 'movements_export.xlsx'
 
         elif sheet_name == 'statuses':
-            # Export uses the same live-derived logic as api_pallet_statuses
+            # Export uses the same live-derived logic as api_pallet_statuses,
+            # including the id DESC tiebreaker.
             hu   = (request.args.get('hu')   or '').strip()
             part = (request.args.get('part') or '').strip()
             loc  = (request.args.get('location') or '').strip()
@@ -841,7 +846,7 @@ def api_export():
                                 event_id AS last_event_id
                             FROM movements
                             WHERE movement_type IN ('STOCK_IN', 'STOCK_OUT')
-                            ORDER BY handling_unit, timestamp_utc DESC
+                            ORDER BY handling_unit, timestamp_utc DESC, id DESC
                         )
                         SELECT
                             m.handling_unit,
@@ -1133,39 +1138,20 @@ def api_by_location():
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
-                # Derive live from movements — same as pallet status tab
+                # id DESC tiebreaker ensures the higher-id row wins on timestamp collision.
                 cur.execute("""
                     WITH latest AS (
                         SELECT DISTINCT ON (handling_unit)
-                            handling_unit, location
+                            handling_unit, location, movement_type
                         FROM movements
                         WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-                        ORDER BY handling_unit, timestamp_utc DESC
-                    ),
-                    currently_in AS (
-                        SELECT l.location
-                        FROM latest l
-                        JOIN movements m
-                          ON m.handling_unit = l.handling_unit
-                         AND m.location      = l.location
-                        WHERE m.movement_type = (
-                            SELECT movement_type
-                            FROM movements m2
-                            WHERE m2.handling_unit = l.handling_unit
-                            ORDER BY timestamp_utc DESC
-                            LIMIT 1
-                        )
-                        AND (
-                            SELECT movement_type
-                            FROM movements m3
-                            WHERE m3.handling_unit = l.handling_unit
-                            ORDER BY timestamp_utc DESC
-                            LIMIT 1
-                        ) = 'STOCK_IN'
+                        ORDER BY handling_unit, timestamp_utc DESC, id DESC
                     )
-                    SELECT COALESCE(NULLIF(location,''),'Unknown') AS location,
-                           COUNT(*) AS pallet_count
-                    FROM currently_in
+                    SELECT
+                        COALESCE(NULLIF(location,''),'Unknown') AS location,
+                        COUNT(*) AS pallet_count
+                    FROM latest
+                    WHERE movement_type = 'STOCK_IN'
                     GROUP BY location
                     ORDER BY pallet_count DESC
                 """)
@@ -1179,14 +1165,33 @@ def api_by_location():
 @admin_bp.route('/api/analytics/by-part')
 @_auth_required
 def api_by_part():
+    """
+    Returns the top 15 parts currently IN_WAREHOUSE, derived live from the
+    movements table using the same DISTINCT ON logic as api_pallet_statuses.
+    Replaces the old pallet_status read which could show stale IN_WAREHOUSE
+    rows for pallets that have already been STOCK_OUT.
+    """
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT COALESCE(NULLIF(indus_part,''),'Unknown') AS part,
-                           COUNT(*) AS pallet_count
-                    FROM pallet_status WHERE current_status='IN_WAREHOUSE'
-                    GROUP BY indus_part ORDER BY pallet_count DESC LIMIT 15
+                    WITH latest AS (
+                        SELECT DISTINCT ON (handling_unit)
+                            handling_unit,
+                            movement_type,
+                            indus_part
+                        FROM movements
+                        WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
+                        ORDER BY handling_unit, timestamp_utc DESC, id DESC
+                    )
+                    SELECT
+                        COALESCE(NULLIF(indus_part,''),'Unknown') AS part,
+                        COUNT(*) AS pallet_count
+                    FROM latest
+                    WHERE movement_type = 'STOCK_IN'
+                    GROUP BY indus_part
+                    ORDER BY pallet_count DESC
+                    LIMIT 15
                 """)
                 rows = [dict(r) for r in cur.fetchall()]
         return jsonify({"rows": rows})
