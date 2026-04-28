@@ -168,20 +168,10 @@ _OOR_CACHE_TTL = 300  # seconds
 
 def _fetch_oor_customer_codes():
     """
-    Authenticate to Microsoft Graph, fetch the Open Order Report workbook,
-    read the first worksheet, and build a dict:
-        { "CEJ1773": "CPT", "AJM0488": "IVT, CPT", ... }
-
-    Column indices (0-based):
-        7  = Indus Part          (column H)
-        17 = Actual Customer Code (column R)
-
-    Multiple rows with the same Indus Part are merged: customer codes are
-    deduplicated and joined with ", ".
-
-    Returns an empty dict if the fetch fails (errors are logged, not raised).
+    ... (docstring unchanged)
     """
     import requests as req_lib
+    from urllib.parse import quote  # Add this import at the function level
 
     cfg = current_app.config
     tenant   = cfg['GRAPH_TENANT_ID']
@@ -191,7 +181,7 @@ def _fetch_oor_customer_codes():
     filename = cfg['WORKBOOK_FILENAME_OOR']
     timeout  = cfg.get('GRAPH_REQUEST_TIMEOUT', 30)
 
-    # 1. Acquire OAuth2 token (client credentials)
+    # 1. Acquire OAuth2 token
     token_url = f'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token'
     token_resp = req_lib.post(token_url, data={
         'grant_type':    'client_credentials',
@@ -211,7 +201,6 @@ def _fetch_oor_customer_codes():
     search_resp = req_lib.get(search_url, headers=headers, timeout=timeout)
     search_resp.raise_for_status()
     items = search_resp.json().get('value', [])
-    # Match exact filename (search may return partial hits)
     item = next(
         (i for i in items if i.get('name', '').lower() == filename.lower()),
         None
@@ -222,7 +211,7 @@ def _fetch_oor_customer_codes():
 
     item_id = item['id']
 
-    # 3. Get all worksheets and pick the first one (or "Open Order Report" if named)
+    # 3. Get all worksheets and pick the first one
     ws_url = (
         f'https://graph.microsoft.com/v1.0/sites/{site_id}'
         f'/drive/items/{item_id}/workbook/worksheets'
@@ -234,17 +223,17 @@ def _fetch_oor_customer_codes():
         logger.warning('OOR workbook has no sheets')
         return {}
 
-    # Prefer a sheet named "Open Order Report"; fall back to the first sheet
     sheet_name = sheets[0]['name']
     for s in sheets:
         if 'open order' in s.get('name', '').lower():
             sheet_name = s['name']
             break
 
-    # 4. Read used range (returns all rows with data)
+    # 4. Read used range — properly encode the sheet name
+    encoded_sheet_name = quote(sheet_name)
     range_url = (
         f'https://graph.microsoft.com/v1.0/sites/{site_id}'
-        f'/drive/items/{item_id}/workbook/worksheets/\'{sheet_name}\''
+        f'/drive/items/{item_id}/workbook/worksheets(\'{encoded_sheet_name}\')'
         f'/usedRange'
     )
     range_resp = req_lib.get(range_url, headers=headers, timeout=60)
@@ -252,17 +241,15 @@ def _fetch_oor_customer_codes():
     all_rows = range_resp.json().get('values', [])
 
     if len(all_rows) < 2:
-        # Only a header row or empty
         return {}
 
-    # 5. Build the lookup dict (skip header row at index 0)
-    result = {}  # indus_part -> set of customer codes
+    # 5. Build the lookup dict (rest unchanged)
+    result = {}
     for row in all_rows[1:]:
-        # Guard against short rows
         if len(row) <= 17:
             continue
-        indus_part = str(row[7]).strip().upper()   # col H
-        cust_code  = str(row[17]).strip().upper()  # col R
+        indus_part = str(row[7]).strip().upper()
+        cust_code  = str(row[17]).strip().upper()
         if not indus_part or indus_part in ('', 'NONE', 'N/A', '#N/A'):
             continue
         if not cust_code or cust_code in ('', 'NONE', 'N/A', '#N/A'):
@@ -271,9 +258,7 @@ def _fetch_oor_customer_codes():
             result[indus_part] = set()
         result[indus_part].add(cust_code)
 
-    # Convert sets -> sorted comma-joined strings
     return {k: ', '.join(sorted(v)) for k, v in result.items()}
-
 
 @admin_bp.route('/api/oor-customer-codes')
 @_auth_required
