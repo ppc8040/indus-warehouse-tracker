@@ -35,11 +35,13 @@ def create_app():
     from app.routes.api    import api_bp
     from app.routes.admin  import admin_bp
     from app.routes.health import health_bp
+    from app.routes.master import master_bp
 
     app.register_blueprint(worker_bp)
     app.register_blueprint(api_bp,    url_prefix='/api')
     app.register_blueprint(admin_bp,  url_prefix='/admin')
     app.register_blueprint(health_bp)
+    app.register_blueprint(master_bp, url_prefix='/master')
 
     @app.errorhandler(404)
     def not_found(e):
@@ -109,7 +111,7 @@ def _validate_environment(app):
             'Set the Heroku Postgres add-on or DATABASE_URL config var.'
         )
     else:
-        app.logger.info('DATABASE_URL configured (✓)')
+        app.logger.info('DATABASE_URL configured (\u2713)')
 
     # Graph vars are kept for the transition window only.
     # Emit a single debug line so they\'re visible in verbose logs
@@ -121,6 +123,6 @@ def _validate_environment(app):
     missing_graph = [v for v in graph_vars if not app.config.get(v)]
     if missing_graph:
         app.logger.debug(
-            'Graph config vars not set (expected — graph_client is dormant): %s',
+            'Graph config vars not set (expected \u2014 graph_client is dormant): %s',
             ', '.join(missing_graph),
         )
