@@ -65,7 +65,12 @@ def get_connection():
     if uri.startswith("postgres://"):
         uri = uri.replace("postgres://", "postgresql://", 1)
     try:
-        return psycopg2.connect(uri, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn = psycopg2.connect(uri, cursor_factory=psycopg2.extras.RealDictCursor)
+        # Use autocommit=True so read queries never open an implicit transaction.
+        # process_part() manages its own write transactions explicitly via
+        # BEGIN / COMMIT / ROLLBACK SQL commands.
+        conn.autocommit = True
+        return conn
     except psycopg2.Error as exc:
         print(f"ERROR: Could not connect to Postgres: {exc}")
         sys.exit(1)
@@ -79,7 +84,6 @@ def get_connection():
 # An HU is "affected" when:
 #   - It has at least one STOCK_OUT with validation_status = 'OVERRIDE'
 #   - AND it has zero STOCK_IN rows with a timestamp BEFORE that STOCK_OUT
-# This query is the master list for the interactive menu.
 FIND_AFFECTED_PARTS = """
     SELECT DISTINCT m_out.indus_part
     FROM   movements m_out
@@ -96,11 +100,7 @@ FIND_AFFECTED_PARTS = """
 """
 
 # All affected HUs for a specific Indus Part.
-# Returns the earliest rogue STOCK_OUT per HU (there should normally be
-# only one, but DISTINCT ON handles the edge case where someone scanned
-# the same never-seen HU twice via override).
-# Columns returned: handling_unit, indus_part, customer_part, pallet_qty,
-#                   location, job_no, timestamp_utc, device_id
+# DISTINCT ON (handling_unit) returns the earliest rogue STOCK_OUT per HU.
 FIND_AFFECTED_HUS_FOR_PART = """
     SELECT DISTINCT ON (m_out.handling_unit)
            m_out.handling_unit,
@@ -126,8 +126,7 @@ FIND_AFFECTED_HUS_FOR_PART = """
               m_out.timestamp_utc ASC;
 """
 
-# Check whether a backfill row already exists for this HU (idempotency guard).
-# Re-running the script after a partial fix must not double-insert.
+# Idempotency guard: check if a BACKFILLED STOCK_IN already exists for this HU.
 CHECK_ALREADY_BACKFILLED = """
     SELECT 1
     FROM   movements
@@ -137,8 +136,7 @@ CHECK_ALREADY_BACKFILLED = """
     LIMIT  1;
 """
 
-# Insert a backfilled STOCK_IN row.
-# timestamp_utc is set to (rogue_out_timestamp - 1 second) by the caller.
+# Insert the backfilled STOCK_IN row.
 INSERT_BACKFILL_STOCK_IN = """
     INSERT INTO movements (
         event_id,
@@ -175,12 +173,7 @@ INSERT_BACKFILL_STOCK_IN = """
     );
 """
 
-# Re-derive the pallet_status row for a given HU from the most recent
-# non-ERROR movement row.  Overwrites current_status, last_event_id,
-# last_movement_type, last_movement_time, indus_part, pallet_qty,
-# last_location.
-# If no non-ERROR row exists the pallet_status row is left as-is
-# (handled in Python).
+# Re-derive pallet_status from the most recent non-ERROR movement for this HU.
 GET_LATEST_MOVEMENT_FOR_HU = """
     SELECT event_id, movement_type, timestamp_utc,
            indus_part, pallet_qty, location
@@ -239,22 +232,20 @@ def _banner(title):
 def _ts_minus_one_second(ts) -> str:
     """
     Subtract 1 second from a timestamp value.
-    Accepts datetime objects or ISO-string timestamps.
+    Accepts a psycopg2 datetime object or an ISO-string.
     Returns an ISO-format UTC string.
     """
     if isinstance(ts, str):
-        # Normalise: remove trailing 'Z', handle '+00:00'
         ts_clean = ts.replace('Z', '+00:00')
         try:
             dt = datetime.fromisoformat(ts_clean)
         except ValueError:
-            # Fallback: try parsing without timezone
             dt = datetime.strptime(ts[:19], '%Y-%m-%dT%H:%M:%S')
             dt = dt.replace(tzinfo=timezone.utc)
     else:
-        dt = ts  # already a datetime
+        # psycopg2 returns aware datetime objects for TIMESTAMPTZ columns
+        dt = ts
 
-    # Ensure timezone-aware
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
 
@@ -262,18 +253,17 @@ def _ts_minus_one_second(ts) -> str:
 
 
 def _make_event_id() -> str:
-    """Generate a script-scoped event_id prefixed with BKFL- for easy audit filtering."""
+    """Generate a script-scoped event_id (BKFL- prefix) for easy audit filtering."""
     return 'BKFL-' + str(uuid.uuid4()).upper()[:12]
 
 
 def _prompt_yes_no(question: str) -> bool:
-    """Ask a Y/N question. Requires explicit 'YES' (case-insensitive) to proceed."""
-    while True:
-        answer = input(f'\n  {question} [type YES to confirm, anything else to skip]: ').strip()
-        if answer.upper() == 'YES':
-            return True
-        print('  Skipped.')
-        return False
+    """Requires explicit 'YES' to proceed. Anything else returns False."""
+    answer = input(f'\n  {question} [type YES to confirm, anything else to skip]: ').strip()
+    if answer.upper() == 'YES':
+        return True
+    print('  Skipped.')
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -281,7 +271,7 @@ def _prompt_yes_no(question: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch_affected_parts(conn) -> list:
-    """Return a sorted list of distinct indus_part values that have affected HUs."""
+    """Return sorted list of distinct indus_part values that have affected HUs."""
     with conn.cursor() as cur:
         cur.execute(FIND_AFFECTED_PARTS)
         rows = cur.fetchall()
@@ -303,7 +293,13 @@ def is_already_backfilled(cur, hu: str) -> bool:
 
 def process_part(conn, indus_part: str, affected_hus: list) -> dict:
     """
-    Backfill STOCK_IN for all affected HUs of one part inside a single transaction.
+    Backfill STOCK_IN for all affected HUs of one Indus Part.
+
+    The connection must be in autocommit=True mode (set by get_connection).
+    This function issues explicit BEGIN / COMMIT / ROLLBACK SQL so that
+    all HUs for the part are committed atomically, with a clean rollback
+    on any error.  This avoids psycopg2.ProgrammingError: set_session
+    cannot be used inside a transaction.
 
     Returns a summary dict:
         inserted      int   — rows inserted into movements
@@ -312,85 +308,87 @@ def process_part(conn, indus_part: str, affected_hus: list) -> dict:
         rolled_back   bool  — True if the transaction was rolled back
     """
     summary = {'inserted': 0, 'skipped': 0, 'ps_updated': 0, 'rolled_back': False}
-    conn.autocommit = False
 
+    cur = conn.cursor()
     try:
-        with conn.cursor() as cur:
+        cur.execute('BEGIN')
 
-            for row in affected_hus:
-                hu            = row['handling_unit']
-                indus_p       = row['indus_part'] or ''
-                customer_p    = row['customer_part'] or ''
-                pallet_qty    = row['pallet_qty'] or ''
-                location      = row['location'] or ''
-                job_no        = row['job_no'] or ''
-                rogue_ts      = row['timestamp_utc']
-                device_id     = row['device_id'] or ''
+        for row in affected_hus:
+            hu         = row['handling_unit']
+            indus_p    = row['indus_part'] or ''
+            customer_p = row['customer_part'] or ''
+            pallet_qty = row['pallet_qty'] or ''
+            location   = row['location'] or ''
+            job_no     = row['job_no'] or ''
+            rogue_ts   = row['timestamp_utc']
+            device_id  = row['device_id'] or ''
 
-                # ── Idempotency guard ─────────────────────────────────
-                if is_already_backfilled(cur, hu):
-                    print(f'  ⚠  {hu} — already backfilled, skipping.')
-                    summary['skipped'] += 1
-                    continue
+            # ── Idempotency guard ─────────────────────────────────
+            if is_already_backfilled(cur, hu):
+                print(f'  ⚠  {hu} — already backfilled, skipping.')
+                summary['skipped'] += 1
+                continue
 
-                # ── Build the backfill row ────────────────────────────
-                backfill_ts = _ts_minus_one_second(rogue_ts)
-                event_id    = _make_event_id()
+            # ── Build and insert the backfill STOCK_IN row ──────────────
+            backfill_ts = _ts_minus_one_second(rogue_ts)
+            event_id    = _make_event_id()
 
-                cur.execute(INSERT_BACKFILL_STOCK_IN, {
-                    'event_id':      event_id,
-                    'timestamp_utc': backfill_ts,
-                    'handling_unit': hu,
-                    'indus_part':    indus_p,
-                    'customer_part': customer_p,
-                    'pallet_qty':    pallet_qty,
-                    'job_no':        job_no,
-                    'location':      location,
-                    'device_id':     device_id,
+            cur.execute(INSERT_BACKFILL_STOCK_IN, {
+                'event_id':      event_id,
+                'timestamp_utc': backfill_ts,
+                'handling_unit': hu,
+                'indus_part':    indus_p,
+                'customer_part': customer_p,
+                'pallet_qty':    pallet_qty,
+                'job_no':        job_no,
+                'location':      location,
+                'device_id':     device_id,
+            })
+            summary['inserted'] += 1
+            print(f'  ✓  STOCK_IN backfilled : {hu}  '
+                  f'part={indus_p}  qty={pallet_qty}  '
+                  f'loc={location}  ts={backfill_ts}  event={event_id}')
+
+            # ── Reconcile pallet_status ───────────────────────────
+            # Re-derive from most recent non-ERROR movement (includes the
+            # row we just inserted, since we're inside the same transaction).
+            cur.execute(GET_LATEST_MOVEMENT_FOR_HU, {'hu': hu})
+            latest = cur.fetchone()
+
+            if latest:
+                mv_type = (latest['movement_type'] or '').upper()
+                current_status = (
+                    'IN_WAREHOUSE'
+                    if mv_type == 'STOCK_IN'
+                    else 'OUT_OF_WAREHOUSE'
+                )
+                cur.execute(UPSERT_PALLET_STATUS, {
+                    'handling_unit':      hu,
+                    'current_status':     current_status,
+                    'last_event_id':      latest['event_id'],
+                    'last_movement_type': latest['movement_type'],
+                    'last_movement_time': str(latest['timestamp_utc']),
+                    'indus_part':         latest['indus_part'] or '',
+                    'pallet_qty':         latest['pallet_qty'] or '',
+                    'last_location':      latest['location'] or '',
                 })
-                summary['inserted'] += 1
-                print(f'  ✓  STOCK_IN backfilled: {hu}  '
-                      f'part={indus_p}  qty={pallet_qty}  '
-                      f'loc={location}  ts={backfill_ts}  event={event_id}')
+                summary['ps_updated'] += 1
+                print(f'        pallet_status → status={current_status}  '
+                      f'loc={latest["location"]}')
+            else:
+                print(f'        pallet_status: no non-ERROR movement found, left as-is.')
 
-                # ── Reconcile pallet_status ───────────────────────────
-                # Re-derive from the most recent non-ERROR movement for
-                # this HU (which now includes the row we just inserted).
-                cur.execute(GET_LATEST_MOVEMENT_FOR_HU, {'hu': hu})
-                latest = cur.fetchone()
-
-                if latest:
-                    mv_type = (latest['movement_type'] or '').upper()
-                    current_status = (
-                        'IN_WAREHOUSE'
-                        if mv_type == 'STOCK_IN'
-                        else 'OUT_OF_WAREHOUSE'
-                    )
-                    cur.execute(UPSERT_PALLET_STATUS, {
-                        'handling_unit':      hu,
-                        'current_status':     current_status,
-                        'last_event_id':      latest['event_id'],
-                        'last_movement_type': latest['movement_type'],
-                        'last_movement_time': str(latest['timestamp_utc']),
-                        'indus_part':         latest['indus_part'] or '',
-                        'pallet_qty':         latest['pallet_qty'] or '',
-                        'last_location':      latest['location'] or '',
-                    })
-                    summary['ps_updated'] += 1
-                    print(f'        pallet_status reconciled → '
-                          f'status={current_status}  loc={latest["location"]}')
-                else:
-                    print(f'        pallet_status: no non-ERROR movement found, left as-is.')
-
-        conn.commit()
+        cur.execute('COMMIT')
         print(f'\n  ✓  Transaction committed for part: {indus_part}')
 
     except Exception as exc:
-        conn.rollback()
+        cur.execute('ROLLBACK')
         summary['rolled_back'] = True
-        print(f'\n  ✗  ERROR during processing — full rollback applied.')
+        print(f'\n  ✗  ERROR — full rollback applied for part: {indus_part}')
         print(f'     Exception: {exc}')
-        print(f'     Database unchanged for part: {indus_part}')
+        print(f'     Database unchanged for this part.')
+    finally:
+        cur.close()
 
     return summary
 
@@ -437,7 +435,7 @@ def run():
     print(f'    [Q]  Quit without making any changes')
     print()
 
-    # ── Step 2: User selects which part to process ───────────────────────────
+    # ── Step 2: Interactive menu loop ─────────────────────────────────────────
     grand_total = {'inserted': 0, 'skipped': 0, 'ps_updated': 0, 'errors': 0}
 
     while True:
@@ -458,19 +456,19 @@ def run():
             if 0 <= idx < len(affected_parts):
                 parts_to_process = [affected_parts[idx]]
             else:
-                print(f'  Invalid choice. Enter a number between 1 and {len(affected_parts)}, A, or Q.')
+                print(f'  Invalid choice. Enter 1–{len(affected_parts)}, A, or Q.')
                 continue
         else:
             print('  Invalid input. Enter a number, A, or Q.')
             continue
 
-        # ── Step 3: Dry-run preview for selected parts ───────────────────────
+        # ── Step 3: Dry-run preview ───────────────────────────────────────────
         print()
         _hr()
-        print(f'  DRY-RUN PREVIEW — the following inserts will be made:')
+        print('  DRY-RUN PREVIEW — the following inserts will be made:')
         _hr()
 
-        all_rows = []  # (indus_part, [hu_rows])
+        all_rows        = []   # list of (indus_part, [hu_rows])
         total_to_insert = 0
         total_to_skip   = 0
 
@@ -479,10 +477,9 @@ def run():
             if not hus:
                 continue
 
-            # Separate already-backfilled from new
             with conn.cursor() as cur:
-                new_hus      = []
-                skipped_hus  = []
+                new_hus     = []
+                skipped_hus = []
                 for h in hus:
                     if is_already_backfilled(cur, h['handling_unit']):
                         skipped_hus.append(h)
@@ -493,9 +490,9 @@ def run():
                 all_rows.append((part, new_hus))
                 total_to_insert += len(new_hus)
                 print(f'\n  Part: {part}  ({len(new_hus)} HU(s) to backfill)')
-                print(f'  {"-"*64}')
-                print(f'  {"HU":<22} {"QTY":<8} {"LOC":<12} {"ROGUE OUT TIMESTAMP"}')
-                print(f'  {"-"*22} {"-"*8} {"-"*12} {"-"*25}')
+                print(f'  {"-" * 64}')
+                print(f'  {"HU":<22} {"QTY":<8} {"LOC":<12} ROGUE OUT TIMESTAMP')
+                print(f'  {"-" * 22} {"-" * 8} {"-" * 12} {"-" * 25}')
                 for h in new_hus:
                     ts_str = str(h['timestamp_utc'])[:19] if h['timestamp_utc'] else 'N/A'
                     print(
@@ -514,20 +511,17 @@ def run():
         if total_to_insert == 0:
             print()
             print('  ✓  All HUs for the selected part(s) are already backfilled.')
-            print('     Nothing to do.')
-            print()
-            # Re-show the menu
-            print('  Returning to menu...\n')
+            print('     Nothing to do. Returning to menu...\n')
             continue
 
         print()
         _hr()
-        print(f'  SUMMARY OF PENDING CHANGES:')
-        print(f'    STOCK_IN rows to INSERT : {total_to_insert}')
-        print(f'    pallet_status to UPDATE : {total_to_insert}')
+        print('  SUMMARY OF PENDING CHANGES:')
+        print(f'    STOCK_IN rows to INSERT  : {total_to_insert}')
+        print(f'    pallet_status to UPDATE  : {total_to_insert}')
         print(f'    Already backfilled (skip): {total_to_skip}')
-        print(f'    Existing rows modified  : 0  ← guaranteed')
-        print(f'    Existing rows deleted   : 0  ← guaranteed')
+        print(f'    Existing rows modified   : 0  ← guaranteed')
+        print(f'    Existing rows deleted    : 0  ← guaranteed')
         _hr()
 
         if not _prompt_yes_no(
@@ -536,12 +530,12 @@ def run():
             print('  No changes made. Returning to menu.\n')
             continue
 
-        # ── Step 4: Process ─────────────────────────────────────────────────
+        # ── Step 4: Execute ───────────────────────────────────────────────────
         for part, hu_rows in all_rows:
             print()
-            _hr('─')
+            _hr()
             print(f'  Processing part: {part}  ({len(hu_rows)} HU(s))')
-            _hr('─')
+            _hr()
 
             result = process_part(conn, part, hu_rows)
 
@@ -551,13 +545,13 @@ def run():
             if result['rolled_back']:
                 grand_total['errors'] += 1
 
-        # ── Step 5: Grand summary ────────────────────────────────────────────
+        # ── Step 5: Final summary ───────────────────────────────────────────────
         print()
         _banner('COMPLETE')
-        print(f'  STOCK_IN rows inserted  : {grand_total["inserted"]}')
-        print(f'  pallet_status updated   : {grand_total["ps_updated"]}')
-        print(f'  HUs skipped (duplicate) : {grand_total["skipped"]}')
-        print(f'  Parts with errors       : {grand_total["errors"]}')
+        print(f'  STOCK_IN rows inserted   : {grand_total["inserted"]}')
+        print(f'  pallet_status updated    : {grand_total["ps_updated"]}')
+        print(f'  HUs skipped (idempotent) : {grand_total["skipped"]}')
+        print(f'  Parts with errors        : {grand_total["errors"]}')
         print()
         if grand_total['errors'] == 0:
             print('  ✓  All changes committed successfully.')
@@ -565,7 +559,7 @@ def run():
             print('  ⚠  Some parts had errors and were rolled back.')
             print('     Re-run the script to retry those parts.')
         print()
-        print('  AUDIT: Filter movements WHERE validation_status = \'BACKFILLED\'')
+        print("  AUDIT: SELECT * FROM movements WHERE validation_status = 'BACKFILLED'")
         print('         to see all rows inserted by this script.')
         _hr('═')
         break
