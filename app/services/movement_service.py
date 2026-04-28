@@ -4,13 +4,26 @@ movement_service.py — Core business logic, backed by PostgreSQL.
 All data operations now go through db_client.py.
 graph_client.py is dormant and no longer imported here.
 
-Movement rules (unchanged from Excel era):
+Movement rules:
 
   Duplicate blocking:
     A movement is a duplicate when the most-recent row for this HU in
     `movements` has the SAME movement_type as the incoming request.
     An IN followed by an OUT (or vice versa) is a valid cycle — not a dup.
     Overrides bypass transition checks but NEVER bypass duplicate checks.
+
+  Location lock (STOCK_OUT — ABSOLUTE, NO OVERRIDE):
+    A STOCK_OUT must be scanned at the same location the pallet was
+    stocked IN.  This check runs before the override path and cannot be
+    bypassed by any supervisor override.  Allowing a cross-location
+    STOCK_OUT would deduct stock from the wrong zone and inflate stock
+    at the IN zone, causing permanent data inconsistency in the
+    Stock by Location dashboard.
+
+    If a pallet genuinely needs to be moved to a different zone before
+    going out, the operator must first do a new STOCK_IN scan at the
+    destination zone (which creates a fresh location record) and then
+    do the STOCK_OUT from that zone.
 
   Transition rules (skipped for supervisor overrides):
     STOCK_IN:
@@ -19,7 +32,6 @@ Movement rules (unchanged from Excel era):
     STOCK_OUT:
       Blocked if already OUT, or if the HU has never been seen.
       Outgoing part/qty must match stored values (wrong-label guard).
-      Location lock: outgoing location must match pallet's last_location.
 
   Location rules:
     Every STOCK_IN and STOCK_OUT requires a `location` (the physical
@@ -145,7 +157,9 @@ def process_movement(
     job_no            : Job / work-order reference (optional)
     operator_id       : Worker identifier (default 'WORKER')
     device_id         : Device name / ID (optional)
-    is_override       : True when a supervisor overrides a blocked scan
+    is_override       : True when a supervisor overrides a blocked scan.
+                        NOTE: is_override does NOT bypass the location lock
+                        on STOCK_OUT.  That check is absolute.
     override_reason   : Free-text reason for the override (optional)
     client_timestamp  : ISO timestamp from the device (falls back to server time)
     idempotency_key   : Client-generated key for offline dedup (logged only)
@@ -191,14 +205,51 @@ def process_movement(
     timestamp = client_timestamp or now_utc.isoformat()
     event_id = str(uuid.uuid4())[:12].upper()
 
-    # ── 3. Duplicate check (always — overrides included) ──────────────────
+    # ── 3. ABSOLUTE location lock for STOCK_OUT (no override possible) ────
+    #
+    # A STOCK_OUT must be scanned from the SAME location the pallet was
+    # stocked IN.  This is checked here — before the duplicate check and
+    # before the override gate — so is_override cannot bypass it.
+    #
+    # Rationale: allowing a cross-location OUT deducts stock from zone B
+    # while the IN was recorded at zone A, producing phantom negative stock
+    # at B and inflated stock at A.  This cannot be corrected without a
+    # manual SQL fix.  The operator must go to the correct zone.
+    if movement == 'STOCK_OUT':
+        try:
+            current_for_lock = get_pallet_status(hu)
+        except DbError as exc:
+            logger.error("get_pallet_status (location lock) failed for %s: %s", hu, exc)
+            return Result(False, 'failed_write_logged',
+                          'System temporarily unavailable. Please try again.',
+                          {'needs_sync': True})
+
+        if current_for_lock:
+            stored_location = _normalise(current_for_lock.get('last_location', ''))
+            if stored_location and stored_location != _normalise(loc):
+                msg = (
+                    f"Cannot do Stock OUT here. "
+                    f"Pallet {hu} was stocked IN at {stored_location}. "
+                    f"Go to {stored_location} and scan from there."
+                )
+                _log_error(
+                    'LOCATION_MISMATCH',
+                    hu,
+                    f"STOCK_OUT blocked: pallet stored at {stored_location}, "
+                    f"scanned at {loc}. Override not permitted.",
+                )
+                return Result(False, 'rejected_validation', msg,
+                              {'stored_location': stored_location,
+                               'scanned_location': loc})
+
+    # ── 4. Duplicate check (always — overrides included) ──────────────────
     dup_err = _check_duplicate(hu, movement)
     if dup_err:
         _log_error('DUPLICATE', hu, dup_err)
         return Result(False, 'rejected_duplicate', dup_err,
                       {'attempted': movement})
 
-    # ── 4. Fetch current pallet state ─────────────────────────────────────
+    # ── 5. Fetch current pallet state ─────────────────────────────────────
     try:
         current = get_pallet_status(hu)   # dict or None
     except DbError as exc:
@@ -207,7 +258,7 @@ def process_movement(
                       'System temporarily unavailable. Please try again.',
                       {'needs_sync': True})
 
-    # ── 5. Transition check (skipped for supervisor overrides) ────────────
+    # ── 6. Transition check (skipped for supervisor overrides) ────────────
     if not is_override:
         cur_state = _s(current.get('last_movement_type', 'NONE')).upper() \
             if current else 'NONE'
@@ -218,7 +269,6 @@ def process_movement(
             indus_part=indus_clean,
             pallet_qty=qty_clean,
             current_row=current,
-            incoming_location=loc,
         )
         if err:
             _log_error('INVALID_TRANSITION', hu,
@@ -226,11 +276,11 @@ def process_movement(
             return Result(False, 'rejected_transition', err,
                           {'current_state': cur_state, 'attempted': movement})
 
-    # ── 6. Resolve from_location ──────────────────────────────────────────
+    # ── 7. Resolve from_location ──────────────────────────────────────────
     # For STOCK_OUT: from_location is the zone the pallet is currently at.
     # We derive it from pallet_status so the frontend doesn't need to send it.
-    # An explicit value from the caller is accepted but overridden by the
-    # stored value when the pallet is currently IN the warehouse.
+    # Because step 3 already enforces loc == stored_location for STOCK_OUT,
+    # from_loc and loc will always be the same zone here.
     from_loc = ""
     if movement == 'STOCK_OUT' and current:
         from_loc = _s(current.get('last_location', '')).strip().upper() or loc
@@ -239,10 +289,10 @@ def process_movement(
 
     to_loc = _s(to_location).strip() if movement == 'STOCK_OUT' else ""
 
-    # ── 7. Determine validation status ───────────────────────────────────
+    # ── 8. Determine validation status ───────────────────────────────────
     validation_status = "OVERRIDE" if is_override else "VALID"
 
-    # ── 8. Write to PostgreSQL ────────────────────────────────────────────
+    # ── 9. Write to PostgreSQL ────────────────────────────────────────────
     try:
         insert_movement(
             event_id=event_id,
@@ -267,7 +317,7 @@ def process_movement(
                       'Could not save. Saved locally — will sync automatically.',
                       {'needs_sync': True})
 
-    # ── 9. Upsert pallet_status ───────────────────────────────────────────
+    # ── 10. Upsert pallet_status ───────────────────────────────────────────
     current_status = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
     try:
         upsert_pallet_status(
@@ -451,11 +501,14 @@ def _check_transition(
     indus_part: str = '',
     pallet_qty: str = '',
     current_row: dict = None,
-    incoming_location: str = '',
 ) -> str | None:
     """
     Validate the movement transition using pallet_status data.
     Only called when is_override=False.
+
+    NOTE: The location lock for STOCK_OUT is enforced BEFORE this function
+    is called (in process_movement step 3) and is absolute — it is not
+    duplicated here to avoid confusion.
 
     Returns an error message string if blocked, None if allowed.
     """
@@ -505,15 +558,6 @@ def _check_transition(
                     f"Pallet {hu} was stocked IN with qty "
                     f"{current_row.get('pallet_qty')} but the scanned label "
                     f"shows qty {pallet_qty}. Check the label, or use supervisor override."
-                )
-
-            stored_location = _normalise(current_row.get('last_location', ''))
-            if stored_location and stored_location != _normalise(incoming_location):
-                return (
-                    f"Pallet {hu} was stocked IN at {stored_location}. "
-                    f"You must do Stock OUT from {stored_location}, "
-                    f"not {incoming_location}. "
-                    f"Use supervisor override if this is intentional."
                 )
 
     return None
