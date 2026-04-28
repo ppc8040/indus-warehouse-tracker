@@ -303,6 +303,7 @@
 const charts = {};
 let filterTimer = null;
 let _reconRows  = [];   // full recon dataset, cached in-memory for client-side filtering
+let _oorCodes   = {};   // indus_part -> customer_part from OOR customer codes API
 
 const TAB_LOADERS = {
   movements:  () => loadMovements(),
@@ -370,6 +371,11 @@ function fmtTime(iso) {
 }
 function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
 
+// Helper: look up customer code for a given indus_part
+function _cust(indus_part) {
+  return _oorCodes[indus_part] || '&#8212;';
+}
+
 async function checkConn() {
   const el = document.getElementById('connStatus');
   try {
@@ -402,6 +408,22 @@ async function loadStats() {
   }
 }
 
+async function loadOorCodes() {
+  try {
+    const d = await fetch('/admin/api/oor-customer-codes').then(r => r.json());
+    // Expect { codes: { "1000234": "CUST-ABC", ... } } or an array of { indus_part, customer_part }
+    if (d.codes && typeof d.codes === 'object') {
+      _oorCodes = d.codes;
+    } else if (Array.isArray(d)) {
+      d.forEach(row => { if (row.indus_part) _oorCodes[row.indus_part] = row.customer_part || ''; });
+    } else if (Array.isArray(d.rows)) {
+      d.rows.forEach(row => { if (row.indus_part) _oorCodes[row.indus_part] = row.customer_part || ''; });
+    }
+  } catch (e) {
+    console.warn('loadOorCodes failed (non-critical):', e);
+  }
+}
+
 async function loadMovements() {
   const el = document.getElementById('tbl-movements');
   el.innerHTML = '<div class="empty">Loading&#8230;</div>';
@@ -413,7 +435,7 @@ async function loadMovements() {
       return tb - ta;
     });
     if (!rows.length) { el.innerHTML = '<div class="empty">No movements match filters.</div>'; return; }
-    let h = `<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Qty</th>
+    let h = `<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Customer</th><th>Qty</th>
       <th>Type</th><th>Location</th><th>From</th><th>To</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>`;
     for (const m of rows) {
       const mt = (m.movement_type || '').toUpperCase();
@@ -426,6 +448,7 @@ async function loadMovements() {
         <td>${fmtTime(m.timestamp_dubai)}</td>
         <td><strong>${m.handling_unit || ''}</strong></td>
         <td>${m.indus_part || '&#8212;'}</td>
+        <td style="color:var(--muted)">${_cust(m.indus_part)}</td>
         <td>${m.pallet_qty || '&#8212;'}</td>
         <td>${typeTag}</td>
         <td>${m.location || '&#8212;'}</td>
@@ -453,7 +476,7 @@ async function loadStatuses() {
     const rows = d.statuses || [];
     if (!rows.length) { el.innerHTML = '<div class="empty">No pallet statuses match filters.</div>'; return; }
     let h = `<table><thead><tr><th>HU</th><th>Status</th><th>Last Move</th><th>Last Time (Dubai)</th>
-      <th>Location</th><th>Indus Part</th><th>Qty</th></tr></thead><tbody>`;
+      <th>Location</th><th>Indus Part</th><th>Customer</th><th>Qty</th></tr></thead><tbody>`;
     for (const s of rows) {
       const cs = (s.current_status || '').toUpperCase();
       const stTag = cs === 'IN_WAREHOUSE' ? tag('IN','tok') : cs === 'OUT_OF_WAREHOUSE' ? tag('OUT','terr') : tag(cs || '&#8212;','tinfo');
@@ -465,6 +488,7 @@ async function loadStatuses() {
         <td>${fmtTime(s.last_movement_time_dubai)}</td>
         <td>${s.last_location || '&#8212;'}</td>
         <td>${s.indus_part || '&#8212;'}</td>
+        <td style="color:var(--muted)">${_cust(s.indus_part)}</td>
         <td>${s.pallet_qty || '&#8212;'}</td>
       </tr>`;
     }
@@ -521,14 +545,14 @@ async function loadStock() {
       { key: 'm16_store_stock',label: 'M16_STORE' },
     ];
 
-    let h = `<table><thead><tr><th>Indus Part</th>`;
+    let h = `<table><thead><tr><th>Indus Part</th><th>Customer</th>`;
     for (const c of LOC_COLS) h += `<th style="text-align:right">${c.label} Stock</th>`;
     h += `<th style="text-align:right">Total Indus Stock</th></tr></thead><tbody>`;
 
     for (const r of rows) {
       const isNeg = LOC_COLS.some(c => parseInt(r[c.key] ?? 0) < 0) || parseInt(r.total_stock ?? 0) < 0;
       const rowCls = isNeg ? 'neg-row' : '';
-      h += `<tr class="${rowCls}"><td><strong>${r.indus_part}</strong></td>`;
+      h += `<tr class="${rowCls}"><td><strong>${r.indus_part}</strong></td><td style="color:var(--muted)">${_cust(r.indus_part)}</td>`;
       for (const c of LOC_COLS) {
         const v = parseInt(r[c.key] ?? 0);
         const color = v < 0 ? 'color:var(--neg);font-weight:700' : v > 0 ? 'color:var(--ok)' : 'color:var(--muted)';
@@ -561,7 +585,7 @@ async function loadTotalStock() {
     const rows = d.rows || [];
     if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found.</div>'; return; }
     let h = `<table><thead><tr>
-      <th>Indus Part</th><th>Customer Part</th>
+      <th>Indus Part</th><th>Customer</th><th>Customer Part</th>
       <th>Total IN Qty</th><th>Total OUT Qty</th><th>Net Qty</th>
       <th>Pallets IN</th><th>Pallets OUT</th><th>Locations</th>
     </tr></thead><tbody>`;
@@ -573,6 +597,7 @@ async function loadTotalStock() {
         : `<span style="color:var(--ok);font-weight:600">${net}</span>`;
       h += `<tr class="${negCls}">
         <td><strong>${r.indus_part}</strong></td>
+        <td style="color:var(--muted)">${_cust(r.indus_part)}</td>
         <td>${r.customer_part || '&#8212;'}</td>
         <td class="ok">${r.total_in_qty}</td>
         <td class="err">${r.total_out_qty}</td>
@@ -785,7 +810,8 @@ function renderReconTable() {
   if (search) {
     rows = rows.filter(r =>
       (r.indus_part || '').toLowerCase().includes(search) ||
-      (r.customer_part || '').toLowerCase().includes(search)
+      (r.customer_part || '').toLowerCase().includes(search) ||
+      (_oorCodes[r.indus_part] || '').toLowerCase().includes(search)
     );
   }
 
@@ -803,6 +829,7 @@ function renderReconTable() {
 
   let h = `<table><thead><tr>
     <th>Indus Part</th>
+    <th>Customer</th>
     <th>Customer Part</th>
     <th style="text-align:right">Scanner Net Qty</th>
     <th style="text-align:right">SAP Plant 1000</th>
@@ -833,6 +860,7 @@ function renderReconTable() {
 
     h += `<tr class="${rowCls}">
       <td><strong>${r.indus_part}</strong></td>
+      <td style="color:var(--muted)">${_cust(r.indus_part)}</td>
       <td>${r.customer_part || '&#8212;'}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums">${sqDisplay}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--sap)">${r.sap_qty_1000}</td>
@@ -959,10 +987,13 @@ async function loadIvt() {
 function loadAll() {
   checkConn();
   loadStats();
-  loadMovements();
-  loadStatuses();
-  loadStock();
-  loadTotalStock();
+  // Load OOR codes first (fast), then load all tables in parallel so Customer column is populated
+  loadOorCodes().then(() => {
+    loadMovements();
+    loadStatuses();
+    loadStock();
+    loadTotalStock();
+  });
   // SAP Recon is NOT auto-loaded on page load — only when the tab is clicked.
   // This avoids a ~2-5 min SAP API call on every dashboard open.
 }
