@@ -52,7 +52,8 @@ class Config:
     GRAPH_CLIENT_SECRET  = 'sho8Q~sanlYEX3SKXjYJb0NSXL.gPRpdi63-tcmp'
     SHAREPOINT_SITE_ID   = ('201c767f-23cc-4eff-b76c-47a275706531,'
                              '094b21f9-6ed4-47c3-a751-3b217a18b98e')
-    WORKBOOK_FILENAME    = 'Indus Warehouse Stock Movement.xlsx'
+    WORKBOOK_FILENAME     = 'Indus Warehouse Stock Movement.xlsx'
+    WORKBOOK_FILENAME_OOR = 'Indus Open Order Report New.xlsx'
     SHEET_MOVEMENT_LOG   = 'Movement_Log'
     SHEET_PALLET_STATUS  = 'Pallet_Status'
     SHEET_ERROR_LOG      = 'Error_Log'
