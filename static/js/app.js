@@ -618,6 +618,44 @@ function cancelDestination() {
 
 
 // ═══════════════════════════════════════════════════════════
+//  MANUAL QTY EDIT — optional, available after any HU lookup
+//  (both SAP-found and supervisor-override HUs)
+// ═══════════════════════════════════════════════════════════
+
+function openQtyEdit() {
+  const input = document.getElementById('qtyEditInput');
+  const err   = document.getElementById('qtyEditError');
+  if (input) input.value = scanned.pallet_qty || '';
+  if (err)   err.textContent = '';
+  document.getElementById('qtyEditModal').classList.add('on');
+  // Auto-select the number so the worker can type immediately
+  setTimeout(() => { if (input) { input.focus(); input.select(); } }, 80);
+}
+
+function confirmQtyEdit() {
+  const input = document.getElementById('qtyEditInput');
+  const err   = document.getElementById('qtyEditError');
+  const raw   = input ? input.value.trim() : '';
+  const num   = parseInt(raw, 10);
+
+  if (!raw || isNaN(num) || num < 1 || String(num) !== raw) {
+    if (err) err.textContent = 'Enter a valid whole number (at least 1).';
+    return;
+  }
+
+  const prev = scanned.pallet_qty;
+  scanned.pallet_qty = String(num);
+  document.getElementById('qtyEditModal').classList.remove('on');
+  updateScanDisplay();
+  toast(`\u2713 Qty updated: ${prev} \u2192 ${num}`, 'ok', 3500);
+}
+
+function cancelQtyEdit() {
+  document.getElementById('qtyEditModal').classList.remove('on');
+}
+
+
+// ═══════════════════════════════════════════════════════════
 //  MOVEMENT SUBMISSION
 // ═══════════════════════════════════════════════════════════
 

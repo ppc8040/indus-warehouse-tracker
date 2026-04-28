@@ -147,6 +147,74 @@
     .sap-val { font-size: .95rem; font-weight: 700; color: #1B5E20; }
     .sap-result.override .sap-val { color: #E65100; }
 
+    /* ── Change Qty button (inside result card) ── */
+    .btn-change-qty {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 10px;
+      padding: 6px 12px;
+      background: transparent;
+      border: 1.5px solid #90A4AE;
+      border-radius: 6px;
+      font-size: .75rem;
+      font-weight: 700;
+      color: #455A64;
+      cursor: pointer;
+      letter-spacing: .4px;
+      transition: background .15s, border-color .15s;
+    }
+    .btn-change-qty:active { background: #ECEFF1; }
+    .sap-result.override .btn-change-qty {
+      border-color: #FFCC02;
+      color: #E65100;
+    }
+
+    /* ── Qty Edit Modal ── */
+    .qty-edit-title {
+      font-size: 1rem;
+      font-weight: 800;
+      color: #37474F;
+      margin-bottom: 4px;
+    }
+    .qty-edit-sub {
+      font-size: .8rem;
+      color: #757575;
+      margin-bottom: 14px;
+      line-height: 1.5;
+    }
+    .qty-edit-current {
+      display: inline-block;
+      background: #E3F2FD;
+      border: 1.5px solid #90CAF9;
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: .85rem;
+      font-weight: 700;
+      color: #1565C0;
+      margin-bottom: 12px;
+    }
+    .qty-edit-input {
+      width: 100%;
+      padding: 15px 14px;
+      border: 2px solid #E0E0E0;
+      border-radius: 8px;
+      font-size: 1.3rem;
+      font-weight: 700;
+      text-align: center;
+      outline: none;
+      transition: border-color .15s;
+      box-sizing: border-box;
+      letter-spacing: .5px;
+    }
+    .qty-edit-input:focus { border-color: #1565C0; }
+    .qty-edit-error {
+      font-size: .8rem;
+      color: #C62828;
+      min-height: 1.2em;
+      margin-top: 6px;
+    }
+
     /* ── SAP-Not-Found Override Modal ── */
     #sapNotFoundModal .modal {
       max-height: 90vh;
@@ -516,6 +584,10 @@
           <span class="sap-lbl">Quantity</span>
           <span class="sap-val" id="val-qty">&mdash;</span>
         </div>
+        <!-- Optional qty edit button — visible whenever the result card is shown -->
+        <button class="btn-change-qty" onclick="openQtyEdit()" title="Manually adjust the quantity">
+          &#9998; Change Qty
+        </button>
       </div>
       <span id="st-hu"    style="display:none"></span>
       <span id="st-indus" style="display:none"></span>
@@ -784,6 +856,30 @@
   </div>
 </div>
 
+<!-- ═══ Manual Qty Edit Modal ═══ -->
+<div class="modal-bg" id="qtyEditModal">
+  <div class="modal">
+    <p class="qty-edit-title">&#9998; Change Quantity</p>
+    <p class="qty-edit-sub">Enter the correct quantity for this pallet. This overrides the value retrieved from SAP or entered manually.</p>
+    <div class="qty-edit-current" id="qtyEditCurrent"></div>
+    <input
+      type="number"
+      id="qtyEditInput"
+      class="qty-edit-input"
+      placeholder="e.g. 36"
+      inputmode="numeric"
+      min="1"
+      step="1"
+      onkeydown="if(event.key==='Enter'){confirmQtyEdit();}"
+    >
+    <div class="qty-edit-error" id="qtyEditError"></div>
+    <div class="modal-btns" style="margin-top:16px">
+      <button class="btn btn-outline" onclick="cancelQtyEdit()">Cancel</button>
+      <button class="btn btn-ok" onclick="confirmQtyEdit()">CONFIRM</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ IVT Location Modal ═══ -->
 <div class="modal-bg" id="ivtLocationModal">
   <div class="modal">
@@ -815,6 +911,9 @@
     title.textContent = _isNotFoundOverride
       ? '\u26a0\ufe0f Supervisor Override \u2014 Manual Data'
       : '\u2713 Data Retrieved';
+    // Keep the qty-edit current badge in sync whenever the display updates
+    const badge = document.getElementById('qtyEditCurrent');
+    if (badge) badge.textContent = 'Current: ' + (scanned.pallet_qty || '\u2014');
   };
 </script>
 
