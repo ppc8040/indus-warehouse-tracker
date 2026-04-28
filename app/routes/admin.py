@@ -10,8 +10,10 @@ Features:
   - Analytics: velocity, by-location, by-part, operators, IVT
   - SAP Recon: compares scanner net qty vs SAP plant stock (Plants 1000 & 2000)
   - SAP Recon Status: lightweight polling endpoint for frontend progress tracking
+  - OOR Customer Codes: reads Open Order Report (col H = Indus Part, col R = Customer Code)
 """
 import io
+import time
 import logging
 from datetime import datetime, timezone
 from functools import wraps
@@ -151,6 +153,168 @@ _DT_EXPORT_COLS = frozenset({
 })
 _DT_EXPORT_FMT  = 'DD MMM YYYY HH:MM'
 _DT_PARSE_FMT   = '%d %b %Y, %H:%M'
+
+
+# ---------------------------------------------------------------------------
+# OOR Customer Codes — reads Indus Open Order Report New.xlsx from SharePoint
+# Col H (index 7)  = Indus Part
+# Col R (index 17) = Actual Customer Code
+# Results are cached in-memory for 5 minutes to avoid hammering Graph API.
+# ---------------------------------------------------------------------------
+
+_oor_cache = {"data": None, "ts": 0.0}
+_OOR_CACHE_TTL = 300  # seconds
+
+
+def _fetch_oor_customer_codes():
+    """
+    Authenticate to Microsoft Graph, fetch the Open Order Report workbook,
+    read the first worksheet, and build a dict:
+        { "CEJ1773": "CPT", "AJM0488": "IVT, CPT", ... }
+
+    Column indices (0-based):
+        7  = Indus Part          (column H)
+        17 = Actual Customer Code (column R)
+
+    Multiple rows with the same Indus Part are merged: customer codes are
+    deduplicated and joined with ", ".
+
+    Returns an empty dict if the fetch fails (errors are logged, not raised).
+    """
+    import requests as req_lib
+
+    cfg = current_app.config
+    tenant   = cfg['GRAPH_TENANT_ID']
+    client   = cfg['GRAPH_CLIENT_ID']
+    secret   = cfg['GRAPH_CLIENT_SECRET']
+    site_id  = cfg['SHAREPOINT_SITE_ID']
+    filename = cfg['WORKBOOK_FILENAME_OOR']
+    timeout  = cfg.get('GRAPH_REQUEST_TIMEOUT', 30)
+
+    # 1. Acquire OAuth2 token (client credentials)
+    token_url = f'https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token'
+    token_resp = req_lib.post(token_url, data={
+        'grant_type':    'client_credentials',
+        'client_id':     client,
+        'client_secret': secret,
+        'scope':         'https://graph.microsoft.com/.default',
+    }, timeout=timeout)
+    token_resp.raise_for_status()
+    access_token = token_resp.json()['access_token']
+    headers = {'Authorization': f'Bearer {access_token}'}
+
+    # 2. Find the workbook DriveItem by filename
+    search_url = (
+        f'https://graph.microsoft.com/v1.0/sites/{site_id}'
+        f'/drive/root/search(q=\'{filename}\')'
+    )
+    search_resp = req_lib.get(search_url, headers=headers, timeout=timeout)
+    search_resp.raise_for_status()
+    items = search_resp.json().get('value', [])
+    # Match exact filename (search may return partial hits)
+    item = next(
+        (i for i in items if i.get('name', '').lower() == filename.lower()),
+        None
+    )
+    if not item:
+        logger.warning('OOR workbook not found: %s', filename)
+        return {}
+
+    item_id = item['id']
+
+    # 3. Get all worksheets and pick the first one (or "Open Order Report" if named)
+    ws_url = (
+        f'https://graph.microsoft.com/v1.0/sites/{site_id}'
+        f'/drive/items/{item_id}/workbook/worksheets'
+    )
+    ws_resp = req_lib.get(ws_url, headers=headers, timeout=timeout)
+    ws_resp.raise_for_status()
+    sheets = ws_resp.json().get('value', [])
+    if not sheets:
+        logger.warning('OOR workbook has no sheets')
+        return {}
+
+    # Prefer a sheet named "Open Order Report"; fall back to the first sheet
+    sheet_name = sheets[0]['name']
+    for s in sheets:
+        if 'open order' in s.get('name', '').lower():
+            sheet_name = s['name']
+            break
+
+    # 4. Read used range (returns all rows with data)
+    range_url = (
+        f'https://graph.microsoft.com/v1.0/sites/{site_id}'
+        f'/drive/items/{item_id}/workbook/worksheets/\'{sheet_name}\''
+        f'/usedRange'
+    )
+    range_resp = req_lib.get(range_url, headers=headers, timeout=60)
+    range_resp.raise_for_status()
+    all_rows = range_resp.json().get('values', [])
+
+    if len(all_rows) < 2:
+        # Only a header row or empty
+        return {}
+
+    # 5. Build the lookup dict (skip header row at index 0)
+    result = {}  # indus_part -> set of customer codes
+    for row in all_rows[1:]:
+        # Guard against short rows
+        if len(row) <= 17:
+            continue
+        indus_part = str(row[7]).strip().upper()   # col H
+        cust_code  = str(row[17]).strip().upper()  # col R
+        if not indus_part or indus_part in ('', 'NONE', 'N/A', '#N/A'):
+            continue
+        if not cust_code or cust_code in ('', 'NONE', 'N/A', '#N/A'):
+            continue
+        if indus_part not in result:
+            result[indus_part] = set()
+        result[indus_part].add(cust_code)
+
+    # Convert sets -> sorted comma-joined strings
+    return {k: ', '.join(sorted(v)) for k, v in result.items()}
+
+
+@admin_bp.route('/api/oor-customer-codes')
+@_auth_required
+def api_oor_customer_codes():
+    """
+    Returns a mapping of Indus Part -> Customer Code(s) from the Open Order
+    Report SharePoint workbook.  Results are served from an in-memory cache
+    for up to 5 minutes so rapid dashboard refreshes don’t hammer the
+    Graph API.
+
+    Response:
+        { "customer_codes": { "CEJ1773": "CPT", "AJM0488": "IVT, CPT" },
+          "count": 142, "cached": false }
+    """
+    now = time.time()
+    if _oor_cache['data'] is not None and (now - _oor_cache['ts']) < _OOR_CACHE_TTL:
+        return jsonify({
+            'customer_codes': _oor_cache['data'],
+            'count':          len(_oor_cache['data']),
+            'cached':         True,
+        })
+
+    try:
+        codes = _fetch_oor_customer_codes()
+        _oor_cache['data'] = codes
+        _oor_cache['ts']   = now
+        return jsonify({
+            'customer_codes': codes,
+            'count':          len(codes),
+            'cached':         False,
+        })
+    except Exception as exc:
+        logger.error('api_oor_customer_codes failed: %s', exc)
+        # Return whatever is in cache (even if stale) rather than an empty dict
+        fallback = _oor_cache['data'] or {}
+        return jsonify({
+            'customer_codes': fallback,
+            'count':          len(fallback),
+            'cached':         True,
+            'error':          str(exc),
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +832,7 @@ def api_sap_recon():
         for r in sap_rows
     }
 
-    # ── 2. Fetch scanner net qty per indus_part ─────────────────────────────
+    # ── 2. Fetch scanner net qty per indus_part ──────────────────────────────
     qty = STOCK_QTY_EXPR
     scanner_sql = f"""
         SELECT
