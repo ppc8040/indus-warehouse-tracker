@@ -241,7 +241,7 @@ def get_recent_movements(limit: int = 50) -> list[dict]:
             sync_status, validation_status, location,
             from_location, to_location
         FROM movements
-        ORDER BY timestamp_utc DESC
+        ORDER BY timestamp_utc DESC, id DESC
         LIMIT %(limit)s
     """
     with _get_conn() as conn:
@@ -252,12 +252,18 @@ def get_recent_movements(limit: int = 50) -> list[dict]:
 
 
 def get_last_movement_for_hu(handling_unit: str) -> dict | None:
-    """Return the most recent movement row for a given HU, or None."""
+    """
+    Return the most recent movement row for a given HU, or None.
+
+    Secondary sort on id DESC breaks ties when two events share the same
+    timestamp_utc (e.g. IN and OUT scanned within the same second).
+    The higher id was inserted later and reflects the true current state.
+    """
     sql = """
         SELECT movement_type, validation_status, location, timestamp_utc
         FROM movements
         WHERE handling_unit = %(hu)s
-        ORDER BY timestamp_utc DESC
+        ORDER BY timestamp_utc DESC, id DESC
         LIMIT 1
     """
     with _get_conn() as conn:
@@ -279,7 +285,7 @@ def get_all_movements_for_hu(handling_unit: str) -> list[dict]:
             from_location, to_location
         FROM movements
         WHERE handling_unit = %(hu)s
-        ORDER BY timestamp_utc ASC
+        ORDER BY timestamp_utc ASC, id ASC
     """
     with _get_conn() as conn:
         with conn.cursor() as cur:
@@ -320,7 +326,20 @@ def upsert_pallet_status(
     pallet_qty: str = "",
     last_location: str = "",
 ) -> None:
-    """Insert or update the pallet_status row for this HU."""
+    """
+    Insert or update the pallet_status row for this HU.
+
+    The ON CONFLICT DO UPDATE is guarded by a WHERE clause that checks
+    the incoming last_movement_time is strictly newer than what is already
+    stored. This prevents a late-arriving or out-of-order event (e.g. an
+    OUT scan processed after an IN scan that happened seconds later) from
+    overwriting the correct current state.
+
+    If two events share the exact same timestamp, the existing row wins
+    (no update). In practice this is extremely rare; the id-based tiebreak
+    in get_last_movement_for_hu handles the display/query side of the
+    same-second edge case.
+    """
     sql = """
         INSERT INTO pallet_status (
             handling_unit, current_status, last_event_id,
@@ -339,6 +358,7 @@ def upsert_pallet_status(
             indus_part         = EXCLUDED.indus_part,
             pallet_qty         = EXCLUDED.pallet_qty,
             last_location      = EXCLUDED.last_location
+        WHERE pallet_status.last_movement_time < EXCLUDED.last_movement_time
     """
     params = dict(
         handling_unit=handling_unit,
