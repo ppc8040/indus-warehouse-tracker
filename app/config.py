@@ -36,10 +36,6 @@ class Config:
     ADMIN_USERNAME  = 'admin'
     ADMIN_PASSWORD  = 'indus2026'
 
-    # ── Master Admin auth ────────────────────────────────────────────────────
-    MASTER_USERNAME = os.environ.get('MASTER_USERNAME', 'master_admin')
-    MASTER_PASSWORD = os.environ.get('MASTER_PASSWORD', 'Indus@8040')
-
     # ── App identity ─────────────────────────────────────────────────────────
     APP_NAME    = 'Indus Warehouse Tracker'
     APP_VERSION = '2.0.0'
