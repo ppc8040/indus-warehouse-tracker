@@ -38,6 +38,8 @@
       background:var(--surface2);border:1px solid var(--border);color:var(--text);
       border-radius:5px;padding:5px 8px;font-size:12px;min-width:120px}
     .filter-bar input:focus,.filter-bar select:focus{outline:1px solid var(--primary)}
+    .filter-customer{border-color:#4c1d95 !important;}
+    .filter-customer:focus{outline:1px solid var(--sap) !important;}
     .filter-actions{display:flex;gap:6px;align-items:flex-end}
     .tabs{display:flex;gap:2px;padding:12px 24px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
     .tab{background:none;border:none;color:var(--muted);padding:8px 16px;cursor:pointer;
@@ -124,6 +126,10 @@
   <label>Indus Part
     <input type="text" id="fPart" placeholder="e.g. 1000234" oninput="scheduleFilter()">
   </label>
+  <label title="Filter by customer code from Open Order Report (e.g. CPT, IVT)">Customer
+    <input type="text" id="fCustomer" placeholder="e.g. CPT" oninput="scheduleFilter()"
+           class="filter-customer" style="min-width:100px">
+  </label>
   <label>Date From
     <input type="date" id="fDateFrom" onchange="scheduleFilter()">
   </label>
@@ -189,7 +195,7 @@
   <p style="font-size:11px;color:var(--muted);margin-bottom:10px">
     Net stock per material per location (IN &#8722; OUT).
     <span style="color:var(--neg)">Red rows = one or more locations in deficit.</span>
-    Filter by Part or Location.
+    Filter by Part, Customer, or Location.
   </p>
   <div class="neg-banner" id="neg-stock-banner">
     <div class="neg-banner-title">&#9888; Negative Stock Detected</div>
@@ -204,7 +210,7 @@
     <h2>Total Stock &#8212; All Locations Combined</h2>
     <button class="btn btn-green" onclick="exportSheet('total_stock')">&#8659; Export Excel</button>
   </div>
-  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Overall net qty per material across every location. <span style="color:var(--neg)">Red = total negative stock.</span> Filter by Part only.</p>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Overall net qty per material across every location. <span style="color:var(--neg)">Red = total negative stock.</span> Filter by Part or Customer.</p>
   <div class="tbl-wrap" id="tbl-totalstock"><div class="empty">Loading&#8230;</div></div>
 </div>
 
@@ -285,7 +291,7 @@
 
   <!-- Search + filter row -->
   <div class="recon-filter">
-    <input class="recon-search" type="text" id="rSearch" placeholder="Search material..." oninput="renderReconTable()">
+    <input class="recon-search" type="text" id="rSearch" placeholder="Search material or customer..." oninput="renderReconTable()">
     <select id="rFilter" onchange="renderReconTable()">
       <option value="ALL">All rows</option>
       <option value="DISC">Discrepancies only (variance &#8800; 0)</option>
@@ -303,7 +309,7 @@
 const charts = {};
 let filterTimer = null;
 let _reconRows  = [];   // full recon dataset, cached in-memory for client-side filtering
-let _oorCodes   = {};   // indus_part -> customer_part from OOR customer codes API
+let _oorCodes   = {};   // indus_part -> customer code from OOR API
 
 const TAB_LOADERS = {
   movements:  () => loadMovements(),
@@ -328,18 +334,40 @@ function getFilters() {
   return {
     hu:            document.getElementById('fHu').value.trim(),
     part:          document.getElementById('fPart').value.trim(),
+    customer:      document.getElementById('fCustomer').value.trim().toLowerCase(),
     date_from:     document.getElementById('fDateFrom').value,
     date_to:       document.getElementById('fDateTo').value,
     movement_type: document.getElementById('fType').value,
     location:      document.getElementById('fLocation').value,
   };
 }
+
+// Returns the customer filter string (lowercase, trimmed). Empty = no filter.
+function _custFilter() {
+  return (document.getElementById('fCustomer').value || '').trim().toLowerCase();
+}
+
+// Returns true if a row should be shown given the current customer filter.
+// Always passes when no customer filter is set.
+function _matchesCustFilter(indus_part) {
+  const cf = _custFilter();
+  if (!cf) return true;
+  return (_oorCodes[indus_part] || '').toLowerCase().includes(cf);
+}
+
 function filterQS(extra = {}) {
   const f = { ...getFilters(), ...extra };
-  return new URLSearchParams(
-    Object.fromEntries(Object.entries(f).filter(([, v]) => v && v !== 'ALL'))
-  ).toString();
+  // customer is client-side only; never sent to server
+  const serverFields = ['hu','part','date_from','date_to','movement_type','location'];
+  const filtered = Object.fromEntries(
+    serverFields
+      .filter(k => f[k] && f[k] !== 'ALL')
+      .map(k => [k, f[k]])
+  );
+  if (extra.sheet) filtered.sheet = extra.sheet;
+  return new URLSearchParams(filtered).toString();
 }
+
 function scheduleFilter() {
   clearTimeout(filterTimer);
   filterTimer = setTimeout(applyFilters, 600);
@@ -348,7 +376,7 @@ function applyFilters() {
   loadMovements(); loadStatuses(); loadStock(); loadTotalStock();
 }
 function clearFilters() {
-  ['fHu','fPart','fDateFrom','fDateTo'].forEach(id => document.getElementById(id).value = '');
+  ['fHu','fPart','fCustomer','fDateFrom','fDateTo'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('fType').value = 'ALL';
   document.getElementById('fLocation').value = 'ALL';
   applyFilters();
@@ -371,7 +399,7 @@ function fmtTime(iso) {
 }
 function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
 
-// Helper: look up customer code for a given indus_part
+// Look up customer code for a given indus_part
 function _cust(indus_part) {
   return _oorCodes[indus_part] || '&#8212;';
 }
@@ -411,7 +439,6 @@ async function loadStats() {
 async function loadOorCodes() {
   try {
     const d = await fetch('/admin/api/oor-customer-codes').then(r => r.json());
-    // API returns { customer_codes: { indus_part: customer_code, ... }, count, cached }
     if (d.customer_codes && typeof d.customer_codes === 'object') {
       _oorCodes = d.customer_codes;
     } else if (d.codes && typeof d.codes === 'object') {
@@ -431,11 +458,15 @@ async function loadMovements() {
   el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
     const d = await fetch('/admin/api/movements?limit=200&' + filterQS()).then(r => r.json());
-    const rows = (d.movements || []).sort((a, b) => {
+    let rows = (d.movements || []).sort((a, b) => {
       const ta = a.timestamp_dubai ? new Date(a.timestamp_dubai).getTime() : 0;
       const tb = b.timestamp_dubai ? new Date(b.timestamp_dubai).getTime() : 0;
       return tb - ta;
     });
+
+    // Client-side customer filter
+    rows = rows.filter(m => _matchesCustFilter(m.indus_part));
+
     if (!rows.length) { el.innerHTML = '<div class="empty">No movements match filters.</div>'; return; }
     let h = `<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Customer</th><th>Qty</th>
       <th>Type</th><th>Location</th><th>From</th><th>To</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>`;
@@ -475,7 +506,11 @@ async function loadStatuses() {
         .filter(([, v]) => v && v !== 'ALL'))
     ).toString();
     const d = await fetch('/admin/api/pallet-statuses?' + qs).then(r => r.json());
-    const rows = d.statuses || [];
+    let rows = d.statuses || [];
+
+    // Client-side customer filter
+    rows = rows.filter(s => _matchesCustFilter(s.indus_part));
+
     if (!rows.length) { el.innerHTML = '<div class="empty">No pallet statuses match filters.</div>'; return; }
     let h = `<table><thead><tr><th>HU</th><th>Status</th><th>Last Move</th><th>Last Time (Dubai)</th>
       <th>Location</th><th>Indus Part</th><th>Customer</th><th>Qty</th></tr></thead><tbody>`;
@@ -513,8 +548,9 @@ async function loadStock() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const d = await resp.json();
     if (d.error) throw new Error(d.error);
-    const rows    = d.rows    || [];
     const negRows = d.negative_stock || [];
+    // Client-side customer filter applied to main rows only
+    let rows = (d.rows || []).filter(r => _matchesCustFilter(r.indus_part));
 
     if (negRows.length > 0) {
       let nb = `<table><thead><tr>
@@ -584,7 +620,8 @@ async function loadTotalStock() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const d = await resp.json();
     if (d.error) throw new Error(d.error);
-    const rows = d.rows || [];
+    // Client-side customer filter
+    let rows = (d.rows || []).filter(r => _matchesCustFilter(r.indus_part));
     if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found.</div>'; return; }
     let h = `<table><thead><tr>
       <th>Indus Part</th><th>Customer</th><th>Customer Part</th>
