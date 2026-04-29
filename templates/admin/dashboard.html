@@ -411,7 +411,10 @@ async function loadStats() {
 async function loadOorCodes() {
   try {
     const d = await fetch('/admin/api/oor-customer-codes').then(r => r.json());
-    if (d.codes && typeof d.codes === 'object') {
+    // API returns { customer_codes: { indus_part: customer_code, ... }, count, cached }
+    if (d.customer_codes && typeof d.customer_codes === 'object') {
+      _oorCodes = d.customer_codes;
+    } else if (d.codes && typeof d.codes === 'object') {
       _oorCodes = d.codes;
     } else if (Array.isArray(d)) {
       d.forEach(row => { if (row.indus_part) _oorCodes[row.indus_part] = row.customer_part || ''; });
