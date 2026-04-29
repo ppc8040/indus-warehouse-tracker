@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -7,38 +7,113 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
     @keyframes spin { to { transform: rotate(360deg); } }
-    :root{
+
+    /* ── DARK MODE (default) ───────────────────────────────────── */
+    :root, [data-theme="dark"] {
       --bg:#0f1117;--surface:#1a1d27;--surface2:#22263a;--border:#2e3347;
       --text:#e2e8f0;--muted:#8892a4;--ok:#22c55e;--err:#ef4444;
       --warn:#f59e0b;--info:#60a5fa;--primary:#6366f1;--neg:#fca5a5;
       --sap:#a78bfa;
+      /* tag colours */
+      --tag-ok-bg:#14532d;--tag-ok-txt:#86efac;
+      --tag-err-bg:#7f1d1d;--tag-err-txt:#fca5a5;
+      --tag-warn-bg:#78350f;--tag-warn-txt:#fde68a;
+      --tag-info-bg:#1e3a5f;--tag-info-txt:#93c5fd;
+      --tag-sap-bg:#4c1d95;--tag-sap-txt:#ddd6fe;
+      /* row highlights */
+      --neg-row-bg:#2d0a0a;--neg-row-txt:var(--neg);
+      --excess-row-bg:#2d1f00;--excess-row-txt:#fde68a;
+      /* neg banner */
+      --neg-banner-bg:#2d0a0a;--neg-banner-th-bg:#3d0f0f;
+      --neg-banner-th-txt:#f87171;--neg-banner-td-bg:#2d0a0a;
+      --neg-banner-hover:#3d0f0f;--neg-banner-border:#7f1d1d;
+      /* recon error banner */
+      --recon-err-bg:#1e0d3a;--recon-err-border:#6d28d9;--recon-err-txt:#c4b5fd;
+      /* buttons */
+      --btn-green-bg:#166534;--btn-green-txt:#86efac;--btn-green-hover:#14532d;
+      --btn-sap-bg:#4c1d95;--btn-sap-txt:#ddd6fe;--btn-sap-border:#6d28d9;--btn-sap-hover:#5b21b6;
+      /* chart axis colours */
+      --chart-tick:#8892a4;--chart-grid:#2e3347;
+      /* theme toggle */
+      --toggle-bg:#22263a;--toggle-border:#2e3347;
+      /* filter-customer border */
+      --filter-cust-border:#4c1d95;
+      --conn-ok-border:#166534;
+      --conn-err-border:#7f1d1d;
     }
+
+    /* ── LIGHT MODE ────────────────────────────────────────────── */
+    [data-theme="light"] {
+      --bg:#f4f6fb;--surface:#ffffff;--surface2:#eef0f7;--border:#d0d5e8;
+      --text:#1a1d27;--muted:#5c6480;--ok:#16a34a;--err:#dc2626;
+      --warn:#d97706;--info:#2563eb;--primary:#4f46e5;--neg:#b91c1c;
+      --sap:#7c3aed;
+      /* tag colours */
+      --tag-ok-bg:#dcfce7;--tag-ok-txt:#166534;
+      --tag-err-bg:#fee2e2;--tag-err-txt:#991b1b;
+      --tag-warn-bg:#fef3c7;--tag-warn-txt:#92400e;
+      --tag-info-bg:#dbeafe;--tag-info-txt:#1e40af;
+      --tag-sap-bg:#ede9fe;--tag-sap-txt:#5b21b6;
+      /* row highlights */
+      --neg-row-bg:#fee2e2;--neg-row-txt:#991b1b;
+      --excess-row-bg:#fefce8;--excess-row-txt:#854d0e;
+      /* neg banner */
+      --neg-banner-bg:#fee2e2;--neg-banner-th-bg:#fecaca;
+      --neg-banner-th-txt:#991b1b;--neg-banner-td-bg:#fee2e2;
+      --neg-banner-hover:#fecaca;--neg-banner-border:#fca5a5;
+      /* recon error banner */
+      --recon-err-bg:#ede9fe;--recon-err-border:#8b5cf6;--recon-err-txt:#5b21b6;
+      /* buttons */
+      --btn-green-bg:#166534;--btn-green-txt:#f0fdf4;--btn-green-hover:#14532d;
+      --btn-sap-bg:#5b21b6;--btn-sap-txt:#fff;--btn-sap-border:#7c3aed;--btn-sap-hover:#4c1d95;
+      /* chart axis colours */
+      --chart-tick:#5c6480;--chart-grid:#d0d5e8;
+      /* theme toggle */
+      --toggle-bg:#eef0f7;--toggle-border:#d0d5e8;
+      /* filter-customer border */
+      --filter-cust-border:#7c3aed;
+      --conn-ok-border:#166534;
+      --conn-err-border:#dc2626;
+    }
+
     *{box-sizing:border-box;margin:0;padding:0}
-    body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;min-height:100vh}
+    body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;min-height:100vh;transition:background .2s,color .2s}
     .hdr{display:flex;align-items:center;justify-content:space-between;
-         padding:12px 24px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;gap:8px}
+         padding:12px 24px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;gap:8px;transition:background .2s,border-color .2s}
     .hdr h1{font-size:15px;font-weight:600}
     .hdr-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
     .conn{font-size:12px;font-weight:500;padding:4px 10px;border-radius:20px;
           background:var(--surface2);border:1px solid var(--border)}
-    .conn.ok{color:var(--ok);border-color:#166534}.conn.err{color:var(--err);border-color:#7f1d1d}
-    .btn{border:none;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;font-weight:500;transition:opacity .15s}
+    .conn.ok{color:var(--ok);border-color:var(--conn-ok-border)}.conn.err{color:var(--err);border-color:var(--conn-err-border)}
+    .btn{border:none;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;font-weight:500;transition:opacity .15s,background .15s}
     .btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{opacity:.85}
-    .btn-green{background:#166534;color:#86efac}.btn-green:hover{background:#14532d}
-    .btn-sap{background:#4c1d95;color:#ddd6fe;border:1px solid #6d28d9}.btn-sap:hover{background:#5b21b6}
+    .btn-green{background:var(--btn-green-bg);color:var(--btn-green-txt)}.btn-green:hover{background:var(--btn-green-hover)}
+    .btn-sap{background:var(--btn-sap-bg);color:var(--btn-sap-txt);border:1px solid var(--btn-sap-border)}.btn-sap:hover{background:var(--btn-sap-hover)}
+
+    /* ── Theme toggle button ── */
+    .btn-theme{
+      display:flex;align-items:center;justify-content:center;
+      width:32px;height:32px;padding:0;
+      background:var(--toggle-bg);border:1px solid var(--toggle-border);
+      border-radius:8px;color:var(--muted);cursor:pointer;
+      transition:background .15s,border-color .15s,color .15s;
+    }
+    .btn-theme:hover{color:var(--text);border-color:var(--primary)}
+    .btn-theme svg{pointer-events:none}
+
     .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;padding:16px 24px 6px}
-    .kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
+    .kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center;transition:background .2s,border-color .2s}
     .kpi-num{font-size:26px;font-weight:700;line-height:1.1}
     .kpi-lbl{font-size:10px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.05em}
     .ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}.info{color:var(--info)}.neg{color:var(--neg)}.sap{color:var(--sap)}
     .filter-bar{display:flex;gap:8px;padding:10px 24px;background:var(--surface);
-                border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:flex-end}
+                border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:flex-end;transition:background .2s}
     .filter-bar label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
     .filter-bar input,.filter-bar select{
       background:var(--surface2);border:1px solid var(--border);color:var(--text);
-      border-radius:5px;padding:5px 8px;font-size:12px;min-width:120px}
+      border-radius:5px;padding:5px 8px;font-size:12px;min-width:120px;transition:background .2s,border-color .2s,color .2s}
     .filter-bar input:focus,.filter-bar select:focus{outline:1px solid var(--primary)}
-    .filter-customer{border-color:#4c1d95 !important;}
+    .filter-customer{border-color:var(--filter-cust-border) !important;}
     .filter-customer:focus{outline:1px solid var(--sap) !important;}
     .filter-actions{display:flex;gap:6px;align-items:flex-end}
     .tabs{display:flex;gap:2px;padding:12px 24px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
@@ -55,31 +130,33 @@
     tbody tr:hover{background:var(--surface2)}
     tbody tr:last-child td{border-bottom:none}
     .tag{display:inline-block;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600}
-    .tok{background:#14532d;color:#86efac}.terr{background:#7f1d1d;color:#fca5a5}
-    .twarn{background:#78350f;color:#fde68a}.tinfo{background:#1e3a5f;color:#93c5fd}
-    .tneg{background:#7f1d1d;color:#fca5a5;border:1px solid #ef4444}
-    .tsap{background:#4c1d95;color:#ddd6fe}
+    .tok{background:var(--tag-ok-bg);color:var(--tag-ok-txt)}
+    .terr{background:var(--tag-err-bg);color:var(--tag-err-txt)}
+    .twarn{background:var(--tag-warn-bg);color:var(--tag-warn-txt)}
+    .tinfo{background:var(--tag-info-bg);color:var(--tag-info-txt)}
+    .tneg{background:var(--tag-err-bg);color:var(--tag-err-txt);border:1px solid var(--err)}
+    .tsap{background:var(--tag-sap-bg);color:var(--tag-sap-txt)}
     .chart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px}
-    .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px}
+    .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;transition:background .2s,border-color .2s}
     .chart-card h3{font-size:11px;font-weight:600;margin-bottom:10px;color:var(--muted);
                    text-transform:uppercase;letter-spacing:.05em}
     .chart-wrap{position:relative;height:200px}
-    tr.neg-row td{color:var(--neg)!important;background:#2d0a0a!important}
-    tr.excess-row td{color:#fde68a!important;background:#2d1f00!important}
+    tr.neg-row td{color:var(--neg-row-txt)!important;background:var(--neg-row-bg)!important}
+    tr.excess-row td{color:var(--excess-row-txt)!important;background:var(--excess-row-bg)!important}
     .empty{padding:36px;text-align:center;color:var(--muted);font-size:13px}
     .tab-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
     .tab-hdr h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
     .tab-hdr-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .kpi-err{font-size:11px;color:var(--err)}
-    .neg-banner{display:none;background:#2d0a0a;border:1px solid #ef4444;border-radius:8px;
+    .neg-banner{display:none;background:var(--neg-banner-bg);border:1px solid var(--neg-banner-border);border-radius:8px;
                 padding:12px 16px;margin-bottom:14px}
     .neg-banner.visible{display:block}
     .neg-banner-title{font-size:11px;font-weight:700;color:var(--neg);text-transform:uppercase;
                       letter-spacing:.05em;margin-bottom:8px}
     .neg-banner table{font-size:11px}
-    .neg-banner th{color:#f87171;background:#3d0f0f}
-    .neg-banner td{color:var(--neg);background:#2d0a0a;border-color:#7f1d1d}
-    .neg-banner tbody tr:hover td{background:#3d0f0f!important}
+    .neg-banner th{color:var(--neg-banner-th-txt);background:var(--neg-banner-th-bg)}
+    .neg-banner td{color:var(--neg);background:var(--neg-banner-td-bg);border-color:var(--neg-banner-border)}
+    .neg-banner tbody tr:hover td{background:var(--neg-banner-hover)!important}
     .stock-num{text-align:right;font-variant-numeric:tabular-nums}
     .stock-total{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
     /* SAP Recon tab styles */
@@ -92,8 +169,8 @@
     .recon-filter{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}
     .recon-filter select{background:var(--surface2);border:1px solid var(--border);color:var(--text);
                          border-radius:5px;padding:5px 8px;font-size:12px}
-    .recon-err-banner{background:#1e0d3a;border:1px solid #6d28d9;border-radius:8px;
-                      padding:10px 14px;margin-bottom:12px;font-size:11px;color:#c4b5fd;display:none}
+    .recon-err-banner{background:var(--recon-err-bg);border:1px solid var(--recon-err-border);border-radius:8px;
+                      padding:10px 14px;margin-bottom:12px;font-size:11px;color:var(--recon-err-txt);display:none}
     .recon-err-banner.visible{display:block}
   </style>
 </head>
@@ -103,6 +180,20 @@
   <h1>&#127981; Indus Warehouse &#8212; Admin Dashboard</h1>
   <div class="hdr-right">
     <button class="btn btn-primary" onclick="loadAll()">&#8635; Refresh</button>
+    <button class="btn-theme" id="themeToggle" onclick="toggleTheme()" aria-label="Switch to light mode" title="Toggle light / dark mode">
+      <!-- Moon icon shown in dark mode -->
+      <svg id="iconMoon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+      <!-- Sun icon shown in light mode (hidden by default) -->
+      <svg id="iconSun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+        <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+    </button>
     <span class="conn" id="connStatus">&#9679; checking...</span>
   </div>
 </header>
@@ -308,8 +399,50 @@
 <script>
 const charts = {};
 let filterTimer = null;
-let _reconRows  = [];   // full recon dataset, cached in-memory for client-side filtering
-let _oorCodes   = {};   // indus_part -> customer code from OOR API
+let _reconRows  = [];
+let _oorCodes   = {};
+let _currentTheme = 'dark';
+
+// ── Theme toggle ─────────────────────────────────────────────────────────────
+function _getChartColors() {
+  const style = getComputedStyle(document.documentElement);
+  return {
+    tick: style.getPropertyValue('--chart-tick').trim() || '#8892a4',
+    grid: style.getPropertyValue('--chart-grid').trim() || '#2e3347',
+  };
+}
+
+function toggleTheme() {
+  _currentTheme = _currentTheme === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', _currentTheme);
+  const isLight = _currentTheme === 'light';
+  document.getElementById('iconMoon').style.display = isLight ? 'none'  : '';
+  document.getElementById('iconSun').style.display  = isLight ? ''      : 'none';
+  document.getElementById('themeToggle').setAttribute(
+    'aria-label', isLight ? 'Switch to dark mode' : 'Switch to light mode'
+  );
+  // Re-render all active charts so axis/grid colours update
+  _refreshChartColors();
+}
+
+function _refreshChartColors() {
+  const c = _getChartColors();
+  for (const key of Object.keys(charts)) {
+    const ch = charts[key];
+    if (!ch) continue;
+    const opts = ch.options;
+    if (opts.plugins && opts.plugins.legend && opts.plugins.legend.labels)
+      opts.plugins.legend.labels.color = c.tick;
+    if (opts.scales) {
+      for (const axis of Object.values(opts.scales)) {
+        if (axis.ticks)  axis.ticks.color = c.tick;
+        if (axis.grid)   axis.grid.color  = c.grid;
+      }
+    }
+    ch.update();
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const TAB_LOADERS = {
   movements:  () => loadMovements(),
@@ -342,13 +475,10 @@ function getFilters() {
   };
 }
 
-// Returns the customer filter string (lowercase, trimmed). Empty = no filter.
 function _custFilter() {
   return (document.getElementById('fCustomer').value || '').trim().toLowerCase();
 }
 
-// Returns true if a row should be shown given the current customer filter.
-// Always passes when no customer filter is set.
 function _matchesCustFilter(indus_part) {
   const cf = _custFilter();
   if (!cf) return true;
@@ -357,7 +487,6 @@ function _matchesCustFilter(indus_part) {
 
 function filterQS(extra = {}) {
   const f = { ...getFilters(), ...extra };
-  // customer is client-side only; never sent to server
   const serverFields = ['hu','part','date_from','date_to','movement_type','location'];
   const filtered = Object.fromEntries(
     serverFields
@@ -399,7 +528,6 @@ function fmtTime(iso) {
 }
 function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
 
-// Look up customer code for a given indus_part
 function _cust(indus_part) {
   return _oorCodes[indus_part] || '&#8212;';
 }
@@ -463,10 +591,7 @@ async function loadMovements() {
       const tb = b.timestamp_dubai ? new Date(b.timestamp_dubai).getTime() : 0;
       return tb - ta;
     });
-
-    // Client-side customer filter
     rows = rows.filter(m => _matchesCustFilter(m.indus_part));
-
     if (!rows.length) { el.innerHTML = '<div class="empty">No movements match filters.</div>'; return; }
     let h = `<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Customer</th><th>Qty</th>
       <th>Type</th><th>Location</th><th>From</th><th>To</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>`;
@@ -507,10 +632,7 @@ async function loadStatuses() {
     ).toString();
     const d = await fetch('/admin/api/pallet-statuses?' + qs).then(r => r.json());
     let rows = d.statuses || [];
-
-    // Client-side customer filter
     rows = rows.filter(s => _matchesCustFilter(s.indus_part));
-
     if (!rows.length) { el.innerHTML = '<div class="empty">No pallet statuses match filters.</div>'; return; }
     let h = `<table><thead><tr><th>HU</th><th>Status</th><th>Last Move</th><th>Last Time (Dubai)</th>
       <th>Location</th><th>Indus Part</th><th>Customer</th><th>Qty</th></tr></thead><tbody>`;
@@ -549,9 +671,7 @@ async function loadStock() {
     const d = await resp.json();
     if (d.error) throw new Error(d.error);
     const negRows = d.negative_stock || [];
-    // Client-side customer filter applied to main rows only
     let rows = (d.rows || []).filter(r => _matchesCustFilter(r.indus_part));
-
     if (negRows.length > 0) {
       let nb = `<table><thead><tr>
         <th>Indus Part</th><th>Location</th><th>Net Qty (deficit)</th>
@@ -569,12 +689,10 @@ async function loadStock() {
       banner.classList.remove('visible');
       bannerT.innerHTML = '';
     }
-
     if (!rows.length) {
       el.innerHTML = '<div class="empty">No stock data found.</div>';
       return;
     }
-
     const LOC_COLS = [
       { key: 'm4_stock',       label: 'M4' },
       { key: 'm5_stock',       label: 'M5' },
@@ -582,11 +700,9 @@ async function loadStock() {
       { key: 'm4_store_stock', label: 'M4_STORE' },
       { key: 'm16_store_stock',label: 'M16_STORE' },
     ];
-
     let h = `<table><thead><tr><th>Indus Part</th><th>Customer</th>`;
     for (const c of LOC_COLS) h += `<th style="text-align:right">${c.label} Stock</th>`;
     h += `<th style="text-align:right">Total Indus Stock</th></tr></thead><tbody>`;
-
     for (const r of rows) {
       const isNeg = LOC_COLS.some(c => parseInt(r[c.key] ?? 0) < 0) || parseInt(r.total_stock ?? 0) < 0;
       const rowCls = isNeg ? 'neg-row' : '';
@@ -620,7 +736,6 @@ async function loadTotalStock() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const d = await resp.json();
     if (d.error) throw new Error(d.error);
-    // Client-side customer filter
     let rows = (d.rows || []).filter(r => _matchesCustFilter(r.indus_part));
     if (!rows.length) { el.innerHTML = '<div class="empty">No stock data found.</div>'; return; }
     let h = `<table><thead><tr>
@@ -760,7 +875,6 @@ async function loadSapRecon(forceRefresh = false) {
       if (!status.is_fetching && status.has_data) {
         clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null;
         clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null;
-
         try {
           const dataResp = await fetch('/admin/api/sap-recon');
           if (!dataResp.ok) throw new Error(`HTTP ${dataResp.status}`);
@@ -779,20 +893,17 @@ async function loadSapRecon(forceRefresh = false) {
       if (!status.is_fetching && !status.has_data) {
         clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null;
         clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null;
-
         const errMsg = status.error ? `: ${status.error}` : '';
         tbl.innerHTML = `<div class="empty" style="color:var(--err);">
           SAP stock fetch failed${errMsg}<br>
           <button onclick="loadSapRecon(true)" class="btn btn-sap" style="margin-top:10px;">
             &#8635; Retry
           </button></div>`;
-
         if (status.error) {
           errBanner.textContent = `&#9888; SAP Error: ${status.error}`;
           errBanner.classList.add('visible');
         }
       }
-
     } catch (pollErr) {
       console.warn('SAP recon status poll error:', pollErr);
     }
@@ -801,25 +912,21 @@ async function loadSapRecon(forceRefresh = false) {
 
 function _renderReconData(data) {
   _reconRows = data.rows || [];
-
   const sapCount  = data.sap_material_count    || 0;
   const scanCount = data.scanner_material_count || 0;
   const discCount = _reconRows.filter(r => r.variance_vs_1000 !== 0).length;
   const ageRaw    = data.cache_age_seconds || 0;
   const ageMin    = Math.floor(ageRaw / 60), ageSec = Math.round(ageRaw % 60);
-
   document.getElementById('rSapCount').textContent   = sapCount;
   document.getElementById('rScanCount').textContent  = scanCount;
   document.getElementById('rTotalRows').textContent  = _reconRows.length;
   document.getElementById('rCacheAge').textContent   = `${ageMin}m ${String(ageSec).padStart(2,'0')}s ago`;
   document.getElementById('rDiscCount').textContent  = discCount;
-
   if (data.error) {
     const errBanner = document.getElementById('recon-err-banner');
     errBanner.textContent = `&#9888; SAP fetch error (partial data): ${data.error}`;
     errBanner.classList.add('visible');
   }
-
   renderReconTable();
 }
 
@@ -827,11 +934,8 @@ function renderReconTable() {
   const el     = document.getElementById('tbl-saprecon');
   const search = (document.getElementById('rSearch').value || '').trim().toLowerCase();
   const filter = document.getElementById('rFilter').value;
-
   if (!_reconRows.length) return;
-
   let rows = _reconRows;
-
   if (search) {
     rows = rows.filter(r =>
       (r.indus_part || '').toLowerCase().includes(search) ||
@@ -839,18 +943,15 @@ function renderReconTable() {
       (_oorCodes[r.indus_part] || '').toLowerCase().includes(search)
     );
   }
-
-  if (filter === 'DISC')       rows = rows.filter(r => r.variance_vs_1000 !== 0);
-  else if (filter === 'NEG')   rows = rows.filter(r => r.variance_vs_1000 < 0);
+  if (filter === 'DISC')        rows = rows.filter(r => r.variance_vs_1000 !== 0);
+  else if (filter === 'NEG')    rows = rows.filter(r => r.variance_vs_1000 < 0);
   else if (filter === 'EXCESS') rows = rows.filter(r => r.variance_vs_1000 > 0);
   else if (filter === 'SAP_ONLY')  rows = rows.filter(r => r.scanner_qty === 0 && r.sap_qty_1000 > 0);
   else if (filter === 'SCAN_ONLY') rows = rows.filter(r => r.sap_qty_1000 === 0 && r.scanner_qty > 0);
-
   if (!rows.length) {
     el.innerHTML = '<div class="empty">No rows match the current filter / search.</div>';
     return;
   }
-
   let h = `<table><thead><tr>
     <th>Indus Part</th>
     <th>Customer</th>
@@ -861,11 +962,9 @@ function renderReconTable() {
     <th style="text-align:right">Variance (Scanner &#8722; SAP 1000)</th>
     <th>Status</th>
   </tr></thead><tbody>`;
-
   for (const r of rows) {
     const v = r.variance_vs_1000;
     const rowCls = v < 0 ? 'neg-row' : v > 0 ? 'excess-row' : '';
-
     let varDisplay, statusTag;
     if (v === 0) {
       varDisplay = `<span style="color:var(--ok);font-weight:600">0</span>`;
@@ -877,11 +976,9 @@ function renderReconTable() {
       varDisplay = `<span style="color:var(--warn);font-weight:700">+${v} &#9650;</span>`;
       statusTag  = tag('EXCESS', 'twarn');
     }
-
     const sqDisplay = r.scanner_qty === 0 && r.sap_qty_1000 > 0
       ? `<span style="color:var(--muted)">0</span>`
       : `<span style="color:${r.scanner_qty > 0 ? 'var(--ok)' : 'var(--muted)'}"> ${r.scanner_qty}</span>`;
-
     h += `<tr class="${rowCls}">
       <td><strong>${r.indus_part}</strong></td>
       <td style="color:var(--muted)">${_cust(r.indus_part)}</td>
@@ -893,7 +990,6 @@ function renderReconTable() {
       <td>${statusTag}</td>
     </tr>`;
   }
-
   el.innerHTML = h + '</tbody></table>';
 }
 
@@ -905,6 +1001,7 @@ async function loadVelocity() {
     const days = [...new Set(rows.map(r => r.day))].sort();
     const inData  = days.map(day => { const r = rows.find(x => x.day===day && x.movement_type==='STOCK_IN');  return r ? parseInt(r.cnt) : 0; });
     const outData = days.map(day => { const r = rows.find(x => x.day===day && x.movement_type==='STOCK_OUT'); return r ? parseInt(r.cnt) : 0; });
+    const c = _getChartColors();
     destroyChart('velocity');
     charts['velocity'] = new Chart(document.getElementById('cVelocity'), {
       type: 'bar',
@@ -913,10 +1010,10 @@ async function loadVelocity() {
         { label: 'STOCK OUT', data: outData, backgroundColor: '#ef444480', borderColor: '#ef4444', borderWidth: 1.5 }
       ]},
       options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#8892a4', font: { size: 11 } } } },
+        plugins: { legend: { labels: { color: c.tick, font: { size: 11 } } } },
         scales: {
-          x: { ticks: { color: '#8892a4', font: { size: 10 }, maxRotation: 45 }, grid: { color: '#2e3347' } },
-          y: { ticks: { color: '#8892a4' }, grid: { color: '#2e3347' }, beginAtZero: true }
+          x: { ticks: { color: c.tick, font: { size: 10 }, maxRotation: 45 }, grid: { color: c.grid } },
+          y: { ticks: { color: c.tick }, grid: { color: c.grid }, beginAtZero: true }
         }
       }
     });
@@ -928,11 +1025,12 @@ async function loadLocationChart() {
     const rows = d.rows || [];
     if (!rows.length) return;
     const colors = ['#6366f1','#22c55e','#f59e0b','#60a5fa','#ec4899','#14b8a6','#f97316'];
+    const c = _getChartColors();
     destroyChart('location');
     charts['location'] = new Chart(document.getElementById('cLocation'), {
       type: 'doughnut',
       data: { labels: rows.map(r => r.location), datasets: [{ data: rows.map(r => parseInt(r.pallet_count)), backgroundColor: colors, borderWidth: 0 }] },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: '#8892a4', font: { size: 11 }, boxWidth: 12 } } } }
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: c.tick, font: { size: 11 }, boxWidth: 12 } } } }
     });
   } catch (e) { console.error('location', e); }
 }
@@ -941,6 +1039,7 @@ async function loadPartsChart() {
     const d = await fetch('/admin/api/analytics/by-part').then(r => r.json());
     const rows = d.rows || [];
     if (!rows.length) return;
+    const c = _getChartColors();
     destroyChart('parts');
     charts['parts'] = new Chart(document.getElementById('cParts'), {
       type: 'bar',
@@ -948,8 +1047,8 @@ async function loadPartsChart() {
       options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-          x: { ticks: { color: '#8892a4', font: { size: 10 } }, grid: { color: '#2e3347' }, beginAtZero: true },
-          y: { ticks: { color: '#8892a4', font: { size: 10 } }, grid: { display: false } }
+          x: { ticks: { color: c.tick, font: { size: 10 } }, grid: { color: c.grid }, beginAtZero: true },
+          y: { ticks: { color: c.tick, font: { size: 10 } }, grid: { display: false } }
         }
       }
     });
@@ -983,6 +1082,7 @@ async function loadIvt() {
   try {
     const d = await fetch('/admin/api/analytics/ivt').then(r => r.json());
     const daily = d.daily || [];
+    const c = _getChartColors();
     destroyChart('ivt');
     if (daily.length) {
       charts['ivt'] = new Chart(document.getElementById('cIvt'), {
@@ -991,8 +1091,8 @@ async function loadIvt() {
             borderColor: '#60a5fa', backgroundColor: '#60a5fa20', fill: true, tension: .35, pointRadius: 4 }] },
         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
           scales: {
-            x: { ticks: { color: '#8892a4', font: { size: 10 } }, grid: { color: '#2e3347' } },
-            y: { ticks: { color: '#8892a4' }, grid: { color: '#2e3347' }, beginAtZero: true }
+            x: { ticks: { color: c.tick, font: { size: 10 } }, grid: { color: c.grid } },
+            y: { ticks: { color: c.tick }, grid: { color: c.grid }, beginAtZero: true }
           }
         }
       });
