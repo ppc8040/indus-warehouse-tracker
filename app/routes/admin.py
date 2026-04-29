@@ -266,7 +266,7 @@ def api_oor_customer_codes():
     """
     Returns a mapping of Indus Part -> Customer Code(s) from the Open Order
     Report SharePoint workbook.  Results are served from an in-memory cache
-    for up to 5 minutes so rapid dashboard refreshes don’t hammer the
+    for up to 5 minutes so rapid dashboard refreshes don't hammer the
     Graph API.
 
     Response:
@@ -935,6 +935,22 @@ def api_export():
                 if h in _DT_EXPORT_COLS and isinstance(cell_val, datetime):
                     cell.number_format = _DT_EXPORT_FMT
 
+    # ---- OOR customer code lookup — called once per export request --------
+    # Reuses the in-memory cache (_oor_cache) so export never hammers Graph API.
+    # Returns {} on any failure so it never breaks an export.
+    def _get_oor_codes_safe():
+        now = time.time()
+        if _oor_cache['data'] is not None and (now - _oor_cache['ts']) < _OOR_CACHE_TTL:
+            return _oor_cache['data']
+        try:
+            codes = _fetch_oor_customer_codes()
+            _oor_cache['data'] = codes
+            _oor_cache['ts']   = now
+            return codes
+        except Exception as exc:
+            logger.warning("export: OOR lookup failed, customer column will be blank: %s", exc)
+            return _oor_cache['data'] or {}
+
     qty = STOCK_QTY_EXPR
 
     try:
@@ -953,8 +969,16 @@ def api_export():
                         ORDER BY timestamp_utc DESC
                     """, params)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
+
+            # Enrich with OOR customer code
+            oor = _get_oor_codes_safe()
+            for row in data:
+                part_key = (row.get('indus_part') or '').strip().upper()
+                row['customer'] = oor.get(part_key, '')
+
             ws.title = 'Movements'
-            headers = ['event_id','timestamp_dubai','handling_unit','indus_part','customer_part',
+            headers = ['event_id','timestamp_dubai','handling_unit','indus_part',
+                       'customer','customer_part',
                        'pallet_qty','job_no','movement_type','operator_id','device_id',
                        'sync_status','validation_status','location','from_location','to_location']
             ws.append(headers)
@@ -1015,9 +1039,17 @@ def api_export():
                         ORDER BY m.last_movement_time DESC NULLS LAST
                     """, p2)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
+
+            # Enrich with OOR customer code
+            oor = _get_oor_codes_safe()
+            for row in data:
+                part_key = (row.get('indus_part') or '').strip().upper()
+                row['customer'] = oor.get(part_key, '')
+
             ws.title = 'Pallet Status'
             headers = ['handling_unit','current_status','last_movement_type',
-                       'last_movement_time_dubai','indus_part','pallet_qty','last_location']
+                       'last_movement_time_dubai','indus_part','customer',
+                       'pallet_qty','last_location']
             ws.append(headers)
             _apply_header(ws, len(headers))
             _write_rows(ws, headers, data)
@@ -1058,8 +1090,16 @@ def api_export():
                         ORDER BY indus_part
                     """, p3)
                     data = [dict(r) for r in cur.fetchall()]
+
+            # Enrich with OOR customer code
+            oor = _get_oor_codes_safe()
+            for row in data:
+                part_key = (row.get('indus_part') or '').strip().upper()
+                row['customer'] = oor.get(part_key, '')
+
             ws.title = 'Stock by Location'
-            headers = ['indus_part','m4_stock','m5_stock','m6_stock',
+            headers = ['indus_part','customer',
+                       'm4_stock','m5_stock','m6_stock',
                        'm4_store_stock','m16_store_stock','total_stock']
             ws.append(headers)
             _apply_header(ws, len(headers))
