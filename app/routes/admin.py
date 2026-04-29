@@ -1132,9 +1132,17 @@ def api_export():
                         ORDER BY indus_part
                     """, p4)
                     data = [dict(r) for r in cur.fetchall()]
+
+            # Enrich with OOR customer code
+            oor = _get_oor_codes_safe()
+            for row in data:
+                part_key = (row.get('indus_part') or '').strip().upper()
+                row['customer'] = oor.get(part_key, '')
+
             ws.title = 'Total Stock'
-            headers = ['indus_part','customer_part','total_in_qty','total_out_qty',
-                       'net_qty','pallets_in','pallets_out','location_count']
+            headers = ['indus_part','customer','customer_part',
+                       'total_in_qty','total_out_qty','net_qty',
+                       'pallets_in','pallets_out','location_count']
             ws.append(headers)
             _apply_header(ws, len(headers))
             _write_rows(ws, headers, data)
@@ -1225,6 +1233,10 @@ def api_export():
 
             scanner_map = {r['indus_part']: r for r in scanner_data}
             all_mats = sorted(set(sap_map.keys()) | set(scanner_map.keys()))
+
+            # Enrich with OOR customer code
+            oor = _get_oor_codes_safe()
+
             export_rows = []
             for mat in all_mats:
                 sap  = sap_map.get(mat, {})
@@ -1234,6 +1246,7 @@ def api_export():
                 s2   = round(float(sap.get('sap_qty_2000', 0) or 0))
                 export_rows.append({
                     'indus_part':       mat,
+                    'customer':         oor.get(mat, ''),
                     'customer_part':    scan.get('customer_part', ''),
                     'scanner_qty':      sq,
                     'sap_qty_1000':     s1,
@@ -1250,6 +1263,7 @@ def api_export():
                     r for r in export_rows
                     if search_q in (r['indus_part'] or '').lower()
                     or search_q in (r['customer_part'] or '').lower()
+                    or search_q in (r['customer'] or '').lower()
                 ]
             if var_filter == 'DISC':
                 export_rows = [r for r in export_rows if r['variance_vs_1000'] != 0]
@@ -1263,7 +1277,7 @@ def api_export():
                 export_rows = [r for r in export_rows if r['sap_qty_1000'] == 0 and r['scanner_qty'] > 0]
 
             ws.title = 'SAP Recon'
-            headers = ['indus_part','customer_part','scanner_qty',
+            headers = ['indus_part','customer','customer_part','scanner_qty',
                        'sap_qty_1000','sap_qty_2000','variance_vs_1000']
             ws.append(headers)
             _apply_header(ws, len(headers))
