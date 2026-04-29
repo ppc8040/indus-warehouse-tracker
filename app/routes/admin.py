@@ -818,17 +818,23 @@ def api_sap_recon():
     }
 
     # ── 2. Fetch scanner net qty per indus_part ──────────────────────────────
+    # FIX: GROUP BY must use the same UPPER(COALESCE(...)) expression as the
+    # SELECT alias — not the raw column — so mixed-case variants of the same
+    # part code (e.g. 'cen1375' vs 'CEN1375') are aggregated into ONE row
+    # instead of producing separate rows that then collide as dict keys and
+    # silently drop qty for all but the last row.
     qty = STOCK_QTY_EXPR
+    _part_expr = "UPPER(COALESCE(NULLIF(indus_part,''), 'Unknown'))"
     scanner_sql = f"""
         SELECT
-            UPPER(COALESCE(NULLIF(indus_part,''), 'Unknown')) AS indus_part,
+            {_part_expr} AS indus_part,
             COALESCE(NULLIF(MAX(customer_part),''), '') AS customer_part,
             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
             - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
         FROM movements
         WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-        GROUP BY indus_part
-        ORDER BY indus_part
+        GROUP BY {_part_expr}
+        ORDER BY {_part_expr}
     """
     scanner_map = {}
     try:
@@ -1216,18 +1222,23 @@ def api_export():
             except SAPStockError as exc:
                 logger.warning("sap_recon export: SAP fetch failed: %s", exc)
 
+            # FIX: same GROUP BY expression fix as api_sap_recon() above —
+            # GROUP BY UPPER(COALESCE(...)) so mixed-case part codes aggregate
+            # into a single row instead of being silently dropped.
+            _part_expr = "UPPER(COALESCE(NULLIF(indus_part,''),'Unknown'))"
             scanner_data = []
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
                         SELECT
-                            UPPER(COALESCE(NULLIF(indus_part,''),'Unknown')) AS indus_part,
+                            {_part_expr} AS indus_part,
                             COALESCE(NULLIF(MAX(customer_part),''),'') AS customer_part,
                             SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
                             - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
                         FROM movements
                         WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-                        GROUP BY indus_part ORDER BY indus_part
+                        GROUP BY {_part_expr}
+                        ORDER BY {_part_expr}
                     """)
                     scanner_data = [dict(r) for r in cur.fetchall()]
 
