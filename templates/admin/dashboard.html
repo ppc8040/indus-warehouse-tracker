@@ -411,7 +411,6 @@ async function loadStats() {
 async function loadOorCodes() {
   try {
     const d = await fetch('/admin/api/oor-customer-codes').then(r => r.json());
-    // Expect { codes: { "1000234": "CUST-ABC", ... } } or an array
     if (d.codes && typeof d.codes === 'object') {
       _oorCodes = d.codes;
     } else if (Array.isArray(d)) {
@@ -419,7 +418,6 @@ async function loadOorCodes() {
     } else if (Array.isArray(d.rows)) {
       d.rows.forEach(row => { if (row.indus_part) _oorCodes[row.indus_part] = row.customer_part || ''; });
     }
-    console.log('OOR codes loaded:', Object.keys(_oorCodes).length, 'entries');  // Debug line
   } catch (e) {
     console.warn('loadOorCodes failed (non-critical):', e);
   }
@@ -667,18 +665,15 @@ let _sapReconElapsedTimer = null;
 async function loadSapRecon(forceRefresh = false) {
   const tbl = document.getElementById('tbl-saprecon');
 
-  // ── Stop any previous poll cycle ─────────────────────────────────────────
   if (_sapReconPollTimer)    { clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null; }
   if (_sapReconElapsedTimer) { clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null; }
 
-  // ── Reset meta strip ─────────────────────────────────────────────────────
   ['rSapCount','rScanCount','rTotalRows','rCacheAge','rDiscCount']
     .forEach(id => { document.getElementById(id).textContent = '\u2014'; });
   const errBanner = document.getElementById('recon-err-banner');
   errBanner.textContent = '';
   errBanner.classList.remove('visible');
 
-  // ── Show loading spinner inside the table wrapper ─────────────────────────
   tbl.innerHTML = `
     <div class="empty" style="padding:40px 24px;">
       <div style="display:inline-flex;flex-direction:column;align-items:center;gap:12px;">
@@ -692,13 +687,11 @@ async function loadSapRecon(forceRefresh = false) {
       </div>
     </div>`;
 
-  // ── Fire-and-forget: kick the backend fetch (triggers background thread) ──
   const kickUrl = forceRefresh
     ? '/admin/api/sap-recon?force_refresh=1'
     : '/admin/api/sap-recon';
   fetch(kickUrl).catch(() => {});
 
-  // ── Elapsed counter (updates every second so users see progress) ──────────
   const startedAt = Date.now();
   _sapReconElapsedTimer = setInterval(() => {
     const el = document.getElementById('sapReconElapsed');
@@ -708,14 +701,12 @@ async function loadSapRecon(forceRefresh = false) {
     el.textContent = `Elapsed: ${m}m ${String(s).padStart(2,'0')}s \u2014 SAP fetch typically takes 2\u20135 min`;
   }, 1000);
 
-  // ── Poll /api/sap-recon-status every 5 seconds ────────────────────────────
   _sapReconPollTimer = setInterval(async () => {
     try {
       const statusResp = await fetch('/admin/api/sap-recon-status');
       if (!statusResp.ok) return;
       const status = await statusResp.json();
 
-      // Update spinner message with live material count
       const msgEl = document.getElementById('sapReconStatusMsg');
       if (msgEl) {
         if (status.is_fetching) {
@@ -726,12 +717,10 @@ async function loadSapRecon(forceRefresh = false) {
         }
       }
 
-      // ── SUCCESS: fetch done and data is in cache ──────────────────────────
       if (!status.is_fetching && status.has_data) {
         clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null;
         clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null;
 
-        // Final call to get the full reconciliation payload
         try {
           const dataResp = await fetch('/admin/api/sap-recon');
           if (!dataResp.ok) throw new Error(`HTTP ${dataResp.status}`);
@@ -747,7 +736,6 @@ async function loadSapRecon(forceRefresh = false) {
         return;
       }
 
-      // ── ERROR: fetch finished but cache still empty ───────────────────────
       if (!status.is_fetching && !status.has_data) {
         clearInterval(_sapReconPollTimer);    _sapReconPollTimer    = null;
         clearInterval(_sapReconElapsedTimer); _sapReconElapsedTimer = null;
@@ -771,11 +759,9 @@ async function loadSapRecon(forceRefresh = false) {
   }, 5000);
 }
 
-// Populate _reconRows and re-render the table + meta strip
 function _renderReconData(data) {
   _reconRows = data.rows || [];
 
-  // Update meta strip
   const sapCount  = data.sap_material_count    || 0;
   const scanCount = data.scanner_material_count || 0;
   const discCount = _reconRows.filter(r => r.variance_vs_1000 !== 0).length;
@@ -788,7 +774,6 @@ function _renderReconData(data) {
   document.getElementById('rCacheAge').textContent   = `${ageMin}m ${String(ageSec).padStart(2,'0')}s ago`;
   document.getElementById('rDiscCount').textContent  = discCount;
 
-  // Show SAP error (partial data) if present
   if (data.error) {
     const errBanner = document.getElementById('recon-err-banner');
     errBanner.textContent = `&#9888; SAP fetch error (partial data): ${data.error}`;
@@ -807,7 +792,6 @@ function renderReconTable() {
 
   let rows = _reconRows;
 
-  // Apply search
   if (search) {
     rows = rows.filter(r =>
       (r.indus_part || '').toLowerCase().includes(search) ||
@@ -816,7 +800,6 @@ function renderReconTable() {
     );
   }
 
-  // Apply variance filter
   if (filter === 'DISC')       rows = rows.filter(r => r.variance_vs_1000 !== 0);
   else if (filter === 'NEG')   rows = rows.filter(r => r.variance_vs_1000 < 0);
   else if (filter === 'EXCESS') rows = rows.filter(r => r.variance_vs_1000 > 0);
@@ -988,16 +971,11 @@ async function loadIvt() {
 async function loadAll() {
   checkConn();
   loadStats();
-  await loadOorCodes();  // ← Wait for this to complete first
+  await loadOorCodes();
   loadMovements();
   loadStatuses();
   loadStock();
   loadTotalStock();
-}
-
-async function loadMovements() {
-  console.log('_oorCodes at render time:', Object.keys(_oorCodes).length);  // Debug
-  // ... rest of function
 }
 
 document.addEventListener('DOMContentLoaded', loadAll);
