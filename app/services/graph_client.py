@@ -127,8 +127,19 @@ def _wb_url():
     return f"https://graph.microsoft.com/v1.0/sites/{sid}/drive/root:/{fn}:/workbook"
 
 
+def _wb_url_for(filename):
+    """Build workbook base URL for any filename in the same SharePoint drive."""
+    sid = current_app.config['SHAREPOINT_SITE_ID']
+    return f"https://graph.microsoft.com/v1.0/sites/{sid}/drive/root:/{filename}:/workbook"
+
+
 def _ws_url(sheet):
     return f"{_wb_url()}/worksheets('{sheet}')"
+
+
+def _ws_url_for(filename, sheet):
+    """Build worksheet URL for any filename + sheet combination."""
+    return f"{_wb_url_for(filename)}/worksheets('{sheet}')"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -153,6 +164,46 @@ def _open_session():
         "Content-Type": "application/json",
         "workbook-session-id": sid,
     }
+
+
+def _open_session_for(filename):
+    """
+    Open a workbook session for any file (not just WORKBOOK_FILENAME).
+    Returns (session_id, headers_dict).
+    """
+    token = _get_token()
+    url = f"{_wb_url_for(filename)}/createSession"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    timeout = current_app.config.get('GRAPH_REQUEST_TIMEOUT', 30)
+
+    resp = _http.post(url, headers=headers, json={"persistChanges": False}, timeout=timeout)
+    if resp.status_code not in (200, 201):
+        raise GraphAPIError(
+            f"Could not open workbook session for '{filename}'.",
+            resp.status_code, resp.text[:300]
+        )
+
+    sid = resp.json().get("id")
+    logger.info(f"Session opened for '{filename}': {sid[:16]}...")
+    return sid, {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "workbook-session-id": sid,
+    }
+
+
+def _close_session_for(filename, session_id):
+    """Close a session for any workbook (best-effort, never raises)."""
+    try:
+        token = _get_token()
+        _http.post(
+            f"{_wb_url_for(filename)}/closeSession",
+            headers={"Authorization": f"Bearer {token}", "workbook-session-id": session_id},
+            timeout=10,
+        )
+        logger.info(f"Session closed for '{filename}'.")
+    except Exception as e:
+        logger.warning(f"Session close failed for '{filename}' (non-fatal): {e}")
 
 
 def _close_session(session_id):
@@ -387,6 +438,32 @@ def read_all_rows_as_dicts(sheet_name):
             d[hdr] = row[i] if i < len(row) else None
         result.append(d)
     return result
+
+
+def read_all_rows_from_file(filename, sheet_name):
+    """
+    Read entire used range from a worksheet in ANY workbook in the same
+    SharePoint drive — not just WORKBOOK_FILENAME.
+
+    Uses the proven /drive/root:/{filename}:/workbook pattern with its own
+    session (opened and closed internally).
+
+    Returns (headers: list[str], rows: list[list]).
+    Row 1 = headers. Row 2+ = data.
+    """
+    sid, h = _open_session_for(filename)
+    try:
+        url = f"{_ws_url_for(filename, sheet_name)}/usedRange"
+        data = _req('GET', url, h)
+        values = data.get('values', [])
+        if not values:
+            return [], []
+        headers = [str(v) if v is not None else '' for v in values[0]]
+        rows = values[1:] if len(values) > 1 else []
+        logger.info(f"Read {len(rows)} rows from '{sheet_name}' in '{filename}'")
+        return headers, rows
+    finally:
+        _close_session_for(filename, sid)
 
 
 def find_row(sheet_name, col_index, search_value):
