@@ -24,6 +24,14 @@ Security:
   from the warehouse movement flow. They now read/write the ivt_scans
   Postgres table instead of the IVT_Line Excel worksheet.
 
+  IVT duplicate guards (two layers):
+    1. Full-code uniqueness  — the entire 33-digit code must not exist in
+       ivt_scans (enforced by the UNIQUE constraint on the code column).
+    2. Serial-level uniqueness — positions 17–22 (the 6-digit serial) must
+       not exist in any previously stored code, regardless of part code or
+       date segment. Prevents the same physical unit from being scanned
+       twice under a different barcode variant.
+
   Destinations — /api/destinations returns the list of valid to_location
   values for the STOCK_OUT destination picker on the worker UI.
 """
@@ -352,6 +360,11 @@ def validate_pin():
 # IVT LINE ROUTES
 # Now backed by the ivt_scans Postgres table.
 # Schema: id (serial), code (text unique), scanned_date (text), location (text)
+#
+# Duplicate guards (applied in order):
+#   1. Full-code check  — entire 33-digit code must not already exist
+#   2. Serial check     — 6-digit serial (pos 17–22) must not already exist
+#      in any stored code, regardless of part code or date segment
 # ===========================================================================
 
 @api_bp.route('/ivt-check', methods=['POST'])
@@ -368,10 +381,15 @@ def ivt_check():
            Unrestricted (M4 or M5): 8750722699, 8750722840
            M5-only:                 8750741149, 8750751986
 
+    Duplicate checks (in order):
+      A. Full-code match  → duplicate_type: "code"
+      B. Serial match     → duplicate_type: "serial"
+
     Returns:
       { "valid": false, "error_type": "...", "message": "..." }
       { "valid": true, "duplicate": false }
-      { "valid": true, "duplicate": true, "scanned_date": "..." }
+      { "valid": true, "duplicate": true, "duplicate_type": "code"|"serial",
+        "scanned_date": "..." }
     """
     data = request.get_json(silent=True) or {}
     code     = str(data.get('code', '')).strip()
@@ -389,12 +407,29 @@ def ivt_check():
                         "message": message}), 200
 
     try:
-        from app.services.db_client import ivt_find
+        from app.services.db_client import ivt_find, ivt_find_by_serial
+
+        # ── 1. Full-code duplicate check ──
         existing = ivt_find(code)
         if existing:
             return jsonify({"valid": True, "duplicate": True,
+                            "duplicate_type": "code",
                             "scanned_date": existing.get('scanned_date', '')}), 200
+
+        # ── 2. Serial-level duplicate check ──
+        serial = code[17:23]
+        serial_hit = ivt_find_by_serial(serial)
+        if serial_hit:
+            logger.warning(
+                "IVT serial duplicate: serial=%s new_code=%s existing_code=%s",
+                serial, code, serial_hit.get('code', '')
+            )
+            return jsonify({"valid": True, "duplicate": True,
+                            "duplicate_type": "serial",
+                            "scanned_date": serial_hit.get('scanned_date', '')}), 200
+
         return jsonify({"valid": True, "duplicate": False}), 200
+
     except Exception as exc:
         logger.error("IVT check (Postgres) failed for code %s: %s", code, exc)
         return jsonify({"success": False,
@@ -405,6 +440,11 @@ def ivt_check():
 def ivt_enter():
     """
     Append a validated, unique IVT code to the ivt_scans table.
+
+    Uniqueness is enforced at two levels immediately before the write:
+      1. Full-code check  — entire 33-digit code must not already exist
+      2. Serial check     — 6-digit serial (pos 17–22) must not exist in
+         any previously stored code
 
     Returns:
       { "success": true, "scanned_date": "DD/MM/YYYY HH:MM:SS AM/PM" }
@@ -427,15 +467,34 @@ def ivt_enter():
         return jsonify({"success": False, "message": message}), 400
 
     try:
-        from app.services.db_client import ivt_find, ivt_insert
-        # Re-check uniqueness immediately before writing
+        from app.services.db_client import ivt_find, ivt_find_by_serial, ivt_insert
+
+        # ── 1. Full-code uniqueness check ──
         if ivt_find(code):
             return jsonify({"success": False,
                             "message": "This code was already scanned."}), 409
+
+        # ── 2. Serial-level uniqueness check ──
+        serial = code[17:23]
+        serial_hit = ivt_find_by_serial(serial)
+        if serial_hit:
+            logger.warning(
+                "IVT serial duplicate blocked on enter: serial=%s new_code=%s "
+                "existing_code=%s",
+                serial, code, serial_hit.get('code', '')
+            )
+            return jsonify({"success": False,
+                            "message": f"Serial number '{serial}' has already "
+                                       f"been scanned (scanned on "
+                                       f"{serial_hit.get('scanned_date', 'unknown')}"
+                                       f" at {serial_hit.get('location', 'unknown')}"
+                                       f")."}), 409
+
         scanned_date = _fmt_dubai(datetime.now(timezone.utc))
         ivt_insert(code, scanned_date, location)
         logger.info("IVT inserted (Postgres): code=%s location=%s", code, location)
         return jsonify({"success": True, "scanned_date": scanned_date}), 200
+
     except Exception as exc:
         logger.error("IVT enter (Postgres) failed for code %s: %s", code, exc)
         return jsonify({"success": False,
