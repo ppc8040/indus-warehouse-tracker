@@ -65,15 +65,18 @@ def _fmt_dubai(dt_utc: datetime) -> str:
 #   Positions  0–8   (9 digits)  : Customer code — always "561469490"
 #   Positions  9–16  (8 digits)  : Date in 00DDMMYY format
 #   Positions 17–22  (6 digits)  : Serial number — must be unique per scan
-#   Positions 23–32  (10 digits) : Customer part code — "8750722699" or "8750722840"
+#   Positions 23–32  (10 digits) : Customer part code — see sets below
 
 _IVT_CUSTOMER_CODE    = '561469490'
 _IVT_TOTAL_LENGTH     = 33
+# Allowed at any valid location (M4 or M5)
 _IVT_VALID_PART_CODES = {'8750722699', '8750722840'}
+# Allowed ONLY when location is M5
+_IVT_M5_ONLY_PART_CODES = {'8750741149', '8750751986'}
 _IVT_VALID_LOCATIONS  = {'M4', 'M5'}
 
 
-def _ivt_validate_code(code: str):
+def _ivt_validate_code(code: str, location: str = ''):
     """
     Validate an IVT QR code string.
     Returns None if valid, or a (error_type, message) tuple if invalid.
@@ -83,7 +86,9 @@ def _ivt_validate_code(code: str):
       2. Total length must be 33
       3. Customer code segment (pos 0-8)
       4. Date segment (pos 9-16) — 00DDMMYY with valid DD/MM
-      5. Customer part code (pos 23-32)
+      5. Customer part code (pos 23-32):
+           - Unrestricted codes: 8750722699, 8750722840 (any location)
+           - M5-only codes:      8750741149, 8750751986 (location must be M5)
     """
     bad = re.search(r'[^0-9]', code)
     if bad:
@@ -120,13 +125,22 @@ def _ivt_validate_code(code: str):
                 f"\u2018{date_seg}\u2019 \u2014 month must be 01\u201312.")
 
     part_code = code[23:33]
-    if part_code not in _IVT_VALID_PART_CODES:
-        valid_list = ' or '.join(sorted(_IVT_VALID_PART_CODES))
-        return ('invalid_part_code',
-                f"Invalid customer part code \u2018{part_code}\u2019 "
-                f"\u2014 must be {valid_list}.")
 
-    return None  # all checks passed
+    if part_code in _IVT_VALID_PART_CODES:
+        return None  # unrestricted — always valid
+
+    if part_code in _IVT_M5_ONLY_PART_CODES:
+        if location.upper() == 'M5':
+            return None  # M5-only code posted at M5 — valid
+        return ('invalid_part_code',
+                f"Part code \u2018{part_code}\u2019 is only permitted at "
+                f"location M5.")
+
+    all_valid = sorted(_IVT_VALID_PART_CODES | _IVT_M5_ONLY_PART_CODES)
+    valid_list = ', '.join(all_valid[:-1]) + ' or ' + all_valid[-1]
+    return ('invalid_part_code',
+            f"Invalid customer part code \u2018{part_code}\u2019 "
+            f"\u2014 must be {valid_list}.")
 
 
 # ===========================================================================
@@ -350,7 +364,9 @@ def ivt_check():
       2. Total length must be exactly 33 digits
       3. Positions 0-8  must equal '561469490'  (customer code)
       4. Positions 9-16 must be valid 00DDMMYY   (date segment)
-      5. Positions 23-32 must be '8750722699' or '8750722840'
+      5. Positions 23-32 must be a known part code:
+           Unrestricted (M4 or M5): 8750722699, 8750722840
+           M5-only:                 8750741149, 8750751986
 
     Returns:
       { "valid": false, "error_type": "...", "message": "..." }
@@ -358,12 +374,13 @@ def ivt_check():
       { "valid": true, "duplicate": true, "scanned_date": "..." }
     """
     data = request.get_json(silent=True) or {}
-    code = str(data.get('code', '')).strip()
+    code     = str(data.get('code', '')).strip()
+    location = str(data.get('location', '')).strip().upper()
 
     if not code:
         return jsonify({"success": False, "message": "Code is required."}), 400
 
-    err = _ivt_validate_code(code)
+    err = _ivt_validate_code(code, location)
     if err:
         error_type, message = err
         logger.warning("IVT validation failed for code %r [%s]: %s",
@@ -404,7 +421,7 @@ def ivt_enter():
                         "message": f"Invalid location '{location}'. "
                                    f"Must be M4 or M5."}), 400
 
-    err = _ivt_validate_code(code)
+    err = _ivt_validate_code(code, location)
     if err:
         _, message = err
         return jsonify({"success": False, "message": message}), 400
