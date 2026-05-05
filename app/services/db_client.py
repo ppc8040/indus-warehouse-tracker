@@ -408,6 +408,31 @@ def ivt_find(code: str) -> dict | None:
     return _row_to_dict(row) if row else None
 
 
+def ivt_find_by_serial(serial: str) -> dict | None:
+    """
+    Return the ivt_scans row whose serial segment (positions 17-22 of the
+    33-digit code) matches `serial`, or None if not found.
+
+    Uses SUBSTRING(code FROM 18 FOR 6) — SQL positions are 1-based, so
+    position 18 corresponds to Python index 17.
+
+    This enforces serial-level uniqueness: the same physical unit cannot
+    be scanned twice even if the surrounding code differs (e.g. different
+    part code or date segment).
+    """
+    sql = """
+        SELECT id, code, scanned_date, location
+        FROM ivt_scans
+        WHERE SUBSTRING(code FROM 18 FOR 6) = %(serial)s
+        LIMIT 1
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"serial": serial})
+            row = cur.fetchone()
+    return _row_to_dict(row) if row else None
+
+
 def ivt_insert(code: str, scanned_date: str, location: str) -> None:
     """Insert a new IVT scan. Raises DbError on duplicate."""
     sql = """
