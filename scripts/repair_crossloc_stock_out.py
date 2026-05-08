@@ -551,10 +551,41 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                 for p in plans  # plans built so far in this loop
             )
             if already_in_case2_batch:
-                plan['skip_reason'] = (
-                    f'Covered by Case 2 chain repair of an earlier OVERRIDE OUT '
-                    f'for the same HU in this session — no separate fix needed.'
-                )
+                # Check if this OUT's zone already has a real IN after it.
+                # If not, we still need to insert STOCK_IN @ out_zone.
+                cur.execute(CHECK_ZONE_Y_REHEALED, {
+                    'hu': hu, 'out_zone': out_zone, 'out_ts': out_ts,
+                })
+                this_zone_healed = cur.fetchone() is not None
+
+                if this_zone_healed:
+                    plan['skip_reason'] = (
+                        'Covered by Case 2 chain repair and zone already '
+                        'has a real IN — no insert needed.'
+                    )
+                else:
+                    # Zone still has an unmatched OUT — insert STOCK_IN here
+                    synthetic_ts = _ts_offset(out_ts, -1)
+                    xref_job_no  = 'XREF:' + out_event_id
+                    plan['case'] = CASE_2
+                    plan['in_zone'] = in_zone
+                    plan['inserts'].append({
+                        'event_id'     : _make_event_id(),
+                        'timestamp_utc': synthetic_ts,
+                        'handling_unit': hu,
+                        'indus_part'   : indus_part,
+                        'customer_part': customer_part,
+                        'pallet_qty'   : pallet_qty,
+                        'job_no'       : xref_job_no,
+                        'movement_type': 'STOCK_IN',
+                        'device_id'    : device_id,
+                        'location'     : out_zone,
+                        '_label'       : (
+                            f'STOCK_IN  @ {out_zone}  '
+                            f'(Case 2 chain — unmatched OUT in same session)'
+                        ),
+                    })
+
                 plans.append(plan)
                 continue
           
