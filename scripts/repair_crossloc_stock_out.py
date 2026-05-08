@@ -549,8 +549,6 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
             # ── Detect Case 4: ghost HU re-IN near the override OUT ───────
             ghost_hus = _check_ghost(cur, hu, out_zone, indus_part, out_ts)
 
-            # ── Assign case ───────────────────────────────────────────────
-            if ghost_hus:
             # ── Detect Case 2: zone Y self-healed BUT more OVERRIDE OUTs
             #    exist within 30 min — this is a rapid multi-hop session.
             subsequent_outs = _check_subsequent_outs(cur, hu, out_ts)
