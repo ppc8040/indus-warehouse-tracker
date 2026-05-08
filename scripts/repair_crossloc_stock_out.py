@@ -539,7 +539,25 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                 )
                 plans.append(plan)
                 continue
-
+            # ── Skip if a Case 2 plan already covers this HU in this batch ─
+            # When the same HU has multiple OVERRIDE OUTs in a rapid session,
+            # the first OUT is repaired as Case 2 (which walks the full chain).
+            # Subsequent OUTs in the same session must not generate duplicate
+            # inserts — they are already balanced by the chain walk above.
+            already_in_case2_batch = any(
+                p['case'] == CASE_2
+                and p['hu'] == hu
+                and p['skip_reason'] is None
+                for p in plans  # plans built so far in this loop
+            )
+            if already_in_case2_batch:
+                plan['skip_reason'] = (
+                    f'Covered by Case 2 chain repair of an earlier OVERRIDE OUT '
+                    f'for the same HU in this session — no separate fix needed.'
+                )
+                plans.append(plan)
+                continue
+          
             # ── Detect Case 3: zone Y already self-healed ─────────────────
             cur.execute(CHECK_ZONE_Y_REHEALED, {
                 'hu': hu, 'out_zone': out_zone, 'out_ts': out_ts,
@@ -616,18 +634,18 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
             # OUT with no prior IN in that session leg.
             if plan['case'] == CASE_2:
                 session_moves = _get_session_movements(cur, hu, out_ts)
-                # Build a running picture of what INs exist per zone in session
+                # Walk chain sequentially — only mark a zone as "covered" when
+                # we actually encounter its IN in time order, not by pre-scanning.
+                # This correctly catches OUTs that precede their paired IN.
                 session_in_zones = set()
-                for sm in session_moves:
-                    sm_type = (sm['movement_type'] or '').upper()
-                    sm_loc  = (sm['location'] or '').strip().upper()
-                    if sm_type == 'STOCK_IN':
-                        session_in_zones.add(sm_loc)
 
                 for sm in session_moves:
                     sm_type = (sm['movement_type'] or '').upper()
                     sm_loc  = (sm['location'] or '').strip().upper()
                     sm_ts   = sm['timestamp_utc']
+                    if sm_type == 'STOCK_IN':
+                        session_in_zones.add(sm_loc)
+                    elif sm_type == 'STOCK_OUT' and sm_loc not in session_in_zones:
                     if sm_type == 'STOCK_OUT' and sm_loc not in session_in_zones:
                         # This OUT in the chain has no matching IN — insert one
                         chain_synthetic_ts = _ts_offset(sm_ts, -1)
