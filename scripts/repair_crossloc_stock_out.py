@@ -7,7 +7,7 @@ Repairs phantom stock imbalances caused by STOCK_OUT rows that were
 scanned via supervisor override at a location different from where the
 pallet was originally stocked IN.
 
-Three cases are handled:
+Four cases are handled:
 
   Case 1 — Classic cross-location override
   ─────────────────────────────────────────
@@ -19,6 +19,20 @@ Three cases are handled:
   Fix      : Insert STOCK_OUT at zone X (1 s before OVERRIDE OUT)
              Insert STOCK_IN  at zone Y (1 s before OVERRIDE OUT)
   Result   : Both zones are balanced.
+
+  Case 2 — Multi-hop rapid session (zone Y self-healed but HU re-cycled)
+  ────────────────────────────────────────────────────────────────────────
+  Pattern  : IN at zone X  →  OVERRIDE OUT at zone Y  →  real IN at Y
+             →  OVERRIDE OUT at zone Y again (or back at X)  →  …
+             All within a short window (≤ 30 min).
+  Problem  : Zone Y's self-heal IN is part of a rapid session chain,
+             not a clean fix.  The original zone X orphan remains, and
+             intermediate legs may also be unbalanced.
+  Fix      : Insert STOCK_OUT at zone X (clears the original orphan).
+             Walk the full session chain and insert a STOCK_IN for every
+             location that has an OVERRIDE OUT with no matching prior IN
+             in that session leg.
+  Result   : Every leg of the chain is balanced.
 
   Case 3 — Cross-location override, zone Y already self-healed
   ──────────────────────────────────────────────────────────────
@@ -58,6 +72,9 @@ Safety contract
       validation_status = 'CROSSLOC_BACKFILL'
     so they are filterable in the admin audit log and never confused
     with the BACKFILLED rows from backfill_missing_stock_in.py.
+  - A pre-flight permission check runs before any repair attempt.
+    If the DB role lacks INSERT on movements or pallet_status the
+    script will print a clear error and exit without touching any data.
 
 Usage
 -----
@@ -84,6 +101,7 @@ import psycopg2.extras
 # ═══════════════════════════════════════════════════════════════════════════════
 
 CASE_1 = 'CASE_1'   # Classic cross-loc: insert OUT@X + IN@Y
+CASE_2 = 'CASE_2'   # Multi-hop rapid session: walk full chain and balance each leg
 CASE_3 = 'CASE_3'   # Zone Y self-healed: insert OUT@X only
 CASE_4 = 'CASE_4'   # Cross-loc + ghost HU re-IN: same as Case 1 + flag ghost
 
@@ -108,6 +126,74 @@ def get_connection():
     except psycopg2.Error as exc:
         print(f'ERROR: Could not connect to Postgres: {exc}')
         sys.exit(1)
+
+
+def check_db_permissions(conn):
+    """
+    Pre-flight check: verify the connected DB role has INSERT privilege on
+    both movements and pallet_status.  Runs a dummy INSERT inside a
+    transaction that is always rolled back — zero data is written.
+
+    Returns (ok: bool, error_message: str | None).
+    """
+    test_event_id = 'PERM-CHECK-' + str(uuid.uuid4()).upper()[:8]
+    test_ts       = datetime.now(tz=timezone.utc)
+
+    cur = conn.cursor()
+    try:
+        cur.execute('BEGIN')
+
+        # ── Test INSERT on movements ──────────────────────────────────────
+        cur.execute(
+            """
+            INSERT INTO movements (
+                event_id, timestamp_utc, handling_unit,
+                indus_part, customer_part, pallet_qty, job_no,
+                movement_type, operator_id, device_id,
+                sync_status, validation_status,
+                location, from_location, to_location
+            ) VALUES (
+                %s, %s, 'PERM_CHECK', '', '', '', 'PERM_CHECK',
+                'STOCK_IN', 'CROSSLOC_REPAIR', '',
+                'SYNCED', 'CROSSLOC_BACKFILL',
+                'PERM_CHECK', '', ''
+            );
+            """,
+            (test_event_id, test_ts),
+        )
+
+        # ── Test INSERT / UPDATE on pallet_status ─────────────────────────
+        cur.execute(
+            """
+            INSERT INTO pallet_status (
+                handling_unit, current_status, last_event_id,
+                last_movement_type, last_movement_time,
+                indus_part, pallet_qty, last_location
+            ) VALUES (
+                'PERM_CHECK', 'IN_WAREHOUSE', %s,
+                'STOCK_IN', %s, '', '', 'PERM_CHECK'
+            )
+            ON CONFLICT (handling_unit) DO UPDATE SET
+                last_event_id = EXCLUDED.last_event_id;
+            """,
+            (test_event_id, str(test_ts)),
+        )
+
+        cur.execute('ROLLBACK')   # ← always roll back — nothing is written
+        cur.close()
+        return True, None
+
+    except psycopg2.errors.InsufficientPrivilege as exc:
+        cur.execute('ROLLBACK')
+        cur.close()
+        return False, str(exc).strip()
+    except Exception as exc:
+        try:
+            cur.execute('ROLLBACK')
+        except Exception:
+            pass
+        cur.close()
+        return False, str(exc).strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -210,7 +296,7 @@ GET_PRIOR_STOCK_IN = """
 """
 
 # ── Step 4: check if zone Y already has a real STOCK_IN after the OVERRIDE OUT
-#           (Case 3 detection — zone Y self-healed)
+#           (Case 3 / Case 2 detection — zone Y self-healed)
 CHECK_ZONE_Y_REHEALED = """
     SELECT 1
     FROM   movements
@@ -220,6 +306,31 @@ CHECK_ZONE_Y_REHEALED = """
       AND  timestamp_utc     > %(out_ts)s
       AND  validation_status <> 'CROSSLOC_BACKFILL'
     LIMIT  1;
+"""
+
+# ── Step 4b: detect Case 2 — are there MORE OVERRIDE OUTs for this HU
+#            within 30 minutes of the first one?
+CHECK_SUBSEQUENT_OVERRIDE_OUTS = """
+    SELECT event_id, location, timestamp_utc, from_location, to_location
+    FROM   movements
+    WHERE  handling_unit     = %(hu)s
+      AND  movement_type     = 'STOCK_OUT'
+      AND  validation_status = 'OVERRIDE'
+      AND  timestamp_utc     >  %(out_ts)s
+      AND  timestamp_utc     <= %(out_ts)s + INTERVAL '30 minutes'
+    ORDER  BY timestamp_utc;
+"""
+
+# ── Step 4c: for Case 2, get ALL movements for this HU within the rapid
+#            session window so we can walk the full chain.
+GET_SESSION_MOVEMENTS = """
+    SELECT event_id, movement_type, location, timestamp_utc, validation_status
+    FROM   movements
+    WHERE  handling_unit     = %(hu)s
+      AND  timestamp_utc     >  %(session_start)s
+      AND  timestamp_utc     <= %(session_start)s + INTERVAL '30 minutes'
+      AND  validation_status <> 'CROSSLOC_BACKFILL'
+    ORDER  BY timestamp_utc;
 """
 
 # ── Step 5: detect Case 4 — is there a re-IN on a ghost HU after the OUT?
@@ -243,7 +354,7 @@ CHECK_GHOST_HU = """
 # ── Step 6: get the latest non-ERROR movement for an HU (for pallet_status) ──
 GET_LATEST_MOVEMENT_FOR_HU = """
     SELECT event_id, movement_type, timestamp_utc,
-           indus_part, pallet_qty, location
+           indus_part, pallet_qty, location, validation_status
     FROM   movements
     WHERE  handling_unit  = %(hu)s
       AND  movement_type <> 'ERROR'
@@ -335,32 +446,6 @@ def _prompt_yes(question: str) -> bool:
     return False
 
 
-def _classify_case(cur, hu, out_zone, out_ts, prior_in_location) -> str:
-    """
-    Determine which case applies to this rogue OVERRIDE OUT.
-
-    Logic:
-      1. If zone Y (out_zone) already has a real STOCK_IN after the OUT
-         AND no ghost HU exists → Case 3 (zone Y self-healed)
-      2. If zone Y already has a real STOCK_IN AND a ghost HU exists
-         close to the OUT time → Case 4 (ghost HU)
-      3. Otherwise → Case 1 (classic cross-loc, zone Y needs backfill IN)
-    """
-    cur.execute(CHECK_ZONE_Y_REHEALED, {'hu': hu, 'out_zone': out_zone, 'out_ts': out_ts})
-    zone_y_healed = cur.fetchone() is not None
-
-    cur.execute(CHECK_GHOST_HU, {
-        'hu': hu,
-        'out_zone': out_zone,
-        'indus_part': '',   # filled by caller
-        'out_ts': out_ts,
-    })
-    # ghost check is done with indus_part by caller; here we return the base case
-    if zone_y_healed:
-        return CASE_3  # caller may upgrade to CASE_4 if ghost found
-    return CASE_1
-
-
 def _check_ghost(cur, hu, out_zone, indus_part, out_ts) -> list:
     """Return list of potential ghost HU rows (may be empty)."""
     cur.execute(CHECK_GHOST_HU, {
@@ -369,6 +454,18 @@ def _check_ghost(cur, hu, out_zone, indus_part, out_ts) -> list:
         'indus_part': indus_part,
         'out_ts': out_ts,
     })
+    return list(cur.fetchall())
+
+
+def _check_subsequent_outs(cur, hu, out_ts) -> list:
+    """Return list of OVERRIDE OUTs for this HU within 30 min after out_ts."""
+    cur.execute(CHECK_SUBSEQUENT_OVERRIDE_OUTS, {'hu': hu, 'out_ts': out_ts})
+    return list(cur.fetchall())
+
+
+def _get_session_movements(cur, hu, session_start) -> list:
+    """Return all movements for this HU in the 30-min session window."""
+    cur.execute(GET_SESSION_MOVEMENTS, {'hu': hu, 'session_start': session_start})
     return list(cur.fetchall())
 
 
@@ -424,35 +521,36 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
     For each rogue OVERRIDE OUT row, build a repair plan dict:
 
         {
-          'case'          : CASE_1 | CASE_3 | CASE_4
-          'hu'            : str
-          'indus_part'    : str
-          'customer_part' : str
-          'pallet_qty'    : str
-          'device_id'     : str
+          'case'           : CASE_1 | CASE_2 | CASE_3 | CASE_4
+          'hu'             : str
+          'indus_part'     : str
+          'customer_part'  : str
+          'pallet_qty'     : str
+          'device_id'      : str
           'original_job_no': str
-          'out_event_id'  : str  — reference to the rogue OUT row
-          'out_ts'        : datetime
-          'out_zone'      : str  — zone where OUT was wrongly scanned
-          'in_zone'       : str  — zone where pallet was actually stored
-          'inserts'       : list of dicts, each describing one row to INSERT
-          'ghost_hus'     : list of ghost HU rows (Case 4 only, else [])
-          'skip_reason'   : str | None  — set if this HU should be skipped
+          'out_event_id'   : str  — reference to the rogue OUT row
+          'out_ts'         : datetime
+          'out_zone'       : str  — zone where OUT was wrongly scanned
+          'in_zone'        : str  — zone where pallet was actually stored
+          'inserts'        : list of dicts, each describing one row to INSERT
+          'ghost_hus'      : list of ghost HU rows (Case 4 only, else [])
+          'subsequent_outs': list of subsequent OVERRIDE OUTs (Case 2 only)
+          'skip_reason'    : str | None  — set if this HU should be skipped
         }
     """
     plans = []
 
     with conn.cursor() as cur:
         for row in rogue_outs:
-            hu           = row['handling_unit']
-            out_event_id = row['out_event_id']
-            out_zone     = (row['out_zone'] or '').strip().upper()
-            out_ts       = row['out_ts']
-            indus_part   = row['indus_part'] or ''
-            customer_part= row['customer_part'] or ''
-            pallet_qty   = row['pallet_qty'] or ''
-            device_id    = row['device_id'] or ''
-            original_job = row['original_job_no'] or ''
+            hu            = row['handling_unit']
+            out_event_id  = row['out_event_id']
+            out_zone      = (row['out_zone'] or '').strip().upper()
+            out_ts        = row['out_ts']
+            indus_part    = row['indus_part'] or ''
+            customer_part = row['customer_part'] or ''
+            pallet_qty    = row['pallet_qty'] or ''
+            device_id     = row['device_id'] or ''
+            original_job  = row['original_job_no'] or ''
 
             plan = {
                 'case'           : None,
@@ -468,6 +566,7 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                 'in_zone'        : None,
                 'inserts'        : [],
                 'ghost_hus'      : [],
+                'subsequent_outs': [],
                 'skip_reason'    : None,
             }
 
@@ -499,7 +598,57 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                 plans.append(plan)
                 continue
 
-            # ── Detect Case 3: zone Y already self-healed ─────────────────
+            # ── Skip if a Case 2 plan already covers this HU in this batch ─
+            # When the same HU has multiple OVERRIDE OUTs in a rapid session,
+            # the first OUT is repaired as Case 2 (which walks the full chain).
+            # Subsequent OUTs in the same session must not generate duplicate
+            # inserts — they are already balanced by the chain walk above.
+            already_in_case2_batch = any(
+                p['case'] == CASE_2
+                and p['hu'] == hu
+                and p['skip_reason'] is None
+                for p in plans
+            )
+
+            if already_in_case2_batch:
+                # Check if this OUT's zone already has a real IN after it.
+                # If not, we still need to insert STOCK_IN @ out_zone.
+                cur.execute(CHECK_ZONE_Y_REHEALED, {
+                    'hu': hu, 'out_zone': out_zone, 'out_ts': out_ts,
+                })
+                this_zone_healed = cur.fetchone() is not None
+
+                if this_zone_healed:
+                    plan['skip_reason'] = (
+                        'Covered by Case 2 chain repair and zone already '
+                        'has a real IN — no insert needed.'
+                    )
+                else:
+                    synthetic_ts = _ts_offset(out_ts, -1)
+                    xref_job_no  = 'XREF:' + out_event_id
+                    plan['case']    = CASE_2
+                    plan['in_zone'] = in_zone
+                    plan['inserts'].append({
+                        'event_id'     : _make_event_id(),
+                        'timestamp_utc': synthetic_ts,
+                        'handling_unit': hu,
+                        'indus_part'   : indus_part,
+                        'customer_part': customer_part,
+                        'pallet_qty'   : pallet_qty,
+                        'job_no'       : xref_job_no,
+                        'movement_type': 'STOCK_IN',
+                        'device_id'    : device_id,
+                        'location'     : out_zone,
+                        '_label'       : (
+                            f'STOCK_IN @ {out_zone} '
+                            f'(Case 2 chain — unmatched OUT in same session)'
+                        ),
+                    })
+
+                plans.append(plan)
+                continue
+
+            # ── Detect Case 3 / Case 2: zone Y already self-healed ────────
             cur.execute(CHECK_ZONE_Y_REHEALED, {
                 'hu': hu, 'out_zone': out_zone, 'out_ts': out_ts,
             })
@@ -508,24 +657,29 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
             # ── Detect Case 4: ghost HU re-IN near the override OUT ───────
             ghost_hus = _check_ghost(cur, hu, out_zone, indus_part, out_ts)
 
+            # ── Detect Case 2: zone Y self-healed BUT more OVERRIDE OUTs
+            #    exist within 30 min — this is a rapid multi-hop session.
+            subsequent_outs = _check_subsequent_outs(cur, hu, out_ts)
+
             # ── Assign case ───────────────────────────────────────────────
             if ghost_hus:
                 plan['case'] = CASE_4
+            elif zone_y_healed and subsequent_outs:
+                plan['case'] = CASE_2
             elif zone_y_healed:
                 plan['case'] = CASE_3
             else:
                 plan['case'] = CASE_1
 
-            plan['ghost_hus'] = ghost_hus
+            plan['subsequent_outs'] = subsequent_outs
+            plan['ghost_hus']       = ghost_hus
 
             # ── Build insert list ─────────────────────────────────────────
             # Timestamp for all synthetic rows: 1 second before the rogue OUT.
-            # Using the same timestamp for both keeps them visually paired
-            # in the movement log.  event_id uniqueness is guaranteed by UUID.
             synthetic_ts = _ts_offset(out_ts, -1)
-            xref_job_no  = 'XREF:' + out_event_id   # links synthetics to the rogue OUT
+            xref_job_no  = 'XREF:' + out_event_id
 
-            # Row A: STOCK_OUT at in_zone (X) — always inserted for all three cases
+            # Row A: STOCK_OUT at in_zone (X) — always inserted for all cases.
             # Clears the orphan IN at zone X.
             plan['inserts'].append({
                 'event_id'     : _make_event_id(),
@@ -541,8 +695,9 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                 '_label'       : f'STOCK_OUT @ {in_zone}  (clears orphan IN at zone X)',
             })
 
-            # Row B: STOCK_IN at out_zone (Y) — inserted for Case 1 and Case 4 only.
-            # Case 3 skips this because zone Y already has a real IN after the OUT.
+            # Row B: STOCK_IN at out_zone (Y) — for Case 1 and Case 4 only.
+            # Case 3 skips this (zone Y already has a real IN).
+            # Case 2 skips this here — the chain walk below handles it.
             if plan['case'] in (CASE_1, CASE_4):
                 plan['inserts'].append({
                     'event_id'     : _make_event_id(),
@@ -558,6 +713,42 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                     '_label'       : f'STOCK_IN  @ {out_zone}  (matches OVERRIDE OUT at zone Y)',
                 })
 
+            # ── Case 2: walk the full rapid session chain ─────────────────
+            # Zone Y's self-heal IN is real, so that leg is balanced.
+            # Step through all movements in the 30-min session window and
+            # insert a synthetic IN for any location that has an OVERRIDE
+            # OUT with no prior IN in that session leg.
+            if plan['case'] == CASE_2:
+                session_moves    = _get_session_movements(cur, hu, out_ts)
+                session_in_zones = set()
+
+                for sm in session_moves:
+                    sm_type = (sm['movement_type'] or '').upper()
+                    sm_loc  = (sm['location'] or '').strip().upper()
+                    sm_ts   = sm['timestamp_utc']
+                    if sm_type == 'STOCK_IN':
+                        session_in_zones.add(sm_loc)
+                    elif sm_type == 'STOCK_OUT' and sm_loc not in session_in_zones:
+                        # This OUT in the chain has no matching IN — insert one
+                        chain_ts = _ts_offset(sm_ts, -1)
+                        plan['inserts'].append({
+                            'event_id'     : _make_event_id(),
+                            'timestamp_utc': chain_ts,
+                            'handling_unit': hu,
+                            'indus_part'   : indus_part,
+                            'customer_part': customer_part,
+                            'pallet_qty'   : pallet_qty,
+                            'job_no'       : xref_job_no,
+                            'movement_type': 'STOCK_IN',
+                            'device_id'    : device_id,
+                            'location'     : sm_loc,
+                            '_label'       : (
+                                f'STOCK_IN @ {sm_loc} '
+                                f'(Case 2 chain leg — unmatched OUT in session)'
+                            ),
+                        })
+                        session_in_zones.add(sm_loc)
+
             plans.append(plan)
 
     return plans
@@ -569,6 +760,7 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
 
 CASE_LABELS = {
     CASE_1: 'Case 1 — Classic cross-loc (OUT@Y balanced, orphan IN@X cleared)',
+    CASE_2: 'Case 2 — Multi-hop chain (zone Y self-healed but HU re-cycled; full chain balanced)',
     CASE_3: 'Case 3 — Zone Y self-healed (orphan IN@X only needs clearing)',
     CASE_4: 'Case 4 — Cross-loc + ghost HU re-IN (same fix as Case 1 + flag)',
 }
@@ -604,6 +796,15 @@ def print_dry_run(plans: list) -> tuple[int, int]:
                   f'ts={ts_str}  event={ins["event_id"]}')
             print(f'                    → {ins["_label"]}')
             total_inserts += 1
+
+        if p.get('subsequent_outs') and p['case'] == CASE_2:
+            print(f'  ⚑  CASE 2 — Rapid multi-hop session detected.')
+            print(f'     Subsequent OVERRIDE OUTs in chain:')
+            for s in p['subsequent_outs']:
+                print(f'       OUT event: {s["event_id"]}  '
+                      f'loc={s["location"]}  '
+                      f'ts={str(s["timestamp_utc"])[:19]}')
+            print(f'     Full session chain has been walked and balanced above.')
 
         if p['ghost_hus']:
             print(f'  ⚑  REVIEW_NEEDED — ghost HU(s) detected at {p["out_zone"]}:')
@@ -664,10 +865,6 @@ def process_part(conn, indus_part: str, plans: list) -> dict:
                       f'hu={hu}  event={ins["event_id"]}')
 
             # ── Reconcile pallet_status (only if this HU has no later moves) ─
-            # After inserting, fetch the latest non-ERROR movement.
-            # If it is one of OUR synthetic rows, update pallet_status.
-            # If a real movement already exists after our synthetics, leave
-            # pallet_status alone — the real movement is authoritative.
             cur.execute(GET_LATEST_MOVEMENT_FOR_HU, {'hu': hu})
             latest = cur.fetchone()
             if latest:
@@ -699,7 +896,8 @@ def process_part(conn, indus_part: str, plans: list) -> dict:
         cur.execute('ROLLBACK')
         summary['rolled_back'] = True
         print(f'\n  ✗  ERROR — full rollback for part: {indus_part}')
-        print(f'     Exception: {exc}')
+        print(f'     Exception type : {type(exc).__name__}')
+        print(f'     Exception detail: {exc}')
     finally:
         cur.close()
 
@@ -715,7 +913,7 @@ def run():
     print()
     print('  PURPOSE:')
     print('  Backfills synthetic IN/OUT pairs to balance cross-location')
-    print('  override STOCK_OUTs.  Handles Cases 1, 3 and 4.')
+    print('  override STOCK_OUTs.  Handles Cases 1, 2, 3 and 4.')
     print()
     print('  SAFETY:')
     print('  ✓  ZERO existing rows are modified or deleted.')
@@ -728,6 +926,33 @@ def run():
 
     conn = get_connection()
     print('  ✓  Connected to database.\n')
+
+    # ── Pre-flight permission check ────────────────────────────────────────
+    print('[CHECK] Verifying INSERT permissions on movements and pallet_status...')
+    perm_ok, perm_err = check_db_permissions(conn)
+    if not perm_ok:
+        print()
+        print('  ✗  PERMISSION DENIED — the database role does not have INSERT')
+        print('     privileges on one or more required tables.')
+        print()
+        print('  Error detail:')
+        print(f'     {perm_err}')
+        print()
+        print('  How to fix:')
+        print('  1. Connect to your Heroku Postgres database:')
+        print('       heroku pg:psql --app indus-warehouse-tracker')
+        print()
+        print('  2. Run the following GRANT statements (replace <role> with')
+        print('     the output of:  SELECT current_user;  in the psql shell):')
+        print()
+        print('       GRANT INSERT ON movements     TO <role>;')
+        print('       GRANT INSERT, UPDATE ON pallet_status TO <role>;')
+        print('       GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO <role>;')
+        print()
+        print('  3. Re-run this script.')
+        conn.close()
+        sys.exit(1)
+    print('  ✓  INSERT permissions confirmed.\n')
 
     # ── Find affected parts ────────────────────────────────────────────────
     print('[SCAN] Scanning for cross-location override STOCK_OUTs...')
@@ -775,7 +1000,7 @@ def run():
         print('  DRY-RUN PREVIEW — the following rows will be inserted:')
         _hr()
 
-        all_part_plans  = []   # list of (indus_part, [plans])
+        all_part_plans  = []
         grand_inserts   = 0
         grand_skips     = 0
 
