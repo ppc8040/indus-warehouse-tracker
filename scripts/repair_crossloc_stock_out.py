@@ -153,7 +153,7 @@ def check_db_permissions(conn):
                 sync_status, validation_status,
                 location, from_location, to_location
             ) VALUES (
-                %s, %s, 'PERM_CHECK', '', '', '', 'PERM_CHECK',
+                %s, %s, 'PERM_CHECK', '', '', 0, 'PERM_CHECK',
                 'STOCK_IN', 'CROSSLOC_REPAIR', '',
                 'SYNCED', 'CROSSLOC_BACKFILL',
                 'PERM_CHECK', '', ''
@@ -171,7 +171,7 @@ def check_db_permissions(conn):
                 indus_part, pallet_qty, last_location
             ) VALUES (
                 'PERM_CHECK', 'IN_WAREHOUSE', %s,
-                'STOCK_IN', %s, '', '', 'PERM_CHECK'
+                'STOCK_IN', %s, '', 0, 'PERM_CHECK'
             )
             ON CONFLICT (handling_unit) DO UPDATE SET
                 last_event_id = EXCLUDED.last_event_id;
