@@ -646,7 +646,6 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                     if sm_type == 'STOCK_IN':
                         session_in_zones.add(sm_loc)
                     elif sm_type == 'STOCK_OUT' and sm_loc not in session_in_zones:
-                    if sm_type == 'STOCK_OUT' and sm_loc not in session_in_zones:
                         # This OUT in the chain has no matching IN — insert one
                         chain_synthetic_ts = _ts_offset(sm_ts, -1)
                         plan['inserts'].append({
