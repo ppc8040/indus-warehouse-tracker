@@ -191,12 +191,6 @@ FIND_ROGUE_OUTS_FOR_PART = """
                 AND  m_in.movement_type = 'STOCK_IN'
                 AND  m_in.timestamp_utc < m_out.timestamp_utc
           )
-      AND NOT EXISTS (
-              SELECT 1 FROM movements m_fix
-              WHERE  m_fix.handling_unit     = m_out.handling_unit
-                AND  m_fix.validation_status = 'CROSSLOC_BACKFILL'
-                AND  m_fix.job_no            = 'XREF:' || m_out.event_id
-          )
     ORDER BY m_out.handling_unit, m_out.timestamp_utc;
 """
 
