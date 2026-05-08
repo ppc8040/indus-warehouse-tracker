@@ -84,6 +84,8 @@ import psycopg2.extras
 # ═══════════════════════════════════════════════════════════════════════════════
 
 CASE_1 = 'CASE_1'   # Classic cross-loc: insert OUT@X + IN@Y
+CASE_2 = 'CASE_2'   # Multi-hop: zone Y self-healed BUT HU re-cycled through zones
+                    # in rapid succession — walk the full chain and balance each leg
 CASE_3 = 'CASE_3'   # Zone Y self-healed: insert OUT@X only
 CASE_4 = 'CASE_4'   # Cross-loc + ghost HU re-IN: same as Case 1 + flag ghost
 
@@ -227,6 +229,34 @@ CHECK_ZONE_Y_REHEALED = """
 #           in the first digit (e.g. 1100... vs 1000...).  We look for
 #           any HU that is NOT the original, scanned IN at out_zone
 #           within 10 minutes after the OVERRIDE OUT, with same indus_part.
+
+# ── Step 4b: detect Case 2 — are there MORE OVERRIDE OUTs for this HU
+#            within 30 minutes of the first one?
+#            If yes, the HU went through a rapid multi-hop session and
+#            zone Y's self-heal IN is part of that chain, not a clean fix.
+CHECK_SUBSEQUENT_OVERRIDE_OUTS = """
+    SELECT event_id, location, timestamp_utc, from_location, to_location
+    FROM   movements
+    WHERE  handling_unit     = %(hu)s
+      AND  movement_type     = 'STOCK_OUT'
+      AND  validation_status = 'OVERRIDE'
+      AND  timestamp_utc     > %(out_ts)s
+      AND  timestamp_utc     <= %(out_ts)s + INTERVAL '30 minutes'
+    ORDER  BY timestamp_utc;
+"""
+
+# ── Step 4c: for Case 2, get ALL movements for this HU within the rapid
+#            session window so we can walk the full chain.
+GET_SESSION_MOVEMENTS = """
+    SELECT event_id, movement_type, location, timestamp_utc, validation_status
+    FROM   movements
+    WHERE  handling_unit     = %(hu)s
+      AND  timestamp_utc     > %(session_start)s
+      AND  timestamp_utc     <= %(session_start)s + INTERVAL '30 minutes'
+      AND  validation_status <> 'CROSSLOC_BACKFILL'
+    ORDER  BY timestamp_utc;
+"""
+
 CHECK_GHOST_HU = """
     SELECT DISTINCT handling_unit, location, timestamp_utc
     FROM   movements
@@ -360,6 +390,16 @@ def _classify_case(cur, hu, out_zone, out_ts, prior_in_location) -> str:
         return CASE_3  # caller may upgrade to CASE_4 if ghost found
     return CASE_1
 
+def _check_subsequent_outs(cur, hu, out_ts) -> list:
+    """Return list of OVERRIDE OUTs for this HU within 30 min after out_ts."""
+    cur.execute(CHECK_SUBSEQUENT_OVERRIDE_OUTS, {'hu': hu, 'out_ts': out_ts})
+    return list(cur.fetchall())
+
+
+def _get_session_movements(cur, hu, session_start) -> list:
+    """Return all movements for this HU in the 30-min session window."""
+    cur.execute(GET_SESSION_MOVEMENTS, {'hu': hu, 'session_start': session_start})
+    return list(cur.fetchall())
 
 def _check_ghost(cur, hu, out_zone, indus_part, out_ts) -> list:
     """Return list of potential ghost HU rows (may be empty)."""
@@ -468,6 +508,7 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                 'in_zone'        : None,
                 'inserts'        : [],
                 'ghost_hus'      : [],
+                'subsequent_outs': [],
                 'skip_reason'    : None,
             }
 
@@ -510,11 +551,21 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
 
             # ── Assign case ───────────────────────────────────────────────
             if ghost_hus:
+            # ── Detect Case 2: zone Y self-healed BUT more OVERRIDE OUTs
+            #    exist within 30 min — this is a rapid multi-hop session.
+            subsequent_outs = _check_subsequent_outs(cur, hu, out_ts)
+
+            # ── Assign case ───────────────────────────────────────────────
+            if ghost_hus:
                 plan['case'] = CASE_4
+            elif zone_y_healed and subsequent_outs:
+                plan['case'] = CASE_2
             elif zone_y_healed:
                 plan['case'] = CASE_3
             else:
                 plan['case'] = CASE_1
+
+            plan['subsequent_outs'] = subsequent_outs
 
             plan['ghost_hus'] = ghost_hus
 
@@ -543,6 +594,8 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
 
             # Row B: STOCK_IN at out_zone (Y) — inserted for Case 1 and Case 4 only.
             # Case 3 skips this because zone Y already has a real IN after the OUT.
+            # Case 2 skips this too — zone Y already has a real IN, but we must
+            # also walk the subsequent chain to ensure every leg is balanced.
             if plan['case'] in (CASE_1, CASE_4):
                 plan['inserts'].append({
                     'event_id'     : _make_event_id(),
@@ -558,6 +611,46 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
                     '_label'       : f'STOCK_IN  @ {out_zone}  (matches OVERRIDE OUT at zone Y)',
                 })
 
+            # ── Case 2: walk the full rapid session chain ─────────────────
+            # The zone Y self-heal IN is real, so that leg is balanced.
+            # We now step through all movements in the 30-min session window
+            # and insert a synthetic IN for any location that has an OVERRIDE
+            # OUT with no prior IN in that session leg.
+            if plan['case'] == CASE_2:
+                session_moves = _get_session_movements(cur, hu, out_ts)
+                # Build a running picture of what INs exist per zone in session
+                session_in_zones = set()
+                for sm in session_moves:
+                    sm_type = (sm['movement_type'] or '').upper()
+                    sm_loc  = (sm['location'] or '').strip().upper()
+                    if sm_type == 'STOCK_IN':
+                        session_in_zones.add(sm_loc)
+
+                for sm in session_moves:
+                    sm_type = (sm['movement_type'] or '').upper()
+                    sm_loc  = (sm['location'] or '').strip().upper()
+                    sm_ts   = sm['timestamp_utc']
+                    if sm_type == 'STOCK_OUT' and sm_loc not in session_in_zones:
+                        # This OUT in the chain has no matching IN — insert one
+                        chain_synthetic_ts = _ts_offset(sm_ts, -1)
+                        plan['inserts'].append({
+                            'event_id'     : _make_event_id(),
+                            'timestamp_utc': chain_synthetic_ts,
+                            'handling_unit': hu,
+                            'indus_part'   : indus_part,
+                            'customer_part': customer_part,
+                            'pallet_qty'   : pallet_qty,
+                            'job_no'       : xref_job_no,
+                            'movement_type': 'STOCK_IN',
+                            'device_id'    : device_id,
+                            'location'     : sm_loc,
+                            '_label'       : (
+                                f'STOCK_IN  @ {sm_loc}  '
+                                f'(Case 2 chain leg — unmatched OUT in session)'
+                            ),
+                        })
+                        session_in_zones.add(sm_loc)  # mark as now covered
+
             plans.append(plan)
 
     return plans
@@ -569,8 +662,9 @@ def build_repair_plan(conn, rogue_outs: list) -> list:
 
 CASE_LABELS = {
     CASE_1: 'Case 1 — Classic cross-loc (OUT@Y balanced, orphan IN@X cleared)',
+    CASE_2: 'Case 2 — Multi-hop chain (zone Y self-healed but HU re-cycled; full chain balanced)',
     CASE_3: 'Case 3 — Zone Y self-healed (orphan IN@X only needs clearing)',
-    CASE_4: 'Case 4 — Cross-loc + ghost HU re-IN (same fix as Case 1 + flag)',
+    CASE_4: 'Case 4 — Cross-loc + ghost HU re-IN (same as Case 1 + flag)',
 }
 
 
@@ -604,6 +698,14 @@ def print_dry_run(plans: list) -> tuple[int, int]:
                   f'ts={ts_str}  event={ins["event_id"]}')
             print(f'                    → {ins["_label"]}')
             total_inserts += 1
+        if p.get('subsequent_outs') and p['case'] == CASE_2:
+            print(f'  ⚑  CASE 2 — Rapid multi-hop session detected. '
+                  f'Subsequent OVERRIDE OUTs in chain:')
+            for s in p['subsequent_outs']:
+                print(f'       OUT event: {s["event_id"]}  '
+                      f'loc={s["location"]}  '
+                      f'ts={str(s["timestamp_utc"])[:19]}')
+            print(f'     Full session chain has been walked and balanced above.')
 
         if p['ghost_hus']:
             print(f'  ⚑  REVIEW_NEEDED — ghost HU(s) detected at {p["out_zone"]}:')
