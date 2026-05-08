@@ -128,42 +128,37 @@ def get_connection():
 #     (idempotency: the OUT's event_id is stored in the synthetic rows'
 #      job_no field as a reference key)
 FIND_AFFECTED_PARTS = """
-    SELECT DISTINCT m_out.indus_part
-    FROM   movements m_out
-    WHERE  m_out.movement_type      = 'STOCK_OUT'
-      AND  m_out.validation_status  = 'OVERRIDE'
-      AND  EXISTS (
-               -- there IS a prior STOCK_IN for this HU
-               SELECT 1 FROM movements m_in
-               WHERE  m_in.handling_unit = m_out.handling_unit
-                 AND  m_in.movement_type = 'STOCK_IN'
-                 AND  m_in.timestamp_utc < m_out.timestamp_utc
-           )
-      AND  NOT EXISTS (
-               -- the most-recent prior IN is at a DIFFERENT location
-               -- (we check this properly per-HU in Python, but this
-               --  pre-filter removes all obviously non-cross-loc rows)
-               SELECT 1 FROM movements m_in2
-               WHERE  m_in2.handling_unit = m_out.handling_unit
-                 AND  m_in2.movement_type = 'STOCK_IN'
-                 AND  m_in2.timestamp_utc < m_out.timestamp_utc
-                 AND  m_in2.location      = m_out.location
-                 AND  m_in2.timestamp_utc = (
-                          SELECT MAX(m_in3.timestamp_utc)
-                          FROM   movements m_in3
-                          WHERE  m_in3.handling_unit = m_out.handling_unit
-                            AND  m_in3.movement_type = 'STOCK_IN'
-                            AND  m_in3.timestamp_utc < m_out.timestamp_utc
-                      )
-           )
-      AND  NOT EXISTS (
-               -- idempotency: no repair already done for this OUT event
-               SELECT 1 FROM movements m_fix
-               WHERE  m_fix.handling_unit     = m_out.handling_unit
-                 AND  m_fix.validation_status = 'CROSSLOC_BACKFILL'
-                 AND  m_fix.job_no            = 'XREF:' || m_out.event_id
-           )
-    ORDER BY m_out.indus_part;
+SELECT DISTINCT m_out.indus_part
+FROM movements m_out
+WHERE m_out.movement_type    = 'STOCK_OUT'
+  AND m_out.validation_status = 'OVERRIDE'
+  AND NOT EXISTS (
+      SELECT 1 FROM movements m_fix
+      WHERE m_fix.handling_unit      = m_out.handling_unit
+        AND m_fix.validation_status  = 'CROSSLOC_BACKFILL'
+        AND m_fix.job_no             = 'XREF:' || m_out.event_id
+  )
+  AND EXISTS (
+      SELECT 1 FROM movements m_in
+      WHERE m_in.handling_unit  = m_out.handling_unit
+        AND m_in.movement_type  = 'STOCK_IN'
+        AND m_in.timestamp_utc  < m_out.timestamp_utc
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM movements m_in2
+      WHERE m_in2.handling_unit  = m_out.handling_unit
+        AND m_in2.movement_type  = 'STOCK_IN'
+        AND m_in2.timestamp_utc  < m_out.timestamp_utc
+        AND m_in2.location       = m_out.location
+        AND m_in2.timestamp_utc  = (
+            SELECT MAX(m_in3.timestamp_utc)
+            FROM movements m_in3
+            WHERE m_in3.handling_unit = m_out.handling_unit
+              AND m_in3.movement_type = 'STOCK_IN'
+              AND m_in3.timestamp_utc < m_out.timestamp_utc
+        )
+  )
+ORDER BY m_out.indus_part;
 """
 
 # ── Step 2: fetch every affected OVERRIDE OUT for a specific Indus Part ───────
@@ -181,17 +176,17 @@ FIND_ROGUE_OUTS_FOR_PART = """
         m_out.timestamp_utc   AS out_ts,
         m_out.device_id,
         m_out.job_no          AS original_job_no
-    FROM movements m_out
-    WHERE m_out.movement_type      = 'STOCK_OUT'
-      AND m_out.validation_status  = 'OVERRIDE'
-      AND m_out.indus_part         = %(indus_part)s
-      AND EXISTS (
-              SELECT 1 FROM movements m_in
-              WHERE  m_in.handling_unit = m_out.handling_unit
-                AND  m_in.movement_type = 'STOCK_IN'
-                AND  m_in.timestamp_utc < m_out.timestamp_utc
-          )
-    ORDER BY m_out.handling_unit, m_out.timestamp_utc;
+FROM movements m_out
+WHERE m_out.movement_type     = 'STOCK_OUT'
+  AND m_out.validation_status = 'OVERRIDE'
+  AND m_out.indus_part        = %(indus_part)s
+  AND EXISTS (
+      SELECT 1 FROM movements m_in
+      WHERE m_in.handling_unit = m_out.handling_unit
+        AND m_in.movement_type = 'STOCK_IN'
+        AND m_in.timestamp_utc < m_out.timestamp_utc
+  )                           
+ORDER BY m_out.handling_unit, m_out.timestamp_utc;
 """
 
 # ── Step 3: get the most-recent STOCK_IN before a given timestamp for an HU ──
