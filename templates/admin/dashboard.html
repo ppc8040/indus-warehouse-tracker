@@ -485,6 +485,18 @@ function _matchesCustFilter(indus_part) {
   return (_oorCodes[indus_part] || '').toLowerCase().includes(cf);
 }
 
+function _hasActiveServerFilters() {
+  const f = getFilters();
+  return (
+    (f.hu           && f.hu           !== '') ||
+    (f.part         && f.part         !== '') ||
+    (f.date_from    && f.date_from    !== '') ||
+    (f.date_to      && f.date_to      !== '') ||
+    (f.movement_type && f.movement_type !== 'ALL') ||
+    (f.location      && f.location     !== 'ALL')
+  );
+}
+
 function filterQS(extra = {}) {
   const f = { ...getFilters(), ...extra };
   const serverFields = ['hu','part','date_from','date_to','movement_type','location'];
@@ -585,7 +597,12 @@ async function loadMovements() {
   const el = document.getElementById('tbl-movements');
   el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
-    const d = await fetch('/admin/api/movements?limit=200&' + filterQS()).then(r => r.json());
+    // Use a large limit when any server-side filter is active so the query
+    // searches the full movement history, not just the latest 200 rows.
+    // Without this, filters return no results if the matching rows fall
+    // outside the default 200-row window.
+    const limit = _hasActiveServerFilters() ? 5000 : 200;
+    const d = await fetch(`/admin/api/movements?limit=${limit}&` + filterQS()).then(r => r.json());
     let rows = (d.movements || []).sort((a, b) => {
       const ta = a.timestamp_dubai ? new Date(a.timestamp_dubai).getTime() : 0;
       const tb = b.timestamp_dubai ? new Date(b.timestamp_dubai).getTime() : 0;
