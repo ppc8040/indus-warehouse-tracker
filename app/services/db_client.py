@@ -299,15 +299,24 @@ def get_all_movements_for_hu(handling_unit: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_pallet_status(handling_unit: str) -> dict | None:
-    """Return the current status row for a HU, or None if not recorded yet."""
+    """Return current status for a single HU, derived from movements
+    with timestamp DESC, id DESC tiebreak."""
     sql = """
-        SELECT
-            handling_unit, current_status, last_event_id,
-            last_movement_type,
-            last_movement_time AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
-            indus_part, pallet_qty, last_location
-        FROM pallet_status
+        SELECT DISTINCT ON (handling_unit)
+            handling_unit,
+            CASE WHEN movement_type = 'STOCK_IN' THEN 'IN_WAREHOUSE'
+                 ELSE 'OUT_OF_WAREHOUSE' END AS current_status,
+            event_id          AS last_event_id,
+            movement_type     AS last_movement_type,
+            timestamp_utc AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
+            indus_part,
+            pallet_qty,
+            location          AS last_location
+        FROM movements
         WHERE handling_unit = %(hu)s
+          AND movement_type IN ('STOCK_IN', 'STOCK_OUT')
+        ORDER BY handling_unit, timestamp_utc DESC, id DESC
+        LIMIT 1
     """
     with _get_conn() as conn:
         with conn.cursor() as cur:
@@ -377,15 +386,22 @@ def upsert_pallet_status(
 
 
 def get_all_pallet_statuses() -> list[dict]:
-    """Return all rows from pallet_status, newest first."""
+    """Return latest status per HU, derived live from movements using
+    timestamp DESC, id DESC tiebreak — matches movements dashboard exactly."""
     sql = """
-        SELECT
-            handling_unit, current_status, last_event_id,
-            last_movement_type,
-            last_movement_time AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
-            indus_part, pallet_qty, last_location
-        FROM pallet_status
-        ORDER BY last_movement_time DESC NULLS LAST
+        SELECT DISTINCT ON (handling_unit)
+            handling_unit,
+            CASE WHEN movement_type = 'STOCK_IN' THEN 'IN_WAREHOUSE'
+                 ELSE 'OUT_OF_WAREHOUSE' END AS current_status,
+            event_id          AS last_event_id,
+            movement_type     AS last_movement_type,
+            timestamp_utc AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
+            indus_part,
+            pallet_qty,
+            location          AS last_location
+        FROM movements
+        WHERE movement_type IN ('STOCK_IN', 'STOCK_OUT')
+        ORDER BY handling_unit, timestamp_utc DESC, id DESC
     """
     with _get_conn() as conn:
         with conn.cursor() as cur:
