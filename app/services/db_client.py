@@ -520,7 +520,7 @@ def _row_to_dict(row) -> dict:
         if isinstance(v, datetime):
             # Format: "27 Apr 2026, 09:33" — day without leading zero,
             # abbreviated month, 24-hour clock, no seconds.
-            out[k] = v.strftime("%-d %b %Y, %H:%M")
+            out[k] = v.strftime("%-d %b %Y, %H:%M:%S")
         else:
             out[k] = v
     return out
