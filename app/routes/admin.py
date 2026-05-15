@@ -324,7 +324,7 @@ def api_movements():
             sync_status, validation_status, location, from_location, to_location
         FROM movements
         {where}
-        ORDER BY timestamp_utc DESC
+        ORDER BY timestamp_utc DESC, id DESC
         LIMIT %(limit)s
     """
     try:
@@ -450,7 +450,7 @@ def api_errors():
                     FROM movements
                     WHERE movement_type = 'ERROR'
                        OR validation_status NOT IN ('VALID', 'OVERRIDE')
-                    ORDER BY timestamp_utc DESC
+                    ORDER BY timestamp_utc DESC, id DESC
                     LIMIT %(limit)s
                 """, {'limit': limit})
                 movement_errors = [_row_to_dict(r) for r in cur.fetchall()]
