@@ -921,9 +921,15 @@
 <script>
 'use strict';
 
-var IVT_CUSTOMER_CODE    = '561469490';
-var IVT_TOTAL_LENGTH     = 33;
-var IVT_VALID_PART_CODES = ['8750722699', '8750722840'];
+var IVT_CUSTOMER_CODE      = '561469490';
+var IVT_TOTAL_LENGTH       = 33;
+// Part codes valid at both M4 and M5
+var IVT_VALID_PART_CODES   = ['8750722699', '8750722840'];
+// Part codes valid at M5 only — kept separate so the server can enforce
+// the location restriction; client pre-check accepts all four codes
+var IVT_M5_ONLY_PART_CODES = ['8750741149', '8750751986'];
+// Combined list used by the client-side pre-check
+var IVT_ALL_PART_CODES     = IVT_VALID_PART_CODES.concat(IVT_M5_ONLY_PART_CODES);
 
 var _ivtScanner         = null;
 var _ivtScannerRunning  = false;
@@ -944,7 +950,9 @@ function _ivtValidateCodeClient(code) {
   if (dd < 1 || dd > 31) return "Invalid day \u2018" + dateSeg.substring(2, 4) + "\u2019 \u2014 day must be 01\u201331.";
   if (mm < 1 || mm > 12) return "Invalid month \u2018" + dateSeg.substring(4, 6) + "\u2019 \u2014 month must be 01\u201312.";
   var partCode = code.substring(23, 33);
-  if (IVT_VALID_PART_CODES.indexOf(partCode) === -1) return "Invalid customer part code \u2018" + partCode + "\u2019 \u2014 must be " + IVT_VALID_PART_CODES.join(' or ') + ".";
+  // Use IVT_ALL_PART_CODES so M5-only codes are not rejected here.
+  // Location-based enforcement (M5-only restriction) is handled server-side in /api/ivt-check.
+  if (IVT_ALL_PART_CODES.indexOf(partCode) === -1) return "Invalid customer part code \u2018" + partCode + "\u2019 \u2014 must be one of: " + IVT_ALL_PART_CODES.join(', ') + ".";
   return null;
 }
 
