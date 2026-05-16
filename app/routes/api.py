@@ -89,6 +89,11 @@ def _ivt_validate_code(code: str, location: str = ''):
     Validate an IVT QR code string.
     Returns None if valid, or a (error_type, message) tuple if invalid.
 
+    When location is empty (e.g. at /api/ivt-check before the worker has
+    selected a location), M5-only part codes pass structure validation and
+    the location restriction is deferred to /api/ivt-enter where location
+    is always present.
+
     Checks (in order):
       1. Non-numeric characters
       2. Total length must be 33
@@ -96,7 +101,8 @@ def _ivt_validate_code(code: str, location: str = ''):
       4. Date segment (pos 9-16) — 00DDMMYY with valid DD/MM
       5. Customer part code (pos 23-32):
            - Unrestricted codes: 8750722699, 8750722840 (any location)
-           - M5-only codes:      8750741149, 8750751986 (location must be M5)
+           - M5-only codes:      8750741149, 8750751986 (location must be M5,
+             only enforced when location is non-empty)
     """
     bad = re.search(r'[^0-9]', code)
     if bad:
@@ -138,6 +144,9 @@ def _ivt_validate_code(code: str, location: str = ''):
         return None  # unrestricted — always valid
 
     if part_code in _IVT_M5_ONLY_PART_CODES:
+        # If no location provided yet (pre-selection check), defer restriction
+        if not location:
+            return None
         if location.upper() == 'M5':
             return None  # M5-only code posted at M5 — valid
         return ('invalid_part_code',
@@ -363,8 +372,8 @@ def validate_pin():
 #
 # Duplicate guards (applied in order):
 #   1. Full-code check  — entire 33-digit code must not already exist
-#   2. Serial check     — 6-digit serial (pos 17–22) must not already exist
-#      in any stored code, regardless of part code or date segment
+#   2. Serial check     — 6-digit serial (pos 17–22) must not exist in any
+#      stored code, regardless of part code or date segment
 # ===========================================================================
 
 @api_bp.route('/ivt-check', methods=['POST'])
@@ -372,14 +381,17 @@ def ivt_check():
     """
     Validate and duplicate-check an IVT QR code.
 
+    Called immediately after scan, BEFORE the worker selects a location.
+    Location is therefore NOT used for validation here — the M5-only
+    part code restriction is enforced only at /api/ivt-enter once the
+    worker has confirmed their location.
+
     Validation rules (server-side mirror of the client-side checks):
       1. No non-numeric characters
       2. Total length must be exactly 33 digits
       3. Positions 0-8  must equal '561469490'  (customer code)
       4. Positions 9-16 must be valid 00DDMMYY   (date segment)
-      5. Positions 23-32 must be a known part code:
-           Unrestricted (M4 or M5): 8750722699, 8750722840
-           M5-only:                 8750741149, 8750751986
+      5. Positions 23-32 must be a known part code (structure check only)
 
     Duplicate checks (in order):
       A. Full-code match  → duplicate_type: "code"
@@ -392,13 +404,13 @@ def ivt_check():
         "scanned_date": "..." }
     """
     data = request.get_json(silent=True) or {}
-    code     = str(data.get('code', '')).strip()
-    location = str(data.get('location', '')).strip().upper()
+    code = str(data.get('code', '')).strip()
 
     if not code:
         return jsonify({"success": False, "message": "Code is required."}), 400
 
-    err = _ivt_validate_code(code, location)
+    # Validate structure only — no location passed, M5 restriction deferred
+    err = _ivt_validate_code(code)
     if err:
         error_type, message = err
         logger.warning("IVT validation failed for code %r [%s]: %s",
@@ -441,6 +453,9 @@ def ivt_enter():
     """
     Append a validated, unique IVT code to the ivt_scans table.
 
+    Location is required and fully validated here, including the M5-only
+    restriction for part codes 8750741149 and 8750751986.
+
     Uniqueness is enforced at two levels immediately before the write:
       1. Full-code check  — entire 33-digit code must not already exist
       2. Serial check     — 6-digit serial (pos 17–22) must not exist in
@@ -461,6 +476,7 @@ def ivt_enter():
                         "message": f"Invalid location '{location}'. "
                                    f"Must be M4 or M5."}), 400
 
+    # Full validation including M5-only restriction (location is known here)
     err = _ivt_validate_code(code, location)
     if err:
         _, message = err
