@@ -451,14 +451,21 @@ def ivt_find_by_serial(serial: str) -> dict | None:
 
 def ivt_insert(code: str, scanned_date: str, location: str) -> None:
     """Insert a new IVT scan. Raises DbError on duplicate."""
+    # scanned_date may arrive as a formatted Dubai string (DD/MM/YYYY HH:MM:SS AM/PM).
+    # The live ivt_scans column is TIMESTAMPTZ, so we must pass a timezone-aware
+    # datetime — not a free-form string — otherwise Postgres rejects the insert.
+    from datetime import datetime, timezone
+    try:
+        dt_value = datetime.strptime(scanned_date, '%d/%m/%Y %I:%M:%S %p').replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        dt_value = datetime.now(timezone.utc)
     sql = """
         INSERT INTO ivt_scans (code, scanned_date, location)
         VALUES (%(code)s, %(scanned_date)s, %(location)s)
     """
     with _get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, {"code": code, "scanned_date": scanned_date, "location": location})
-    logger.debug("ivt_insert: code=%s location=%s", code, location)
+            cur.execute(sql, {"code": code, "scanned_date": dt_value, "location": location})
 
 
 # ---------------------------------------------------------------------------
