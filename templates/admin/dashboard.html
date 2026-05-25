@@ -226,6 +226,66 @@
       transition:background .15s,border-color .15s,color .15s;
     }
     .btn-kbd:hover{color:var(--text);border-color:var(--primary)}
+
+
+    /* ── Tab row count badges ────────────────────────────────── */
+    .tab-badge {
+      display:inline-block;
+      background:var(--surface2);
+      border:1px solid var(--border);
+      color:var(--muted);
+      border-radius:20px;
+      font-size:10px;
+      font-weight:600;
+      padding:1px 6px;
+      margin-left:5px;
+      vertical-align:middle;
+      min-width:20px;
+      text-align:center;
+      transition:background .15s,color .15s;
+    }
+    .tab.on .tab-badge {
+      background:color-mix(in srgb,var(--primary) 18%,var(--surface2));
+      color:var(--primary);
+      border-color:color-mix(in srgb,var(--primary) 40%,var(--border));
+    }
+    
+    /* ── Column summary bar ──────────────────────────────────── */
+    .col-summary-bar {
+      display:none;
+      align-items:center;
+      gap:14px;
+      padding:6px 14px;
+      background:var(--surface);
+      border:1px solid var(--primary);
+      border-radius:6px;
+      font-size:11px;
+      margin-bottom:8px;
+      flex-wrap:wrap;
+    }
+    .col-summary-bar.visible { display:flex; }
+    .col-summary-item {
+      display:flex;align-items:center;gap:4px;color:var(--muted);
+    }
+    .col-summary-item strong { color:var(--text); font-variant-numeric:tabular-nums; }
+    .col-summary-sep { color:var(--border); }
+    
+    /* ── Export selection button ─────────────────────────────── */
+    .btn-export-sel {
+      display:none;
+      background:var(--surface2);
+      border:1px solid var(--border);
+      color:var(--text);
+      border-radius:6px;
+      padding:6px 12px;
+      font-size:12px;
+      font-weight:500;
+      cursor:pointer;
+      transition:background .15s,border-color .15s;
+    }
+    .btn-export-sel.visible { display:inline-flex; align-items:center; gap:5px; }
+    .btn-export-sel:hover { border-color:var(--primary); background:color-mix(in srgb,var(--primary) 8%,var(--surface2)); }
+    
     /* ── Auto-refresh ───────────────────────────────────────── */
     .auto-refresh-wrap{display:flex;align-items:center;gap:6px}
     .ar-label{font-size:11px;color:var(--muted);white-space:nowrap}
@@ -368,31 +428,37 @@
 </div>
 
 <div class="tabs">
-  <button class="tab on"  onclick="switchTab('movements',this)">&#128230; Movements</button>
-  <button class="tab"     onclick="switchTab('statuses',this)">&#128994; Pallet Status</button>
-  <button class="tab"     onclick="switchTab('stock',this)">&#128200; Stock by Location</button>
-  <button class="tab"     onclick="switchTab('totalstock',this)">&#128451; Total Stock</button>
+  <button class="tab on"  onclick="switchTab('movements',this)">&#128230; Movements<span class="tab-badge" id="badge-movements"></span></button>
+  <button class="tab"     onclick="switchTab('statuses',this)">&#128994; Pallet Status<span class="tab-badge" id="badge-statuses"></span></button>
+  <button class="tab"     onclick="switchTab('stock',this)">&#128200; Stock by Location<span class="tab-badge" id="badge-stock"></span></button>
+  <button class="tab"     onclick="switchTab('totalstock',this)">&#128451; Total Stock<span class="tab-badge" id="badge-totalstock"></span></button>
   <button class="tab"     onclick="switchTab('analytics',this)">&#128202; Analytics</button>
-  <button class="tab"     onclick="switchTab('ivt',this)">&#128269; IVT Scans</button>
-  <button class="tab"     onclick="switchTab('errors',this)">&#9888;&#65039; Errors</button>
-  <button class="tab"     onclick="switchTab('saprecon',this)">&#128260; SAP Recon</button>
+  <button class="tab"     onclick="switchTab('ivt',this)">&#128269; IVT Scans<span class="tab-badge" id="badge-ivt"></span></button>
+  <button class="tab"     onclick="switchTab('errors',this)">&#9888;&#65039; Errors<span class="tab-badge" id="badge-errors"></span></button>
+  <button class="tab"     onclick="switchTab('saprecon',this)">&#128260; SAP Recon<span class="tab-badge" id="badge-saprecon"></span></button>
 </div>
 
 <!-- Movements -->
-<div class="tab-pane on" id="pane-movements">
   <div class="tab-hdr">
     <h2>Movement Log</h2>
-    <button class="btn btn-green" onclick="exportSheet('movements')">&#8659; Export Excel</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-export-sel" id="exportsel-movements" onclick="exportSelection('movements')">&#8659; Export Selection</button>
+      <button class="btn btn-green" onclick="exportSheet('movements')">&#8659; Export Excel</button>
+    </div>
   </div>
+  <div id="col-summary-bar-movements" class="col-summary-bar"></div>
   <div class="tbl-wrap" id="tbl-movements"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Pallet Status -->
-<div class="tab-pane" id="pane-statuses">
   <div class="tab-hdr">
     <h2>Pallet Status</h2>
-    <button class="btn btn-green" onclick="exportSheet('statuses')">&#8659; Export Excel</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-export-sel" id="exportsel-statuses" onclick="exportSelection('statuses')">&#8659; Export Selection</button>
+      <button class="btn btn-green" onclick="exportSheet('statuses')">&#8659; Export Excel</button>
+    </div>
   </div>
+  <div id="col-summary-bar-statuses" class="col-summary-bar"></div>
   <div class="tbl-wrap" id="tbl-statuses"><div class="empty">Loading&#8230;</div></div>
 </div>
 
@@ -400,13 +466,17 @@
 <div class="tab-pane" id="pane-stock">
   <div class="tab-hdr">
     <h2>Stock by Location</h2>
-    <button class="btn btn-green" onclick="exportSheet('stock')">&#8659; Export Excel</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-export-sel" id="exportsel-stock" onclick="exportSelection('stock')">&#8659; Export Selection</button>
+      <button class="btn btn-green" onclick="exportSheet('stock')">&#8659; Export Excel</button>
+    </div>
   </div>
   <p style="font-size:11px;color:var(--muted);margin-bottom:10px">
     Net stock per material per location (IN &#8722; OUT).
     <span style="color:var(--neg)">Red rows = one or more locations in deficit.</span>
     Filter by Part, Customer, or Location.
   </p>
+  <div id="col-summary-bar-stock" class="col-summary-bar"></div>
   <div class="neg-banner" id="neg-stock-banner">
     <div class="neg-banner-title">&#9888; Negative Stock Detected</div>
     <div class="tbl-wrap" id="neg-stock-banner-tbl"></div>
@@ -418,10 +488,12 @@
 <div class="tab-pane" id="pane-totalstock">
   <div class="tab-hdr">
     <h2>Total Stock &#8212; All Locations Combined</h2>
-    <button class="btn btn-green" onclick="exportSheet('total_stock')">&#8659; Export Excel</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-export-sel" id="exportsel-totalstock" onclick="exportSelection('totalstock')">&#8659; Export Selection</button>
+      <button class="btn btn-green" onclick="exportSheet('total_stock')">&#8659; Export Excel</button>
+    </div>
   </div>
-  <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Overall net qty per material across every location. <span style="color:var(--neg)">Red = total negative stock.</span> Filter by Part or Customer.</p>
-  <div class="tbl-wrap" id="tbl-totalstock"><div class="empty">Loading&#8230;</div></div>
+  <div id="col-summary-bar-totalstock" class="col-summary-bar"></div><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Analytics -->
@@ -450,8 +522,12 @@
 <div class="tab-pane" id="pane-ivt">
   <div class="tab-hdr">
     <h2>IVT Scans</h2>
-    <button class="btn btn-green" onclick="exportSheet('ivt')">&#8659; Export Excel</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-export-sel" id="exportsel-ivt" onclick="exportSelection('ivt')">&#8659; Export Selection</button>
+      <button class="btn btn-green" onclick="exportSheet('ivt')">&#8659; Export Excel</button>
+    </div>
   </div>
+  <div id="col-summary-bar-ivt" class="col-summary-bar"></div>
   <div class="chart-grid" style="margin-bottom:14px">
     <div class="chart-card">
       <h3>IVT Daily Scans &#8212; last 14 days</h3>
@@ -465,8 +541,12 @@
 <div class="tab-pane" id="pane-errors">
   <div class="tab-hdr">
     <h2>Error Log</h2>
-    <button class="btn btn-green" onclick="exportSheet('errors')">&#8659; Export Excel</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-export-sel" id="exportsel-errors" onclick="exportSelection('errors')">&#8659; Export Selection</button>
+      <button class="btn btn-green" onclick="exportSheet('errors')">&#8659; Export Excel</button>
+    </div>
   </div>
+  <div id="col-summary-bar-errors" class="col-summary-bar"></div>
   <div style="margin-bottom:16px">
     <p style="font-size:11px;font-weight:600;color:var(--neg);text-transform:uppercase;
               letter-spacing:.05em;margin-bottom:8px">&#9888; Negative Stock Alerts</p>
@@ -482,6 +562,7 @@
   <div class="tab-hdr">
     <h2>&#128260; SAP Reconciliation</h2>
     <div class="tab-hdr-actions">
+      <button class="btn-export-sel" id="exportsel-saprecon" onclick="exportSelection('saprecon')">&#8659; Export Selection</button>
       <button class="btn btn-sap" onclick="loadSapRecon(true)">&#8635; Refresh from SAP</button>
       <button class="btn btn-green" onclick="exportSheet('sap_recon')">&#8659; Export Excel</button>
     </div>
@@ -770,6 +851,7 @@ async function loadMovements() {
     }
     el.innerHTML = h + '</tbody></table>';
     _makeTableSelectable(el);
+    _setTabBadge('movements', rows.length);
   } catch (e) { el.innerHTML = '<div class="empty">Failed to load movements.</div>'; console.error('loadMovements', e); }
 }
 
@@ -805,6 +887,7 @@ async function loadStatuses() {
     }
     el.innerHTML = h + '</tbody></table>';
     _makeTableSelectable(el);
+    _setTabBadge('statuses', rows.length);
   } catch (e) { el.innerHTML = '<div class="empty">Failed to load statuses.</div>'; console.error('loadStatuses', e); }
 }
 
@@ -868,6 +951,7 @@ async function loadStock() {
     }
     el.innerHTML = h + '</tbody></table>';
     _makeTableSelectable(el);
+    _setTabBadge('stock', rows.length);
   } catch (e) {
     el.innerHTML = `<div class="empty">Failed to load stock summary: ${e.message}</div>`;
     banner.classList.remove('visible');
@@ -914,6 +998,7 @@ async function loadTotalStock() {
     }
     el.innerHTML = h + '</tbody></table>';
     _makeTableSelectable(el);
+    _setTabBadge('totalstock', rows.length);
   } catch (e) {
     el.innerHTML = `<div class="empty">Failed to load total stock: ${e.message}</div>`;
     console.error('loadTotalStock', e);
@@ -964,6 +1049,7 @@ async function loadErrors() {
     }
     errEl.innerHTML = h + '</tbody></table>';
     _makeTableSelectable(errEl);
+    _setTabBadge('errors', rows.length);
   } catch (e) { errEl.innerHTML = '<div class="empty">Failed to load error log.</div>'; console.error('loadErrors', e); }
 }
 
@@ -1144,6 +1230,7 @@ function renderReconTable() {
   }
   el.innerHTML = h + '</tbody></table>';
   _makeTableSelectable(el);
+  _setTabBadge('saprecon', rows.length);
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
@@ -1226,6 +1313,7 @@ async function loadOperators() {
     }
     el.innerHTML = h + '</tbody></table>';
     _makeTableSelectable(el);
+    _setTabBadge('operators', rows.length);
   } catch (e) { el.innerHTML = '<div class="empty">Failed to load operators.</div>'; console.error('loadOperators', e); }
 }
 async function loadAnalytics() {
@@ -1260,6 +1348,7 @@ async function loadIvt() {
     }
     el.innerHTML = h + '</tbody></table>';
     _makeTableSelectable(el);
+    _setTabBadge('ivt', rows.length);
   } catch (e) { console.error('IVT', e); }
 }
 
@@ -1384,6 +1473,7 @@ function _paintSelection() {
   // always highlight the anchor cell distinctly
   const anchorTd = table.querySelector('tbody').rows[_selAnchor.row]?.cells[_selAnchor.col];
   if (anchorTd) anchorTd.classList.add('cell-selected');
+  _updateSummaryBar();
 }
 
 function clearCellSelection() {
@@ -1392,6 +1482,8 @@ function clearCellSelection() {
   });
   _selAnchor = null;
   _selFocus  = null;
+  _updateSummaryBar();        // ← ADD THIS LINE
+  _updateExportSelButton(false); // ← ADD THIS LINE
 }
 
 function _getCellText(td) {
@@ -1704,6 +1796,143 @@ function _updateArc() {
   const progress = _arRemaining / _arInterval; // 1 → 0
   arc.style.strokeDashoffset = _AR_CIRCUMFERENCE * (1 - progress);
   arc.title = `Next refresh in ${_arRemaining}s`;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ROW COUNT BADGES
+// ════════════════════════════════════════════════════════════════════
+function _setTabBadge(tabName, count) {
+  const el = document.getElementById('badge-' + tabName);
+  if (!el) return;
+  if (count === null || count === undefined) {
+    el.textContent = '';
+    return;
+  }
+  el.textContent = count >= 1000 ? (Math.floor(count / 1000) + 'k') : count;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// COLUMN SUMMARY BAR
+// ════════════════════════════════════════════════════════════════════
+function _updateSummaryBar() {
+  const activePane = document.querySelector('.tab-pane.on');
+  if (!activePane) return;
+  const barId = 'col-summary-bar-' + _activeTab;
+  const bar = document.getElementById(barId);
+  if (!bar) return;
+
+  if (!_selAnchor || !_selFocus) {
+    bar.classList.remove('visible');
+    _updateExportSelButton(false);
+    return;
+  }
+
+  const table = _selAnchor.table;
+  const r1 = Math.min(_selAnchor.row, _selFocus.row);
+  const r2 = Math.max(_selAnchor.row, _selFocus.row);
+  const c1 = Math.min(_selAnchor.col, _selFocus.col);
+  const c2 = Math.max(_selAnchor.col, _selFocus.col);
+  const tbody = table.querySelector('tbody');
+
+  const cellCount = (r2 - r1 + 1) * (c2 - c1 + 1);
+  const rowCount  = r2 - r1 + 1;
+
+  // Collect numeric values from selected cells
+  const nums = [];
+  for (let r = r1; r <= r2; r++) {
+    const tr = tbody.rows[r];
+    if (!tr) continue;
+    for (let c = c1; c <= c2; c++) {
+      const td = tr.cells[c];
+      if (!td) continue;
+      const raw = (td.innerText || td.textContent || '').trim().replace(/[^0-9.\-]/g, '');
+      const n = parseFloat(raw);
+      if (!isNaN(n)) nums.push(n);
+    }
+  }
+
+  let html = `<span class="col-summary-item">Cells: <strong>${cellCount}</strong></span>
+    <span class="col-summary-sep">|</span>
+    <span class="col-summary-item">Rows: <strong>${rowCount}</strong></span>`;
+
+  if (nums.length > 0) {
+    const sum = nums.reduce((a, b) => a + b, 0);
+    const avg = sum / nums.length;
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    const fmt = n => Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2);
+    html += `
+      <span class="col-summary-sep">|</span>
+      <span class="col-summary-item">Sum: <strong>${fmt(sum)}</strong></span>
+      <span class="col-summary-sep">|</span>
+      <span class="col-summary-item">Avg: <strong>${fmt(avg)}</strong></span>
+      <span class="col-summary-sep">|</span>
+      <span class="col-summary-item">Min: <strong>${fmt(min)}</strong></span>
+      <span class="col-summary-sep">|</span>
+      <span class="col-summary-item">Max: <strong>${fmt(max)}</strong></span>`;
+  }
+
+  bar.innerHTML = html;
+  bar.classList.add('visible');
+  _updateExportSelButton(true);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// EXPORT SELECTION
+// ════════════════════════════════════════════════════════════════════
+function _updateExportSelButton(show) {
+  const btn = document.getElementById('exportsel-' + _activeTab);
+  if (!btn) return;
+  btn.classList.toggle('visible', show);
+}
+
+function exportSelection(tabName) {
+  if (!_selAnchor || !_selFocus) return;
+  const table = _selAnchor.table;
+  if (!table) return;
+
+  const r1 = Math.min(_selAnchor.row, _selFocus.row);
+  const r2 = Math.max(_selAnchor.row, _selFocus.row);
+  const c1 = Math.min(_selAnchor.col, _selFocus.col);
+  const c2 = Math.max(_selAnchor.col, _selFocus.col);
+  const tbody = table.querySelector('tbody');
+  const thead = table.querySelector('thead');
+
+  const rows = [];
+
+  // Add header row for selected columns
+  if (thead && thead.rows.length > 0) {
+    const headerCells = [];
+    for (let c = c1; c <= c2; c++) {
+      headerCells.push('"' + (thead.rows[0].cells[c]?.innerText || '').trim().replace(/"/g, '""') + '"');
+    }
+    rows.push(headerCells.join(','));
+  }
+
+  // Add data rows
+  for (let r = r1; r <= r2; r++) {
+    const tr = tbody.rows[r];
+    if (!tr) continue;
+    const cells = [];
+    for (let c = c1; c <= c2; c++) {
+      const val = (tr.cells[c]?.innerText || tr.cells[c]?.textContent || '').trim().replace(/"/g, '""');
+      // Wrap in quotes to preserve formatting; prefix long numbers with tab trick
+      cells.push('"' + val + '"');
+    }
+    rows.push(cells.join(','));
+  }
+
+  const csv = rows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `selection_${tabName}_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  _showCopyToast(`Exported ${r2-r1+1} rows × ${c2-c1+1} cols`);
 }
 
 document.addEventListener('DOMContentLoaded', loadAll);
