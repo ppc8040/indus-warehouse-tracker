@@ -98,7 +98,7 @@ def _ivt_validate_code(code: str, location: str = ''):
       1. Non-numeric characters
       2. Total length must be 33
       3. Customer code segment (pos 0-8)
-      4. Date segment (pos 9-16) — 00DDMMYY with valid DD/MM
+      4. Date segment (pos 9-16) — 00DDMMYY with valid DD/MM cross-validated
       5. Customer part code (pos 23-32):
            - Unrestricted codes: 8750722699, 8750722840 (any location)
            - M5-only codes:      8750741149, 8750751986 (location must be M5,
@@ -127,16 +127,12 @@ def _ivt_validate_code(code: str, location: str = ''):
         return ('invalid_date',
                 f"Invalid date segment \u2018{date_seg}\u2019 "
                 f"\u2014 must start with 00 (format 00DDMMYY).")
-    dd = int(date_seg[2:4])
-    mm = int(date_seg[4:6])
-    if not (1 <= dd <= 31):
+    try:
+        datetime.strptime(f"{date_seg[2:4]}{date_seg[4:6]}", "%d%m")
+    except ValueError:
         return ('invalid_date',
-                f"Invalid day \u2018{date_seg[2:4]}\u2019 in date segment "
-                f"\u2018{date_seg}\u2019 \u2014 day must be 01\u201331.")
-    if not (1 <= mm <= 12):
-        return ('invalid_date',
-                f"Invalid month \u2018{date_seg[4:6]}\u2019 in date segment "
-                f"\u2018{date_seg}\u2019 \u2014 month must be 01\u201312.")
+                f"Invalid date segment \u2018{date_seg}\u2019 "
+                f"\u2014 day {date_seg[2:4]} does not exist in month {date_seg[4:6]}.")
 
     part_code = code[23:33]
 
@@ -144,11 +140,10 @@ def _ivt_validate_code(code: str, location: str = ''):
         return None  # unrestricted — always valid
 
     if part_code in _IVT_M5_ONLY_PART_CODES:
-        # If no location provided yet (pre-selection check), defer restriction
         if not location:
-            return None
+            return None  # defer location check to /ivt-enter
         if location.upper() == 'M5':
-            return None  # M5-only code posted at M5 — valid
+            return None  # M5-only code at M5 — valid
         return ('invalid_part_code',
                 f"Part code \u2018{part_code}\u2019 is only permitted at "
                 f"location M5.")
@@ -158,7 +153,6 @@ def _ivt_validate_code(code: str, location: str = ''):
     return ('invalid_part_code',
             f"Invalid customer part code \u2018{part_code}\u2019 "
             f"\u2014 must be {valid_list}.")
-
 
 # ===========================================================================
 # ROUTES
