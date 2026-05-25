@@ -226,6 +226,27 @@
       transition:background .15s,border-color .15s,color .15s;
     }
     .btn-kbd:hover{color:var(--text);border-color:var(--primary)}
+    /* ── Auto-refresh ───────────────────────────────────────── */
+    .auto-refresh-wrap{display:flex;align-items:center;gap:6px}
+    .ar-label{font-size:11px;color:var(--muted);white-space:nowrap}
+    .ar-select{background:var(--toggle-bg);border:1px solid var(--toggle-border);color:var(--text);
+               border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;
+               transition:border-color .15s}
+    .ar-select:hover{border-color:var(--primary)}
+    .ar-select:focus{outline:1px solid var(--primary)}
+    .ar-countdown{
+      display:none;align-items:center;justify-content:center;
+      width:32px;height:32px;
+    }
+    .ar-countdown.active{display:flex}
+    .ar-countdown svg{transform:rotate(-90deg)}
+    .ar-countdown circle{
+      fill:none;stroke:var(--border);stroke-width:3;
+    }
+    .ar-countdown .arc{
+      stroke:var(--primary);stroke-width:3;stroke-linecap:round;
+      transition:stroke-dashoffset .9s linear;
+    }
   </style>
 </head>
 <body>
@@ -234,6 +255,22 @@
   <h1>&#127981; Indus Warehouse &#8212; Admin Dashboard</h1>
   <div class="hdr-right">
     <button class="btn btn-primary" onclick="loadAll()">&#8635; Refresh</button>
+    <div class="auto-refresh-wrap">
+      <span class="ar-label">Auto-refresh:</span>
+      <select class="ar-select" id="arSelect" onchange="setAutoRefresh(this.value)">
+        <option value="0">OFF</option>
+        <option value="30">30s</option>
+        <option value="60">1 min</option>
+        <option value="300">5 min</option>
+      </select>
+      <div class="ar-countdown" id="arCountdown" title="Next refresh">
+        <svg width="28" height="28" viewBox="0 0 28 28">
+          <circle cx="14" cy="14" r="11"/>
+          <circle class="arc" id="arArc" cx="14" cy="14" r="11"
+                  stroke-dasharray="69.1" stroke-dashoffset="69.1"/>
+        </svg>
+      </div>
+    </div>
     <button class="btn-kbd" id="kbdHelpBtn" onclick="toggleKbdOverlay()" title="Keyboard shortcuts (?)">?</button>
     <button class="btn-theme" id="themeToggle" onclick="toggleTheme()" aria-label="Switch to light mode" title="Toggle light / dark mode">
       <!-- Moon icon shown in dark mode -->
@@ -262,6 +299,7 @@
       <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>1</kbd> – <kbd>8</kbd></td><td>Switch to tab (1=Movements … 8=SAP Recon)</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>Cycle auto-refresh interval (OFF → 30s → 1m → 5m)</td></tr>
         <tr><td><kbd>R</kbd></td><td>Refresh current tab data</td></tr>
         <tr><td><kbd>Ctrl</kbd>+<kbd>E</kbd></td><td>Export current tab to Excel</td></tr>
         <tr><td><kbd>F</kbd> or <kbd>/</kbd></td><td>Focus the HU Number filter input</td></tr>
@@ -1580,6 +1618,17 @@ document.addEventListener('keydown', e => {
     return;
   }
 
+  // Ctrl+Shift+R: cycle auto-refresh
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+    e.preventDefault();
+    const sel = document.getElementById('arSelect');
+    const opts = Array.from(sel.options).map(o => o.value);
+    const cur  = opts.indexOf(sel.value);
+    sel.value  = opts[(cur + 1) % opts.length];
+    setAutoRefresh(sel.value);
+    return;
+  }
+
   // F or /: focus HU filter
   if (e.key === 'f' || e.key === '/' || e.key === 'F') {
     e.preventDefault();
@@ -1587,6 +1636,64 @@ document.addEventListener('keydown', e => {
     return;
   }
 });
+
+// ════════════════════════════════════════════════════════════════════
+// AUTO-REFRESH
+// ════════════════════════════════════════════════════════════════════
+let _arTimer       = null;
+let _arTickTimer   = null;
+let _arInterval    = 0;
+let _arRemaining   = 0;
+const _AR_CIRCUMFERENCE = 69.1; // 2 * π * 11
+
+const _AR_SKIP_TABS = ['saprecon']; // SAP Recon is excluded
+
+function setAutoRefresh(val) {
+  // Clear any existing timers
+  clearInterval(_arTimer);
+  clearInterval(_arTickTimer);
+  _arTimer = null;
+  _arTickTimer = null;
+
+  const countdown = document.getElementById('arCountdown');
+  const arc       = document.getElementById('arArc');
+  _arInterval = parseInt(val);
+
+  if (_arInterval === 0) {
+    countdown.classList.remove('active');
+    arc.style.strokeDashoffset = _AR_CIRCUMFERENCE;
+    return;
+  }
+
+  countdown.classList.add('active');
+  _arRemaining = _arInterval;
+  _updateArc();
+
+  // Tick every second to animate the ring
+  _arTickTimer = setInterval(() => {
+    _arRemaining = Math.max(0, _arRemaining - 1);
+    _updateArc();
+  }, 1000);
+
+  // Fire the actual refresh on the interval
+  _arTimer = setInterval(() => {
+    _arRemaining = _arInterval; // reset countdown visually
+    _updateArc();
+    // Only refresh if NOT on a skip tab
+    if (!_AR_SKIP_TABS.includes(_activeTab)) {
+      loadStats();
+      if (TAB_LOADERS[_activeTab]) TAB_LOADERS[_activeTab]();
+    }
+  }, _arInterval * 1000);
+}
+
+function _updateArc() {
+  const arc = document.getElementById('arArc');
+  if (!arc || _arInterval === 0) return;
+  const progress = _arRemaining / _arInterval; // 1 → 0
+  arc.style.strokeDashoffset = _AR_CIRCUMFERENCE * (1 - progress);
+  arc.title = `Next refresh in ${_arRemaining}s`;
+}
 
 document.addEventListener('DOMContentLoaded', loadAll);
 </script>
