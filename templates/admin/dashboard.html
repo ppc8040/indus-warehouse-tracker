@@ -1579,12 +1579,17 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  // ADD THIS BEFORE the if (e.ctrlKey || e.metaKey) block
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'R') {
-    e.preventDefault();
-    cycleAutoRefresh();
-    return;
-  }
+    // Ctrl+Shift+R: cycle auto-refresh
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+      e.preventDefault();
+      const sel = document.getElementById('arSelect');
+      const opts = Array.from(sel.options).map(o => o.value);
+      const cur  = opts.indexOf(sel.value);
+      sel.value  = opts[(cur + 1) % opts.length];
+      setAutoRefresh(sel.value);
+      return;
+    }
+
   // Ctrl/Cmd combos — work even inside inputs for Ctrl+C/E/F/A
   if (e.ctrlKey || e.metaKey) {
     if (e.key === 'c' || e.key === 'C') {
@@ -1624,16 +1629,16 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  // Ctrl+Shift+R: cycle auto-refresh
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
-    e.preventDefault();
-    const sel = document.getElementById('arSelect');
-    const opts = Array.from(sel.options).map(o => o.value);
-    const cur  = opts.indexOf(sel.value);
-    sel.value  = opts[(cur + 1) % opts.length];
-    setAutoRefresh(sel.value);
-    return;
-  }
+  // // Ctrl+Shift+R: cycle auto-refresh
+  // if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+  //   e.preventDefault();
+  //   const sel = document.getElementById('arSelect');
+  //   const opts = Array.from(sel.options).map(o => o.value);
+  //   const cur  = opts.indexOf(sel.value);
+  //   sel.value  = opts[(cur + 1) % opts.length];
+  //   setAutoRefresh(sel.value);
+  //   return;
+  // }
 
   // F or /: focus HU filter
   if (e.key === 'f' || e.key === '/' || e.key === 'F') {
