@@ -1447,7 +1447,7 @@ def api_ivt():
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT code, scanned_date, location FROM ivt_scans ORDER BY id DESC LIMIT 100")
+                cur.execute("SELECT code, scanned_date, location FROM ivt_scans ORDER BY id DESC")
                 recent = [dict(r) for r in cur.fetchall()]
                 cur.execute("""
                     SELECT TO_CHAR(scanned_date::timestamptz AT TIME ZONE 'Asia/Dubai','YYYY-MM-DD') AS day,
