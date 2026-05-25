@@ -1919,14 +1919,16 @@ function exportSelection(tabName) {
     const cells = [];
     for (let c = c1; c <= c2; c++) {
       const val = (tr.cells[c]?.innerText || tr.cells[c]?.textContent || '').trim().replace(/"/g, '""');
-      // Wrap in quotes to preserve formatting; prefix long numbers with tab trick
-      cells.push('"' + val + '"');
+      // Force Excel to treat long numeric strings (HU numbers, part numbers) as text
+      // using the ="value" formula trick — identical behaviour to openpyxl's @-format
+      const isLongNumeric = /^\d{6,}$/.test(val.replace(/\s/g, ''));
+      cells.push(isLongNumeric ? '="' + val + '"' : '"' + val + '"');
     }
     rows.push(cells.join(','));
   }
 
   const csv = rows.join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href     = url;
