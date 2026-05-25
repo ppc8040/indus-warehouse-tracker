@@ -439,6 +439,7 @@
 </div>
 
 <!-- Movements -->
+<div class="tab-pane on" id="pane-movements">
   <div class="tab-hdr">
     <h2>Movement Log</h2>
     <div style="display:flex;gap:8px;align-items:center">
@@ -451,6 +452,7 @@
 </div>
 
 <!-- Pallet Status -->
+<div class="tab-pane" id="pane-statuses">
   <div class="tab-hdr">
     <h2>Pallet Status</h2>
     <div style="display:flex;gap:8px;align-items:center">
@@ -493,7 +495,8 @@
       <button class="btn btn-green" onclick="exportSheet('total_stock')">&#8659; Export Excel</button>
     </div>
   </div>
-  <div id="col-summary-bar-totalstock" class="col-summary-bar"></div><div class="empty">Loading&#8230;</div></div>
+  <div id="col-summary-bar-totalstock" class="col-summary-bar"></div>
+  <div class="tbl-wrap" id="tbl-totalstock"><div class="empty">Loading&#8230;</div></div>
 </div>
 
 <!-- Analytics -->
