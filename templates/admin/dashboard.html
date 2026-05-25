@@ -1579,6 +1579,12 @@ document.addEventListener('keydown', e => {
     return;
   }
 
+  // ADD THIS BEFORE the if (e.ctrlKey || e.metaKey) block
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'R') {
+    e.preventDefault();
+    cycleAutoRefresh();
+    return;
+  }
   // Ctrl/Cmd combos — work even inside inputs for Ctrl+C/E/F/A
   if (e.ctrlKey || e.metaKey) {
     if (e.key === 'c' || e.key === 'C') {
