@@ -169,7 +169,10 @@ def _fetch_all_raw_records() -> List[dict]:
             raise SAPStockError(msg) from None
 
         except requests.RequestException as exc:
-            msg = f"HTTP error on page {page_num} (skip={skip}): {exc}"
+            detail = ""
+            if hasattr(exc, "response") and exc.response is not None:
+                detail = f" | HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+            msg = f"HTTP error on page {page_num} (skip={skip}): {exc}{detail}"
             print(f"[SAP STOCK] ERROR: {msg}")
             logger.error("SAP stock: %s", msg)
             raise SAPStockError(msg) from exc
