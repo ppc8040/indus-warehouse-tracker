@@ -191,6 +191,9 @@
     }
     .cell-copy-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
+    .sort-arrow { font-size: 9px; color: var(--primary); margin-left: 2px; }
+    thead th:hover { color: var(--text); }
+
     /* ── Keyboard shortcut overlay ───────────────────────────── */
     .kbd-overlay{
       display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
@@ -1252,6 +1255,50 @@ function _makeTableSelectable(container) {
     td.setAttribute('tabindex', '-1');
   });
 
+  // ── Sortable headers ──────────────────────────────────────────
+  table._sortCol = -1;
+  table._sortDir = 1;
+  table.querySelectorAll('thead th').forEach((th, idx) => {
+    th.style.cursor = 'pointer';
+    th.style.userSelect = 'none';
+    th.title = 'Click to sort';
+    th.addEventListener('click', () => {
+      if (table._sortCol === idx) {
+        table._sortDir *= -1;
+      } else {
+        table._sortCol = idx;
+        table._sortDir = 1;
+      }
+      // Update sort indicators
+      table.querySelectorAll('thead th').forEach((h, i) => {
+        h.dataset.sort = '';
+        const old = h.querySelector('.sort-arrow');
+        if (old) old.remove();
+      });
+      const arrow = document.createElement('span');
+      arrow.className = 'sort-arrow';
+      arrow.textContent = table._sortDir === 1 ? ' ▲' : ' ▼';
+      th.appendChild(arrow);
+
+      // Sort tbody rows
+      const tbody = table.querySelector('tbody');
+      const rows = Array.from(tbody.rows);
+      rows.sort((a, b) => {
+        const aText = (a.cells[idx]?.innerText || '').trim();
+        const bText = (b.cells[idx]?.innerText || '').trim();
+        const aNum = parseFloat(aText.replace(/[^0-9.\-]/g, ''));
+        const bNum = parseFloat(bText.replace(/[^0-9.\-]/g, ''));
+        const aVal = !isNaN(aNum) && aText !== '' ? aNum : aText.toLowerCase();
+        const bVal = !isNaN(bNum) && bText !== '' ? bNum : bText.toLowerCase();
+        if (aVal < bVal) return -1 * table._sortDir;
+        if (aVal > bVal) return  1 * table._sortDir;
+        return 0;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+      clearCellSelection();
+    });
+  });
+
   table.addEventListener('mousedown', e => {
     const td = e.target.closest('tbody td');
     if (!td) return;
@@ -1321,33 +1368,49 @@ function _copySelection() {
   const c1 = Math.min(_selAnchor.col, _selFocus.col);
   const c2 = Math.max(_selAnchor.col, _selFocus.col);
   const tbody = table.querySelector('tbody');
-  const lines = [];
+  const lines = [], htmlRows = [];
   for (let r = r1; r <= r2; r++) {
     const tr = tbody.rows[r];
     if (!tr) continue;
-    const cells = [];
+    const cells = [], htmlCells = [];
     for (let c = c1; c <= c2; c++) {
-      cells.push(_getCellText(tr.cells[c] || document.createElement('td')));
+      const val = _getCellText(tr.cells[c] || document.createElement('td'));
+      cells.push(val);
+      // Force text format for long numeric strings (HU numbers, part numbers)
+      const isNumericLike = /^\d{6,}$/.test(val.replace(/\s/g,''));
+      htmlCells.push(isNumericLike
+        ? `<td style="mso-number-format:'@'">${val}</td>`
+        : `<td>${val}</td>`);
     }
     lines.push(cells.join('\t'));
+    htmlRows.push(`<tr>${htmlCells.join('')}</tr>`);
   }
   const text = lines.join('\n');
-  navigator.clipboard.writeText(text).then(() => {
-    const count = (r2-r1+1) * (c2-c1+1);
-    _showCopyToast(count === 1 ? `Copied: "${text}"` : `Copied ${count} cells`);
-  }).catch(() => {
-    // fallback for older browsers
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;opacity:0';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    _showCopyToast(`Copied ${(r2-r1+1)*(c2-c1+1)} cell(s)`);
-  });
-}
+  const html = `<html><body><table>${htmlRows.join('')}</table></body></html>`;
+  const count = (r2-r1+1) * (c2-c1+1);
+  const toast = count === 1 ? `Copied: "${text}"` : `Copied ${count} cells`;
 
+  if (window.ClipboardItem) {
+    try {
+      navigator.clipboard.write([new ClipboardItem({
+        'text/plain': new Blob([text], { type: 'text/plain' }),
+        'text/html':  new Blob([html],  { type: 'text/html' }),
+      })]).then(() => _showCopyToast(toast)).catch(() => {
+        navigator.clipboard.writeText(text).then(() => _showCopyToast(toast));
+      });
+    } catch {
+      navigator.clipboard.writeText(text).then(() => _showCopyToast(toast));
+    }
+  } else {
+    navigator.clipboard.writeText(text).then(() => _showCopyToast(toast)).catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta);
+      _showCopyToast(toast);
+    });
+  }
+}
 function _showCopyToast(msg) {
   const t = document.getElementById('cellCopyToast');
   t.textContent = msg;
