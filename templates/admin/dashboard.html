@@ -1375,7 +1375,8 @@ function _copySelection() {
     const cells = [], htmlCells = [];
     for (let c = c1; c <= c2; c++) {
       const val = _getCellText(tr.cells[c] || document.createElement('td'));
-      cells.push(val);
+      const forceText = /^\d{6,}$/.test(val.replace(/\s/g,''));
+      cells.push(forceText ? "'" + val : val);
       // Force text format for long numeric strings (HU numbers, part numbers)
       const isNumericLike = /^\d{6,}$/.test(val.replace(/\s/g,''));
       htmlCells.push(isNumericLike
