@@ -1,78 +1,199 @@
-# Excel Workbook Schema — Indus Warehouse Stock Movement.xlsx
+# PostgreSQL Schema — Indus Warehouse Tracker
 
-Located at SharePoint: `indusair.sharepoint.com/sites/Indus_USA/Shared Documents/Indus Warehouse Stock Movement.xlsx`
+All data lives in **Heroku Postgres**. Schema is created and maintained by the scripts in `scripts/`.
 
-**No named tables** — use worksheet range operations (same pattern as Indus-Open-Order-Report-CUST.py).
+> **Note:** This project previously used a Microsoft SharePoint Excel workbook as its backend (accessed via Microsoft Graph API). That backend was fully replaced by PostgreSQL in April 2026. The Excel schema is no longer relevant.
 
-## Sheet: Movement_Log (13 columns)
-| Col | Header             | Notes                                                       |
-|-----|--------------------|-------------------------------------------------------------|
-| A   | Event_ID           | UUID generated per event                                    |
-| B   | Timestamp_UTC      | Stored in Dubai display time format                         |
-| C   | Handling_Unit      | The scanned HU                                              |
-| D   | Indus_Part         | Captured from the scanned label                             |
-| E   | Customer_Part      | Captured from the scanned label                             |
-| F   | Pallet_Qty         | Captured from the scanned label                             |
-| G   | Job_No             | Captured from the scanned label if supplied                 |
-| H   | Movement_Type      | STOCK_IN or STOCK_OUT                                       |
-| I   | Operator_ID        | Worker identifier                                           |
-| J   | Device_ID          | Browser/device fingerprint                                  |
-| K   | Sync_Status        | SYNCED or PENDING                                           |
-| L   | Validation_Status  | VALID or OVERRIDE                                           |
-| M   | Location           | One of: M4, M5, M6, M4_STORE, M16_STORE                    |
+---
 
-## Sheet: Pallet_Status (8 columns)
-| Col | Header              | Notes                                                                        |
-|-----|---------------------|------------------------------------------------------------------------------|
-| A   | Handling_Unit       | Primary key                                                                  |
-| B   | Current_Status      | IN_WAREHOUSE or OUT_OF_WAREHOUSE                                             |
-| C   | Last_Event_ID       | Links to Movement_Log.Event_ID                                               |
-| D   | Last_Movement_Type  | STOCK_IN or STOCK_OUT                                                        |
-| E   | Last_Movement_Time  | Stored in Dubai display time format                                          |
-| F   | Indus_Part          | Last scanned Indus Part, used in repeat STOCK_IN checks                      |
-| G   | Pallet_Qty          | Last scanned pallet qty, used in repeat STOCK_IN checks                      |
-| H   | Last_Location       | Location of the most recent movement (IN or OUT). Used for STOCK_OUT lock.   |
+## Tables
 
-## Sheet: Error_Log (7 columns)
-| Col | Header          | Notes                                        |
-|-----|-----------------|----------------------------------------------|
-| A   | Error_ID        | UUID                                         |
-| B   | Timestamp_UTC   | Stored in Dubai display time format          |
-| C   | Handling_Unit   | The HU involved (or empty)                   |
-| D   | Stage           | LOOKUP, MOVEMENT, SYNC, OVERRIDE, SYSTEM     |
-| E   | Error_Code      | Machine-readable code                        |
-| F   | Error_Message   | Human-readable detail (max 500 chars)        |
-| G   | Resolved_Flag   | NO or YES                                    |
+### `movements`
+Every STOCK_IN, STOCK_OUT, and ERROR event posted by warehouse operators.
 
-## Validation Rules Backed by Schema
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `BIGSERIAL` | Primary key |
+| `event_id` | `TEXT UNIQUE NOT NULL` | UUID per movement — idempotency key (`ON CONFLICT DO NOTHING`) |
+| `timestamp_utc` | `TIMESTAMPTZ` | UTC time of movement |
+| `timestamp_dubai` | `TIMESTAMPTZ` | Movement time in Asia/Dubai (derived on write) |
+| `handling_unit` | `TEXT` | 18–20 digit HU barcode |
+| `indus_part` | `TEXT` | SAP material number |
+| `customer_part` | `TEXT` | Customer part reference |
+| `pallet_qty` | `TEXT` | Quantity on pallet |
+| `job_no` | `TEXT` | Job / work order number |
+| `movement_type` | `TEXT` | `STOCK_IN`, `STOCK_OUT`, or `ERROR` |
+| `operator_id` | `TEXT` | PIN-resolved operator identity |
+| `device_id` | `TEXT` | Device identifier |
+| `sync_status` | `TEXT` | `SYNCED` or `PENDING` |
+| `validation_status` | `TEXT` | `VALID`, `OVERRIDE`, `VALIDATION_FAIL`, `DUPLICATE`, etc. |
+| `location` | `TEXT` | Current / destination location |
+| `from_location` | `TEXT` | Origin location (transfer moves) |
+| `to_location` | `TEXT` | Destination location (transfer moves) |
+
+**Indexes:** `event_id` (unique), `handling_unit`, `timestamp_utc`, `movement_type`, `location`
+
+---
+
+### `pallet_status`
+Current state of every Handling Unit ever seen. Upserted on every movement.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `handling_unit` | `TEXT PRIMARY KEY` | HU barcode — primary key |
+| `current_status` | `TEXT` | `IN_WAREHOUSE` or `OUT_OF_WAREHOUSE` |
+| `last_event_id` | `TEXT` | References `movements.event_id` |
+| `last_movement_type` | `TEXT` | `STOCK_IN` or `STOCK_OUT` |
+| `last_movement_time` | `TIMESTAMPTZ` | Time of most recent movement |
+| `indus_part` | `TEXT` | Material number from last movement |
+| `pallet_qty` | `TEXT` | Pallet quantity from last movement |
+| `last_location` | `TEXT` | Location of most recent movement — used for STOCK_OUT location lock |
+
+---
+
+### `ivt_scans`
+IVT assembly line QR code scan log. Completely isolated from the warehouse movement flow.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `BIGSERIAL` | Primary key |
+| `code` | `TEXT NOT NULL` | The 33-digit QR code scanned |
+| `scanned_date` | `TIMESTAMPTZ` | Scan timestamp in Asia/Dubai |
+| `location` | `TEXT` | `M4` or `M5` |
+
+**Indexes:** `code` (for duplicate detection), `scanned_date`
+
+---
+
+### `error_log`
+Failed movement attempts, validation errors, and system faults.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `BIGSERIAL` | Primary key |
+| `error_id` | `TEXT UNIQUE` | UUID |
+| `timestamp_utc` | `TIMESTAMPTZ` | UTC time of error |
+| `handling_unit` | `TEXT` | HU involved (nullable) |
+| `stage` | `TEXT` | `LOOKUP`, `MOVEMENT`, `SYNC`, `OVERRIDE`, `SYSTEM` |
+| `error_code` | `TEXT` | Machine-readable error code |
+| `error_message` | `TEXT` | Human-readable detail (max 500 chars) |
+| `resolved_flag` | `TEXT` | `NO` or `YES` |
+
+---
+
+### `sap_stock_cache`
+Cached SAP stock snapshot used by the Admin SAP Reconciliation tab. Refreshed on demand.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `BIGSERIAL` | Primary key |
+| `indus_part` | `TEXT` | SAP material number |
+| `sap_qty` | `NUMERIC` | Quantity reported by SAP |
+| `customer_part` | `TEXT` | Customer part reference (from OOR) |
+| `cached_at` | `TIMESTAMPTZ` | When this row was fetched from SAP |
+
+**Indexes:** `indus_part`, `cached_at`
+
+---
+
+## Views
+
+### `v_stock_summary`
+All pallet statuses ordered by last movement time descending. Used by the Pallet Status tab.
+
+```sql
+SELECT *
+FROM pallet_status
+ORDER BY last_movement_time DESC;
+```
+
+---
+
+### `v_stock_by_location`
+Net stock per material per location (STOCK_IN count minus STOCK_OUT count × pallet_qty). Used by the Stock by Location tab.
+
+```sql
+SELECT
+  location,
+  indus_part,
+  SUM(CASE WHEN movement_type = 'STOCK_IN'  THEN pallet_qty::numeric ELSE 0 END)
+  - SUM(CASE WHEN movement_type = 'STOCK_OUT' THEN pallet_qty::numeric ELSE 0 END) AS net_qty,
+  COUNT(*) FILTER (WHERE movement_type = 'STOCK_IN')  AS in_count,
+  COUNT(*) FILTER (WHERE movement_type = 'STOCK_OUT') AS out_count
+FROM movements
+WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
+GROUP BY location, indus_part;
+```
+
+---
+
+### `v_movement_velocity`
+Daily movement counts by type, cast to Dubai timezone. Used by the Analytics daily chart.
+
+```sql
+SELECT
+  (timestamp_utc AT TIME ZONE 'Asia/Dubai')::date AS move_date,
+  movement_type,
+  COUNT(*) AS cnt
+FROM movements
+GROUP BY move_date, movement_type
+ORDER BY move_date;
+```
+
+---
+
+### `v_operator_activity`
+Total movements and last-active time per operator. Used by the Analytics operator table.
+
+```sql
+SELECT
+  operator_id,
+  COUNT(*) AS total_movements,
+  MAX(timestamp_utc) AS last_active
+FROM movements
+GROUP BY operator_id
+ORDER BY total_movements DESC;
+```
+
+---
+
+## Validation Rules
 
 ### Duplicate Detection
-- Repeated `STOCK_IN` is blocked only when the same `Handling_Unit`, `Indus_Part`, and `Pallet_Qty` are already in the last pallet state.
-- Same `Handling_Unit` with a different `Indus_Part` or `Pallet_Qty` is treated as a new pallet run and allowed.
-- `STOCK_OUT` is blocked when the last state is already `STOCK_OUT`.
-- `STOCK_OUT` is blocked when the handling unit has never been stocked in, unless supervisor override is used.
-- `Location` is intentionally excluded from the duplicate fingerprint — the state transition check already prevents double STOCK_INs regardless of location.
+- Repeated `STOCK_IN` is blocked when the same `handling_unit`, `indus_part`, and `pallet_qty` are already the last known pallet state.
+- Same `handling_unit` with a different `indus_part` or `pallet_qty` is treated as a new pallet run and allowed.
+- `STOCK_OUT` is blocked when the last state is already `OUT_OF_WAREHOUSE`.
+- `STOCK_OUT` is blocked when the HU has never been stocked in, unless a supervisor override is used.
+- `Location` is excluded from the duplicate fingerprint — the state transition check already prevents double STOCK_INs.
+- All movements use `ON CONFLICT (event_id) DO NOTHING` for idempotent offline-sync replay.
 
 ### Location Rules
-- Every `STOCK_IN` and `STOCK_OUT` must include a valid location: `M4`, `M5`, `M6`, `M4_STORE`, or `M16_STORE`.
-- When a pallet is `STOCK_OUT`, the selected location **must match** `Last_Location` in Pallet_Status (the location it was last `STOCK_IN` at). This prevents out-of-location movements.
+- Every `STOCK_IN` and `STOCK_OUT` must specify a valid location: `M4`, `M5`, `M6`, `M4_STORE`, or `M16_STORE`.
+- On `STOCK_OUT`, the selected location **must match** `last_location` in `pallet_status` (prevents out-of-location movements).
 - After any `STOCK_OUT`, the pallet is free and may be `STOCK_IN` at any location on the next movement.
-- `Last_Location` in Pallet_Status always reflects the location of the most recent movement (whether `STOCK_IN` or `STOCK_OUT`).
 - Supervisor override bypasses the location lock entirely.
 
-## Graph API URL Pattern (from reference code)
-```
-Base: https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/{filename}:/workbook
-Session: .../workbook/createSession  (POST, persistChanges: true)
-Close:   .../workbook/closeSession   (POST)
-Worksheets: .../workbook/worksheets('{sheet_name}')
-UsedRange: .../worksheets('{sheet_name}')/usedRange
-Range:   .../worksheets('{sheet_name}')/range(address='{A1:G100}')
-```
+### IVT Code Validation (5 rules)
+1. No non-numeric characters
+2. Exactly **33 digits** total length
+3. Positions 0–8 = `561469490` (customer code)
+4. Positions 9–16 = valid `00DDMMYY` date (day 01–31, month 01–12)
+5. Positions 23–32 = `8750722699` or `8750722840` (customer part code)
 
-## Auth (from reference code)
-- MSAL ConfidentialClientApplication
-- acquire_token_silent first, then acquire_token_for_client
-- Scopes: ['https://graph.microsoft.com/.default']
-- Tenant: ed97e9bb-e119-4bd4-ab00-307d64bdf908
-- Site ID: 201c767f-23cc-4eff-b76c-47a275706531,094b21f9-6ed4-47c3-a751-3b217a18b98e
+---
+
+## Schema Setup Scripts
+
+| Script | Purpose | Run order |
+|--------|---------|----------|
+| `scripts/create_schema.py` | Creates all tables, indexes, and views | 1st |
+| `scripts/fix_schema_columns.py` | Adds `from_location`, `to_location`; loosens CHECK constraints | 2nd |
+| `scripts/add_event_id_constraint.py` | Adds `UNIQUE` constraint on `event_id` | 3rd |
+| `scripts/fix_duplicate_event_ids.py` | Deduplicates `event_id` values before constraint is added | Before 3rd if needed |
+| `scripts/migrate_excel_to_pg.py` | One-time migration of historical Excel data to Postgres | Optional |
+
+All scripts are idempotent — safe to re-run.
+
+---
+
+*Indus International FZC — Internal Warehouse Management System*
