@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Blueprint, render_template, request, Response, jsonify, current_app, send_file
+from flask import Blueprint, render_template, request, Response, jsonify, current_app, send_file, redirect
 from app.services.db_client import (
     get_all_pallet_statuses,
     ping as db_ping,
@@ -38,6 +38,8 @@ admin_bp = Blueprint('admin', __name__)
 def _auth_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        if request.headers.get('X-Forwarded-Proto') == 'http':
+            return redirect(request.url.replace('http://', 'https://', 1), 301)
         auth = request.authorization
         user = current_app.config.get('ADMIN_USERNAME', 'admin')
         pw   = current_app.config.get('ADMIN_PASSWORD', 'change-me')
