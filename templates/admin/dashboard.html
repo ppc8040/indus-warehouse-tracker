@@ -178,9 +178,11 @@
     td.cell-selected{
       outline:2px solid var(--primary)!important;
       outline-offset:-2px;
+      background:var(--surface2)!important;
       background:color-mix(in srgb,var(--primary) 15%,var(--surface2))!important;
     }
     td.cell-in-range{
+      background:var(--surface2)!important;
       background:color-mix(in srgb,var(--primary) 8%,var(--surface2))!important;
     }
     .cell-copy-toast{
@@ -245,8 +247,10 @@
       transition:background .15s,color .15s;
     }
     .tab.on .tab-badge {
+      background:var(--surface2);
       background:color-mix(in srgb,var(--primary) 18%,var(--surface2));
       color:var(--primary);
+      border-color:var(--border);
       border-color:color-mix(in srgb,var(--primary) 40%,var(--border));
     }
     
@@ -284,7 +288,7 @@
       transition:background .15s,border-color .15s;
     }
     .btn-export-sel.visible { display:inline-flex; align-items:center; gap:5px; }
-    .btn-export-sel:hover { border-color:var(--primary); background:color-mix(in srgb,var(--primary) 8%,var(--surface2)); }
+    .btn-export-sel:hover { border-color:var(--primary); background:var(--surface2); background:color-mix(in srgb,var(--primary) 8%,var(--surface2)); }
     
     /* ── Auto-refresh ───────────────────────────────────────── */
     .auto-refresh-wrap{display:flex;align-items:center;gap:6px}
@@ -359,15 +363,15 @@
       <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>1</kbd> – <kbd>8</kbd></td><td>Switch to tab (1=Movements … 8=SAP Recon)</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>Cycle auto-refresh interval (OFF → 30s → 1m → 5m)</td></tr>
+        <tr><td><kbd id="kbdModCycleAR">Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>Cycle auto-refresh interval (OFF → 30s → 1m → 5m)</td></tr>
         <tr><td><kbd>R</kbd></td><td>Refresh current tab data</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>E</kbd></td><td>Export current tab to Excel</td></tr>
+        <tr><td><kbd id="kbdModExport">Ctrl</kbd>+<kbd>E</kbd></td><td>Export current tab to Excel</td></tr>
         <tr><td><kbd>F</kbd> or <kbd>/</kbd></td><td>Focus the HU Number filter input</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Clear all filters / close this overlay</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>A</kbd></td><td>Select all cells in visible table</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td><td>Copy selected cell(s) to clipboard</td></tr>
+        <tr><td><kbd id="kbdModSelAll">Ctrl</kbd>+<kbd>A</kbd></td><td>Select all cells in visible table</td></tr>
+        <tr><td><kbd id="kbdModCopy">Ctrl</kbd>+<kbd>C</kbd></td><td>Copy selected cell(s) to clipboard</td></tr>
         <tr><td><kbd>↑ ↓ ← →</kbd></td><td>Navigate between cells (when one is selected)</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>Find / highlight text in current table</td></tr>
+        <tr><td><kbd id="kbdModFind">Ctrl</kbd>+<kbd>F</kbd></td><td>Find / highlight text in current table</td></tr>
         <tr><td><kbd>?</kbd></td><td>Toggle this help overlay</td></tr>
       </tbody>
     </table>
@@ -401,10 +405,12 @@
            class="filter-customer" style="min-width:100px">
   </label>
   <label>Date From
-    <input type="date" id="fDateFrom" onchange="scheduleFilter()">
+    <input type="date" id="fDateFrom" onchange="scheduleFilter()" placeholder="YYYY-MM-DD">
+    <span style="font-size:10px;color:var(--muted);opacity:.7">YYYY-MM-DD</span>
   </label>
   <label>Date To
-    <input type="date" id="fDateTo" onchange="scheduleFilter()">
+    <input type="date" id="fDateTo" onchange="scheduleFilter()" placeholder="YYYY-MM-DD">
+    <span style="font-size:10px;color:var(--muted);opacity:.7">YYYY-MM-DD</span>
   </label>
   <label>Type
     <select id="fType" onchange="scheduleFilter()">
@@ -601,6 +607,8 @@
 
 <script>
 const charts = {};
+const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+if (isMac) ['kbdModCycleAR','kbdModExport','kbdModSelAll','kbdModCopy','kbdModFind'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '⌘'; });
 let filterTimer = null;
 let _reconRows  = [];
 let _oorCodes   = {};
@@ -1524,27 +1532,27 @@ function _copySelection() {
   const count = (r2-r1+1) * (c2-c1+1);
   const toast = count === 1 ? `Copied: "${text}"` : `Copied ${count} cells`;
 
-  if (window.ClipboardItem) {
-    try {
-      navigator.clipboard.write([new ClipboardItem({
-        'text/plain': new Blob([text], { type: 'text/plain' }),
-        'text/html':  new Blob([html],  { type: 'text/html' }),
-      })]).then(() => _showCopyToast(toast)).catch(() => {
-        navigator.clipboard.writeText(text).then(() => _showCopyToast(toast));
-      });
-    } catch {
-      navigator.clipboard.writeText(text).then(() => _showCopyToast(toast));
+  function _writeToClipboard(text, html) {
+    if (window.ClipboardItem && navigator.clipboard && window.isSecureContext) {
+      try {
+        return navigator.clipboard.write([new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html':  new Blob([html],  { type: 'text/html' }),
+        })]);
+      } catch { /* fall through */ }
     }
-  } else {
-    navigator.clipboard.writeText(text).then(() => _showCopyToast(toast)).catch(() => {
-      const ta = document.createElement('textarea');
-      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
-      document.body.appendChild(ta); ta.select();
-      document.execCommand('copy'); document.body.removeChild(ta);
-      _showCopyToast(toast);
-    });
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    // Legacy fallback: works on HTTP and older Safari
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    return Promise.resolve();
   }
-}
+  _writeToClipboard(text, html).then(() => _showCopyToast(toast)).catch(() => _showCopyToast(toast));
+  
 function _showCopyToast(msg) {
   const t = document.getElementById('cellCopyToast');
   t.textContent = msg;
