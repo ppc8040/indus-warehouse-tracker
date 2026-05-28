@@ -1438,7 +1438,7 @@ def api_operators():
                 for r in cur.fetchall():
                     d = dict(r)
                     if isinstance(d.get('last_active'), datetime):
-                        d['last_active'] = d['last_active'].strftime('%-d %b %Y, %H:%M')
+                        d['last_active'] = d['last_active'].strftime('%d %b %Y, %H:%M').lstrip('0')
                     rows.append(d)
         return jsonify({"rows": rows})
     except Exception as e:
