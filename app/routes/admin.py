@@ -42,8 +42,13 @@ def _auth_required(f):
         user = current_app.config.get('ADMIN_USERNAME', 'admin')
         pw   = current_app.config.get('ADMIN_PASSWORD', 'change-me')
         if not auth or auth.username != user or auth.password != pw:
-            return Response('Admin login required.\n', 401,
-                            {'WWW-Authenticate': 'Basic realm="Indus Admin"'})
+            return Response(
+                'Admin login required.\n', 401,
+                {
+                    'WWW-Authenticate': 'Basic realm="Indus Admin", charset="UTF-8"',
+                    'Cache-Control': 'no-store',
+                }
+            )
         return f(*args, **kwargs)
     return decorated
 
