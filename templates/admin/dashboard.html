@@ -1552,7 +1552,7 @@ function _copySelection() {
     document.execCommand('copy'); document.body.removeChild(ta);
     return Promise.resolve();
   }
-  _writeToClipboard(text, html).then(() => _showCopyToast(toast)).catch(() => _showCopyToast(toast));
+  _writeToClipboard(text, html).then(() => _showCopyToast(toast)).catch(() => _showCopyToast(toast)); } 
   
 function _showCopyToast(msg) {
   const t = document.getElementById('cellCopyToast');
