@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Blueprint, render_template, request, Response, jsonify, current_app, send_file, redirect
+from flask import Blueprint, render_template, request, Response, jsonify, current_app, send_file, redirect, url_for, session
 from app.services.db_client import (
     get_all_pallet_statuses,
     ping as db_ping,
@@ -38,22 +38,34 @@ admin_bp = Blueprint('admin', __name__)
 def _auth_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if request.headers.get('X-Forwarded-Proto') == 'http':
-            return redirect(request.url.replace('http://', 'https://', 1), 301)
-        auth = request.authorization
-        user = current_app.config.get('ADMIN_USERNAME', 'admin')
-        pw   = current_app.config.get('ADMIN_PASSWORD', 'change-me')
-        if not auth or auth.username != user or auth.password != pw:
-            return Response(
-                'Admin login required.\n', 401,
-                {
-                    'WWW-Authenticate': 'Basic realm="Indus Admin", charset="UTF-8"',
-                    'Cache-Control': 'no-store',
-                }
-            )
+        if not session.get('admin_logged_in'):
+            return redirect(url_for('admin.login'))
         return f(*args, **kwargs)
     return decorated
 
+# ---------------------------------------------------------------------------
+# Login / Logout
+# ---------------------------------------------------------------------------
+
+@admin_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if session.get('admin_logged_in'):
+        return redirect(url_for('admin.dashboard'))
+    error = False
+    if request.method == 'POST':
+        pw = current_app.config.get('ADMIN_PASSWORD', 'indus2026')
+        if request.form.get('password') == pw:
+            session.permanent = True
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin.dashboard'))
+        error = True
+    return render_template('admin/login.html', error=error)
+
+
+@admin_bp.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('admin.login'))
 
 # ---------------------------------------------------------------------------
 # Pages
