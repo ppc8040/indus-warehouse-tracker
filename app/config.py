@@ -54,7 +54,13 @@ class Config:
                              '094b21f9-6ed4-47c3-a751-3b217a18b98e')
     WORKBOOK_FILENAME     = 'Indus Warehouse Stock Movement.xlsx'
     WORKBOOK_FILENAME_OOR = 'Indus Open Order Report New.xlsx'  # correct filename
-    SESSION_COOKIE_SECURE = True
+    
+    # ── Session ──────────────────────────────────────────────────────────────
+    SESSION_COOKIE_HTTPONLY  = True
+    SESSION_COOKIE_SAMESITE  = 'Lax'
+    SESSION_COOKIE_SECURE    = True
+    PERMANENT_SESSION_LIFETIME = 28800  # 8 hours
+    
     SHEET_MOVEMENT_LOG   = 'Movement_Log'
     SHEET_PALLET_STATUS  = 'Pallet_Status'
     SHEET_ERROR_LOG      = 'Error_Log'
