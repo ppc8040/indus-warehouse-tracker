@@ -1855,9 +1855,11 @@ function _updateSummaryBar() {
     for (let c = c1; c <= c2; c++) {
       const td = tr.cells[c];
       if (!td) continue;
-      const raw = (td.innerText || td.textContent || '').trim().replace(/[^0-9.\-]/g, '');
-      const n = parseFloat(raw);
-      if (!isNaN(n)) nums.push(n);
+      const raw = (td.innerText || td.textContent || '').trim();
+      const cleaned = raw.replace(/[^0-9.\-]/g, '');
+      const n = parseFloat(cleaned);
+      // Skip: empty, non-numeric text, or long IDs (HU numbers, part numbers > 9 digits)
+      if (!isNaN(n) && cleaned === cleaned.trim() && raw.length > 0 && cleaned.length <= 9) nums.push(n);
     }
   }
 
