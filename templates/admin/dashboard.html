@@ -396,14 +396,14 @@
 
 <div class="filter-bar" id="filterBar">
   <label>HU Number
-    <input type="text" id="fHu" placeholder="e.g. 003000..." oninput="scheduleFilter()">
+    <input type="text" id="fHu" placeholder="e.g. 003000, 003001" oninput="scheduleFilter()" title="Comma-separate multiple HU numbers">
   </label>
   <label>Indus Part
     <input type="text" id="fPart" placeholder="e.g. 1000234" oninput="scheduleFilter()">
   </label>
   <label title="Filter by customer code from Open Order Report (e.g. CPT, IVT)">Customer
-    <input type="text" id="fCustomer" placeholder="e.g. CPT" oninput="scheduleFilter()"
-           class="filter-customer" style="min-width:100px">
+    <input type="text" id="fCustomer" placeholder="e.g. CPT, IVT" oninput="scheduleFilter()"
+           class="filter-customer" style="min-width:130px" title="Comma-separate multiple customer codes">
   </label>
   <label>Date From
     <input type="date" id="fDateFrom" onchange="scheduleFilter()" placeholder="YYYY-MM-DD">
@@ -706,9 +706,12 @@ function _custFilter() {
 }
 
 function _matchesCustFilter(indus_part) {
-  const cf = _custFilter();
-  if (!cf) return true;
-  return (_oorCodes[indus_part] || '').toLowerCase().includes(cf);
+  const raw = (document.getElementById('fCustomer').value || '').trim();
+  if (!raw) return true;
+  const terms = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (!terms.length) return true;
+  const custCode = (_oorCodes[indus_part] || '').toLowerCase();
+  return terms.some(t => custCode.includes(t));
 }
 
 function _hasActiveServerFilters() {
@@ -716,6 +719,7 @@ function _hasActiveServerFilters() {
   return (
     (f.hu           && f.hu           !== '') ||
     (f.part         && f.part         !== '') ||
+    (f.customer     && f.customer     !== '') ||
     (f.date_from    && f.date_from    !== '') ||
     (f.date_to      && f.date_to      !== '') ||
     (f.movement_type && f.movement_type !== 'ALL') ||
@@ -723,12 +727,26 @@ function _hasActiveServerFilters() {
   );
 }
 
+function _matchesHuFilter(handling_unit) {
+  const raw = (document.getElementById('fHu').value || '').trim();
+  if (!raw) return true;
+  const terms = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (!terms.length) return true;
+  const hu = (handling_unit || '').toLowerCase();
+  return terms.some(t => hu.includes(t));
+}
+  
 function filterQS(extra = {}) {
   const f = { ...getFilters(), ...extra };
   const serverFields = ['hu','part','date_from','date_to','movement_type','location'];
   const filtered = Object.fromEntries(
     serverFields
-      .filter(k => f[k] && f[k] !== 'ALL')
+      .filter(k => {
+        if (!f[k] || f[k] === 'ALL') return false;
+        // If HU has multiple comma-separated values, handle client-side only
+        if (k === 'hu' && f[k].includes(',')) return false;
+        return true;
+      })
       .map(k => [k, f[k]])
   );
   if (extra.sheet) filtered.sheet = extra.sheet;
@@ -826,14 +844,14 @@ async function loadMovements() {
   const el = document.getElementById('tbl-movements');
   el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
-    const limit = _hasActiveServerFilters() ? 5000 : 200;
+    const limit = _hasActiveServerFilters() ? 9999999 : 200;
     const d = await fetch(`/admin/api/movements?limit=${limit}&` + filterQS()).then(r => r.json());
     let rows = (d.movements || []).sort((a, b) => {
       const ta = a.timestamp_dubai ? new Date(a.timestamp_dubai).getTime() : 0;
       const tb = b.timestamp_dubai ? new Date(b.timestamp_dubai).getTime() : 0;
       return tb - ta;
     });
-    rows = rows.filter(m => _matchesCustFilter(m.indus_part));
+    rows = rows.filter(m => _matchesCustFilter(m.indus_part) && _matchesHuFilter(m.handling_unit));
     if (!rows.length) { el.innerHTML = '<div class="empty">No movements match filters.</div>'; return; }
     let h = `<table><thead><tr><th>Time (Dubai)</th><th>HU</th><th>Indus Part</th><th>Customer</th><th>Qty</th>
       <th>Type</th><th>Location</th><th>From</th><th>To</th><th>Operator</th><th>Sync</th><th>Validation</th></tr></thead><tbody>`;
