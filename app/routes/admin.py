@@ -145,9 +145,7 @@ def _fetch_scalar(cur):
 # We cast to TEXT first so REGEXP_REPLACE works regardless of the underlying type,
 # then strip non-digits, fall back to '0' if nothing remains, and cast to int.
 # This handles blank strings, NULL, and non-numeric values safely.
-STOCK_QTY_EXPR = """
-    COALESCE(NULLIF(REGEXP_REPLACE(pallet_qty::text,'[^0-9]','','g'),''),'0')::int
-"""
+STOCK_QTY_EXPR = "COALESCE(pallet_qty, 0)"
 
 # Known warehouse locations used for the pivot in api_stock_summary.
 # Order here determines the column order in the UI and Excel export.
