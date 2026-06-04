@@ -184,6 +184,9 @@ _DT_PARSE_FMT   = '%d %b %Y, %H:%M'
 _oor_cache = {"data": None, "ts": 0.0}
 _OOR_CACHE_TTL = 300  # seconds
 
+_stats_cache = {"data": None, "ts": 0.0}
+_STATS_CACHE_TTL = 60  # seconds — stats refresh every 60s max
+
 
 def _fetch_oor_customer_codes():
     """
@@ -501,6 +504,9 @@ def api_errors():
 @admin_bp.route('/api/stats')
 @_auth_required
 def api_stats():
+    now = time.time()
+    if _stats_cache['data'] is not None and (now - _stats_cache['ts']) < _STATS_CACHE_TTL:
+        return jsonify(_stats_cache['data'])
     result = {
         "total_movements": None,
         "total_errors":    None,
@@ -602,6 +608,8 @@ def api_stats():
         logger.warning("stats pending_keys: %s", e)
         result["pending_keys"] = 0
 
+    _stats_cache['data'] = result
+    _stats_cache['ts'] = time.time()
     return jsonify(result)
 
 
