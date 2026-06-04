@@ -678,7 +678,11 @@ function switchTab(name, el) {
   document.getElementById('pane-' + name).classList.add('on');
   _activeTab = name;
   clearCellSelection();
-  if (TAB_LOADERS[name]) TAB_LOADERS[name]();
+  if (TAB_LOADERS[name]) {
+    // Always reload on explicit tab click (fresh data)
+    _tabLoaded[name] = true;
+    TAB_LOADERS[name]();
+  }
 }
 
 function _switchTabByIndex(idx) {
@@ -758,7 +762,8 @@ function scheduleFilter() {
   filterTimer = setTimeout(applyFilters, 600);
 }
 function applyFilters() {
-  loadMovements(); loadStatuses(); loadStock(); loadTotalStock();
+  // Only reload the active tab — don't hammer all tabs at once
+  if (TAB_LOADERS[_activeTab]) TAB_LOADERS[_activeTab]();
 }
 function clearFilters() {
   ['fHu','fPart','fCustomer','fDateFrom','fDateTo'].forEach(id => document.getElementById(id).value = '');
@@ -1380,14 +1385,22 @@ async function loadIvt() {
   } catch (e) { console.error('IVT', e); }
 }
 
+// Tracks which tabs have been loaded at least once
+const _tabLoaded = {};
+
 async function loadAll() {
   checkConn();
   loadStats();
   await loadOorCodes();
-  loadMovements();
-  loadStatuses();
-  loadStock();
-  loadTotalStock();
+  // On startup: only load the active tab (movements by default)
+  _loadActiveTab();
+}
+
+function _loadActiveTab() {
+  if (TAB_LOADERS[_activeTab]) {
+    _tabLoaded[_activeTab] = true;
+    TAB_LOADERS[_activeTab]();
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
