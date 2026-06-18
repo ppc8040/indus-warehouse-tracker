@@ -423,8 +423,9 @@ def ivt_check():
                             "scanned_date": existing.get('scanned_date', '')}), 200
 
         # ── 2. Serial-level duplicate check ──
-        serial = code[17:23]
-        serial_hit = ivt_find_by_serial(serial)
+        serial   = code[17:23]
+        part_code = code[23:33]
+        serial_hit = ivt_find_by_serial(serial, part_code)
         if serial_hit:
             logger.warning(
                 "IVT serial duplicate: serial=%s new_code=%s existing_code=%s",
@@ -485,8 +486,9 @@ def ivt_enter():
                             "message": "This code was already scanned."}), 409
 
         # ── 2. Serial-level uniqueness check ──
-        serial = code[17:23]
-        serial_hit = ivt_find_by_serial(serial)
+        serial    = code[17:23]
+        part_code = code[23:33]
+        serial_hit = ivt_find_by_serial(serial, part_code)
         if serial_hit:
             logger.warning(
                 "IVT serial duplicate blocked on enter: serial=%s new_code=%s "
