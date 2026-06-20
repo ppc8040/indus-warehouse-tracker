@@ -1566,13 +1566,13 @@ def api_container_equivalents():
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT
-                        UPPER(COALESCE(NULLIF(indus_part,''), 'Unknown')) AS indus_part,
+                        UPPER(COALESCE(NULLIF(indus_part, ''), 'Unknown')) AS indus_part,
                         SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
                       - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
                     FROM movements
                     WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
                       AND UPPER(indus_part) = ANY(%(parts)s)
-                    GROUP BY UPPER(indus_part)
+                    GROUP BY UPPER(COALESCE(NULLIF(indus_part, ''), 'Unknown'))
                 """, {'parts': [p.upper() for p in parts_list]})
                 for row in cur.fetchall():
                     stock_map[row['indus_part']] = _safe_int(row['net_qty'])
