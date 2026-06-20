@@ -1557,11 +1557,7 @@ def api_container_equivalents():
             else cargo_items_raw.get('rows', cargo_items_raw.get('items', []))
         )
         for item in items_list:
-            # SharePoint headers come through exactly as typed in Excel
-            key = str(
-                item.get('Indus Part') or item.get('indus_part') or
-                item.get('Name') or item.get('name') or ''
-            ).strip().upper()
+            key = str(item.get('Indus Part') or '').strip().upper()
             if key:
                 dimensions[key] = item
 
@@ -1608,14 +1604,14 @@ def api_container_equivalents():
             continue
 
         payload = {
-            'indus_part':  part,
-            'length':      int(dim.get('Length') or dim.get('length') or dim.get('l') or 0),
-            'width':       int(dim.get('Width')  or dim.get('width')  or dim.get('w') or 0),
-            'height':      int(dim.get('Height') or dim.get('height') or dim.get('h') or 0),
-            'weight':      float(dim.get('Weight') or dim.get('weight') or dim.get('Gross Weight') or dim.get('gross_weight') or 0),
-            'stackable':   bool(dim.get('Stackable', dim.get('stackable', True))),
-            'rotatable':   bool(dim.get('Rotatable', dim.get('rotatable', True))),
-            'floor_only':  bool(dim.get('Floor Only', dim.get('floor_only', False))),
+            'indus_part':   part,
+            'length':       int(float(dim.get('Length (mm)') or 0)),
+            'width':        int(float(dim.get('Width (mm)')  or 0)),
+            'height':       int(float(dim.get('Height (mm)') or 0)),
+            'weight':       float(dim.get('Weight per coil (KG)') or 0),
+            'stackable':    True,
+            'rotatable':    True,
+            'floor_only':   False,
             'container_id': container_id,
         }
 
