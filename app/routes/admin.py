@@ -1506,7 +1506,6 @@ def api_container_equivalents():
         customer_codes  — comma-separated, e.g. "WBT,CPT"
         container_id    — one of: 20ft_std, 40ft_std, 40ft_hc
     """
-    from app.services import cargoload_client
 
     raw_codes    = (request.args.get('customer_codes') or '').strip().upper()
     part_filter  = (request.args.get('part') or '').strip().upper()
@@ -1539,31 +1538,21 @@ def api_container_equivalents():
         for code in [c.strip() for c in codes_str.split(',')]:
             code_to_parts.setdefault(code, []).append(part)
 
-    matched_parts = {}  # indus_part → customer_code
-    for code in requested_codes:
-        for part in code_to_parts.get(code, []):
-            matched_parts[part] = code
-
-    if not matched_parts:
-        return jsonify({'results': [], 'message': 'No parts found for given customer codes'})
     # If called with just ?part=X, bypass OOR lookup entirely
     if part_filter and not raw_codes:
         matched_parts = {part_filter: 'DIRECT'}
+    else:
+        matched_parts = {}  # indus_part → customer_code
+        for code in requested_codes:
+            for part in code_to_parts.get(code, []):
+                matched_parts[part] = code
 
-    # ── Step 2: fetch cargo item dimensions from CargoLoad Pro ───────────────
-    cargo_items_raw = cargoload_client.fetch_cargo_items(cfg)
-    # Build lookup: indus_part (upper) → item dict
-    dimensions = {}
-    if cargo_items_raw:
-        items_list = (
-            cargo_items_raw
-            if isinstance(cargo_items_raw, list)
-            else cargo_items_raw.get('rows', cargo_items_raw.get('items', []))
-        )
-        for item in items_list:
-            key = str(item.get('Indus Part') or '').strip().upper()
-            if key:
-                dimensions[key] = item
+        if not matched_parts:
+            return jsonify({'results': [], 'message': 'No parts found for given customer codes'})
+
+    # ── Step 2: fetch cargo item dimensions directly from SharePoint ─────────
+    from app.services import sharepoint_master
+    dimensions = sharepoint_master.fetch_dimensions()
 
     # ── Step 3: fetch stock for all matched parts in one query ───────────────
     qty = STOCK_QTY_EXPR
