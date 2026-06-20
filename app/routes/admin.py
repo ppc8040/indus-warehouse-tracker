@@ -1551,7 +1551,7 @@ def api_container_equivalents():
     # Build lookup: indus_part (upper) → item dict
     dimensions = {}
     if cargo_items_raw:
-        items_list = cargo_items_raw if isinstance(cargo_items_raw, list) else cargo_items_raw.get('items', [])
+        items_list = cargo_items_raw if isinstance(cargo_items_raw, list) else cargo_items_raw.get('rows', cargo_items_raw.get('items', []))
         for item in items_list:
             key = str(item.get('indus_part') or item.get('name') or '').strip().upper()
             if key:
