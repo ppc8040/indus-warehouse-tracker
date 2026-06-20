@@ -185,6 +185,9 @@ _OOR_CACHE_TTL = 300  # seconds
 _stats_cache = {"data": None, "ts": 0.0}
 _STATS_CACHE_TTL = 60  # seconds — stats refresh every 60s max
 
+_container_cache = {}
+_CONTAINER_CACHE_TTL = 300  # 5 minutes
+
 
 def _fetch_oor_customer_codes():
     """
@@ -1486,3 +1489,161 @@ def api_ivt():
     except Exception as e:
         logger.error("api_ivt: %s", e)
         return jsonify({"recent": [], "daily": []})
+
+# ---------------------------------------------------------------------------
+# Container Equivalents — packing simulation via CargoLoad Pro
+# ---------------------------------------------------------------------------
+
+@admin_bp.route('/api/container-equivalents')
+@_auth_required
+def api_container_equivalents():
+    """
+    For each Indus Part matching the given customer codes, fetches live stock
+    from the Tracker DB and calls CargoLoad Pro's packing engine to compute
+    how many containers are needed to ship available stock.
+
+    Query params:
+        customer_codes  — comma-separated, e.g. "WBT,CPT"
+        container_id    — one of: 20ft_std, 40ft_std, 40ft_hc
+    """
+    from app.services import cargoload_client
+
+    raw_codes   = (request.args.get('customer_codes') or '').strip().upper()
+    container_id = (request.args.get('container_id') or '40ft_hc').strip()
+
+    if not raw_codes:
+        return jsonify({'error': 'customer_codes is required'}), 400
+
+    requested_codes = {c.strip() for c in raw_codes.split(',') if c.strip()}
+
+    # ── Cache check ──────────────────────────────────────────────────────────
+    cache_key = (frozenset(requested_codes), container_id)
+    now = time.time()
+    cached = _container_cache.get(cache_key)
+    if cached and (now - cached['ts']) < _CONTAINER_CACHE_TTL:
+        return jsonify({'results': cached['data'], 'cached': True})
+
+    cfg = current_app.config
+
+    # ── Step 1: resolve customer codes → indus parts via OOR ────────────────
+    try:
+        oor_map = _fetch_oor_customer_codes()  # indus_part → "WBT, CPT"
+    except Exception as exc:
+        logger.error('container_equivalents: OOR fetch failed: %s', exc)
+        return jsonify({'error': 'Could not load Open Order Report', 'detail': str(exc)}), 502
+
+    # Build reverse map: customer_code → [indus_parts]
+    code_to_parts = {}
+    for part, codes_str in oor_map.items():
+        for code in [c.strip() for c in codes_str.split(',')]:
+            code_to_parts.setdefault(code, []).append(part)
+
+    matched_parts = {}  # indus_part → customer_code
+    for code in requested_codes:
+        for part in code_to_parts.get(code, []):
+            matched_parts[part] = code
+
+    if not matched_parts:
+        return jsonify({'results': [], 'message': 'No parts found for given customer codes'})
+
+    # ── Step 2: fetch cargo item dimensions from CargoLoad Pro ───────────────
+    cargo_items_raw = cargoload_client.fetch_cargo_items(cfg)
+    # Build lookup: indus_part (upper) → item dict
+    dimensions = {}
+    if cargo_items_raw:
+        items_list = cargo_items_raw if isinstance(cargo_items_raw, list) else cargo_items_raw.get('items', [])
+        for item in items_list:
+            key = str(item.get('indus_part') or item.get('name') or '').strip().upper()
+            if key:
+                dimensions[key] = item
+
+    # ── Step 3: fetch stock for all matched parts in one query ───────────────
+    qty = STOCK_QTY_EXPR
+    parts_list = list(matched_parts.keys())
+    stock_map = {}
+    try:
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT
+                        UPPER(COALESCE(NULLIF(indus_part,''), 'Unknown')) AS indus_part,
+                        SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
+                      - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
+                    FROM movements
+                    WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
+                      AND UPPER(indus_part) = ANY(%(parts)s)
+                    GROUP BY UPPER(indus_part)
+                """, {'parts': [p.upper() for p in parts_list]})
+                for row in cur.fetchall():
+                    stock_map[row['indus_part']] = _safe_int(row['net_qty'])
+    except Exception as exc:
+        logger.error('container_equivalents: stock query failed: %s', exc)
+        return jsonify({'error': 'Stock query failed', 'detail': str(exc)}), 502
+
+    # ── Step 4: call CargoLoad packing engine per SKU ────────────────────────
+    results = []
+    for part, customer in matched_parts.items():
+        pallet_count = stock_map.get(part.upper(), 0)
+        dim = dimensions.get(part.upper())
+
+        if dim is None:
+            results.append({
+                'indus_part': part,
+                'customer': customer,
+                'pallets_available': pallet_count,
+                'container_type': container_id,
+                'items_per_container': None,
+                'containers_needed': None,
+                'utilization_pct': None,
+                'error': 'No dimensions on file in CargoLoad Pro',
+            })
+            continue
+
+        payload = {
+            'indus_part':  part,
+            'length':      dim.get('length') or dim.get('l'),
+            'width':       dim.get('width')  or dim.get('w'),
+            'height':      dim.get('height') or dim.get('h'),
+            'weight':      dim.get('weight') or dim.get('gross_weight') or 0,
+            'stackable':   dim.get('stackable', True),
+            'rotatable':   dim.get('rotatable', True),
+            'floor_only':  dim.get('floor_only', False),
+            'container_id': container_id,
+        }
+
+        pack_result = cargoload_client.pack_single_sku(cfg, payload)
+        if pack_result is None:
+            results.append({
+                'indus_part': part,
+                'customer': customer,
+                'pallets_available': pallet_count,
+                'container_type': container_id,
+                'items_per_container': None,
+                'containers_needed': None,
+                'utilization_pct': None,
+                'error': 'CargoLoad Pro packing call failed',
+            })
+            continue
+
+        items_placed = pack_result.get('items_placed', 0)
+        utilization  = pack_result.get('utilization_pct') or pack_result.get('volume_utilization')
+        containers_needed = (
+            round(pallet_count / items_placed, 2) if items_placed and items_placed > 0 else None
+        )
+
+        results.append({
+            'indus_part':         part,
+            'customer':           customer,
+            'pallets_available':  pallet_count,
+            'container_type':     container_id,
+            'items_per_container': items_placed,
+            'containers_needed':  containers_needed,
+            'utilization_pct':    utilization,
+            'error':              None,
+        })
+
+    # Sort: errors last, then by customer, then part
+    results.sort(key=lambda r: (r['error'] is not None, r['customer'], r['indus_part']))
+
+    _container_cache[cache_key] = {'data': results, 'ts': now}
+    return jsonify({'results': results, 'cached': False})
