@@ -1508,11 +1508,12 @@ def api_container_equivalents():
     """
     from app.services import cargoload_client
 
-    raw_codes   = (request.args.get('customer_codes') or '').strip().upper()
+    raw_codes    = (request.args.get('customer_codes') or '').strip().upper()
+    part_filter  = (request.args.get('part') or '').strip().upper()
     container_id = (request.args.get('container_id') or '40ft_hc').strip()
-
-    if not raw_codes:
-        return jsonify({'error': 'customer_codes is required'}), 400
+    
+    if not raw_codes and not part_filter:
+        return jsonify({'error': 'customer_codes or part is required'}), 400
 
     requested_codes = {c.strip() for c in raw_codes.split(',') if c.strip()}
 
@@ -1545,6 +1546,9 @@ def api_container_equivalents():
 
     if not matched_parts:
         return jsonify({'results': [], 'message': 'No parts found for given customer codes'})
+    # If called with just ?part=X, bypass OOR lookup entirely
+    if part_filter and not raw_codes:
+        matched_parts = {part_filter: 'DIRECT'}
 
     # ── Step 2: fetch cargo item dimensions from CargoLoad Pro ───────────────
     cargo_items_raw = cargoload_client.fetch_cargo_items(cfg)
