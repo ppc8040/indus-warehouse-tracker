@@ -1551,9 +1551,17 @@ def api_container_equivalents():
     # Build lookup: indus_part (upper) → item dict
     dimensions = {}
     if cargo_items_raw:
-        items_list = cargo_items_raw if isinstance(cargo_items_raw, list) else cargo_items_raw.get('rows', cargo_items_raw.get('items', []))
+        items_list = (
+            cargo_items_raw
+            if isinstance(cargo_items_raw, list)
+            else cargo_items_raw.get('rows', cargo_items_raw.get('items', []))
+        )
         for item in items_list:
-            key = str(item.get('indus_part') or item.get('name') or '').strip().upper()
+            # SharePoint headers come through exactly as typed in Excel
+            key = str(
+                item.get('Indus Part') or item.get('indus_part') or
+                item.get('Name') or item.get('name') or ''
+            ).strip().upper()
             if key:
                 dimensions[key] = item
 
@@ -1601,13 +1609,13 @@ def api_container_equivalents():
 
         payload = {
             'indus_part':  part,
-            'length':      dim.get('length') or dim.get('l'),
-            'width':       dim.get('width')  or dim.get('w'),
-            'height':      dim.get('height') or dim.get('h'),
-            'weight':      dim.get('weight') or dim.get('gross_weight') or 0,
-            'stackable':   dim.get('stackable', True),
-            'rotatable':   dim.get('rotatable', True),
-            'floor_only':  dim.get('floor_only', False),
+            'length':      int(dim.get('Length') or dim.get('length') or dim.get('l') or 0),
+            'width':       int(dim.get('Width')  or dim.get('width')  or dim.get('w') or 0),
+            'height':      int(dim.get('Height') or dim.get('height') or dim.get('h') or 0),
+            'weight':      float(dim.get('Weight') or dim.get('weight') or dim.get('Gross Weight') or dim.get('gross_weight') or 0),
+            'stackable':   bool(dim.get('Stackable', dim.get('stackable', True))),
+            'rotatable':   bool(dim.get('Rotatable', dim.get('rotatable', True))),
+            'floor_only':  bool(dim.get('Floor Only', dim.get('floor_only', False))),
             'container_id': container_id,
         }
 
