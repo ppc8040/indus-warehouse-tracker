@@ -1499,151 +1499,236 @@ def api_ivt():
 @_auth_required
 def api_container_equivalents():
     """
-    For each Indus Part matching the given customer codes, fetches live stock
-    from the Tracker DB and calls CargoLoad Pro's packing engine to compute
-    how many containers are needed to ship available stock.
+    For each Indus Part matching the given customer codes (or a direct part filter),
+    fetches the TRUE live pallet count from the Tracker DB — defined as the number of
+    distinct Handling Units whose most-recent movement is STOCK_IN — then calls
+    CargoLoad Pro's packing engine to compute container equivalents.
 
     Query params:
-        customer_codes  — comma-separated, e.g. "WBT,CPT"
-        container_id    — one of: 20ft_std, 40ft_std, 40ft_hc
+        customer_codes  — comma-separated OOR codes, e.g. "WBT,CPT"
+        part            — single Indus Part override (bypasses OOR lookup)
+        container_id    — one of: 20ft, 40ft, 40ft_hc, 45ft_hc  (default: 40ft_hc)
+        force_refresh   — set to 1 to bypass the 5-min cache
     """
+    import math
 
     raw_codes    = (request.args.get('customer_codes') or '').strip().upper()
     part_filter  = (request.args.get('part') or '').strip().upper()
     container_id = (request.args.get('container_id') or '40ft_hc').strip()
-    
+    force        = request.args.get('force_refresh', '0') == '1'
+
     if not raw_codes and not part_filter:
         return jsonify({'error': 'customer_codes or part is required'}), 400
 
     requested_codes = {c.strip() for c in raw_codes.split(',') if c.strip()}
 
     # ── Cache check ──────────────────────────────────────────────────────────
-    cache_key = (frozenset(requested_codes), container_id)
+    cache_key = (frozenset(requested_codes), part_filter, container_id)
     now = time.time()
-    cached = _container_cache.get(cache_key)
-    if cached and (now - cached['ts']) < _CONTAINER_CACHE_TTL:
-        return jsonify({'results': cached['data'], 'cached': True})
+    if not force:
+        cached = _container_cache.get(cache_key)
+        if cached and (now - cached['ts']) < _CONTAINER_CACHE_TTL:
+            return jsonify({'results': cached['data'], 'cached': True})
 
     cfg = current_app.config
 
-    # ── Step 1: resolve customer codes → indus parts via OOR ────────────────
-    try:
-        oor_map = _fetch_oor_customer_codes()  # indus_part → "WBT, CPT"
-    except Exception as exc:
-        logger.error('container_equivalents: OOR fetch failed: %s', exc)
-        return jsonify({'error': 'Could not load Open Order Report', 'detail': str(exc)}), 502
-
-    # Build reverse map: customer_code → [indus_parts]
-    code_to_parts = {}
-    for part, codes_str in oor_map.items():
-        for code in [c.strip() for c in codes_str.split(',')]:
-            code_to_parts.setdefault(code, []).append(part)
-
-    # If called with just ?part=X, bypass OOR lookup entirely
+    # ── Step 1: resolve customer codes → indus parts via OOR ─────────────────
     if part_filter and not raw_codes:
         matched_parts = {part_filter: 'DIRECT'}
     else:
-        matched_parts = {}  # indus_part → customer_code
+        try:
+            oor_map = _fetch_oor_customer_codes()
+            logger.info('container_equivalents: OOR loaded %d part mappings', len(oor_map))
+        except Exception as exc:
+            logger.error('container_equivalents: OOR fetch failed: %s', exc)
+            return jsonify({'error': 'Could not load Open Order Report', 'detail': str(exc)}), 502
+
+        code_to_parts: dict = {}
+        for part, codes_str in oor_map.items():
+            for code in [c.strip() for c in codes_str.split(',')]:
+                code_to_parts.setdefault(code, []).append(part)
+
+        matched_parts: dict = {}
         for code in requested_codes:
             for part in code_to_parts.get(code, []):
-                matched_parts[part] = code
+                if part and part.upper() not in ('', 'NONE', 'N/A', '#N/A', 'UNKNOWN'):
+                    matched_parts[part] = code
 
         if not matched_parts:
             return jsonify({'results': [], 'message': 'No parts found for given customer codes'})
 
-    # ── Step 2: fetch cargo item dimensions directly from SharePoint ─────────
+    logger.info('container_equivalents: %d parts to process for codes=%s',
+                len(matched_parts), raw_codes or part_filter)
+
+    # ── Step 2: fetch cargo item dimensions from SharePoint ──────────────────
     from app.services import sharepoint_master
     dimensions = sharepoint_master.fetch_dimensions()
-    logger.info('container_equivalents: loaded %d dimensions', len(dimensions))
-    if not dimensions:
-        return jsonify({'error': 'Dimensions cache empty — SharePoint fetch failed', 
-                        'results': []}), 502
-    # ── Step 3: fetch stock for all matched parts in one query ───────────────
-    qty = STOCK_QTY_EXPR
-    parts_list = list(matched_parts.keys())
-    stock_map = {}
-    try:
-        with _get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    SELECT
-                        UPPER(COALESCE(NULLIF(indus_part, ''), 'Unknown')) AS indus_part,
-                        SUM(CASE WHEN movement_type='STOCK_IN'  THEN {qty} ELSE 0 END)
-                      - SUM(CASE WHEN movement_type='STOCK_OUT' THEN {qty} ELSE 0 END) AS net_qty
-                    FROM movements
-                    WHERE movement_type IN ('STOCK_IN','STOCK_OUT')
-                      AND UPPER(indus_part) = ANY(%(parts)s)
-                    GROUP BY UPPER(COALESCE(NULLIF(indus_part, ''), 'Unknown'))
-                """, {'parts': [p.upper() for p in parts_list]})
-                for row in cur.fetchall():
-                    stock_map[row['indus_part']] = _safe_int(row['net_qty'])
-    except Exception as exc:
-        logger.error('container_equivalents: stock query failed: %s', exc)
-        return jsonify({'error': 'Stock query failed', 'detail': str(exc)}), 502
+    logger.info('container_equivalents: dimensions cache has %d parts', len(dimensions))
 
-    # ── Step 4: call CargoLoad packing engine per SKU ────────────────────────
+    if not dimensions:
+        logger.warning('container_equivalents: dimensions cache EMPTY — SharePoint may be down')
+
+    # ── Step 3: fetch IN-WAREHOUSE pallet count per part ─────────────────────
+    # COUNT distinct HUs whose LAST movement = STOCK_IN (true physical pallet count).
+    # NOT net quantity (pcs IN - pcs OUT) which was the previous incorrect approach.
+    parts_list = [p.upper() for p in matched_parts.keys()
+                  if p and p.upper() not in ('', 'UNKNOWN')]
+
+    stock_map: dict = {}
+    if parts_list:
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        WITH latest_movement AS (
+                            SELECT DISTINCT ON (handling_unit)
+                                handling_unit,
+                                UPPER(COALESCE(NULLIF(indus_part, ''), 'Unknown')) AS indus_part,
+                                movement_type
+                            FROM movements
+                            WHERE movement_type IN ('STOCK_IN', 'STOCK_OUT')
+                              AND UPPER(COALESCE(NULLIF(indus_part, ''), '')) = ANY(%(parts)s)
+                            ORDER BY handling_unit, timestamp_utc DESC, id DESC
+                        )
+                        SELECT
+                            indus_part,
+                            COUNT(*) FILTER (WHERE movement_type = 'STOCK_IN') AS pallets_in_warehouse
+                        FROM latest_movement
+                        GROUP BY indus_part
+                    """, {'parts': parts_list})
+                    for row in cur.fetchall():
+                        stock_map[row['indus_part']] = _safe_int(row['pallets_in_warehouse'])
+            logger.info('container_equivalents: stock_map=%s', dict(list(stock_map.items())[:10]))
+        except Exception as exc:
+            logger.error('container_equivalents: stock query failed: %s', exc)
+            return jsonify({'error': 'Stock query failed', 'detail': str(exc)}), 502
+
+    # ── Step 4: call CargoLoad packing engine per part ────────────────────────
+    def _to_int_safe(v):
+        try:
+            f = float(v)
+            return int(f) if not math.isnan(f) else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _to_float_safe(v):
+        try:
+            f = float(v)
+            return f if not math.isnan(f) else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
     results = []
     for part, customer in matched_parts.items():
-        pallet_count = stock_map.get(part.upper(), 0)
-        dim = dimensions.get(part.upper())
+        part_upper   = part.upper()
+        pallet_count = stock_map.get(part_upper, 0)
+        dim          = dimensions.get(part_upper)
 
         if dim is None:
+            logger.debug(
+                'container_equivalents: no dimensions for %s (sample keys: %s)',
+                part_upper, list(dimensions.keys())[:5] if dimensions else 'cache empty'
+            )
             results.append({
-                'indus_part': part,
-                'customer': customer,
-                'pallets_available': pallet_count,
-                'container_type': container_id,
+                'indus_part':          part,
+                'customer':            customer,
+                'pallets_available':   pallet_count,
+                'container_type':      container_id,
                 'items_per_container': None,
-                'containers_needed': None,
-                'utilization_pct': None,
-                'error': 'No dimensions on file in CargoLoad Pro',
+                'containers_needed':   None,
+                'utilization_pct':     None,
+                'error':               'No dimensions on file in CargoLoad Pro',
+            })
+            continue
+
+        length_mm = _to_int_safe(dim.get('Length (mm)') or dim.get('length_mm') or 0)
+        width_mm  = _to_int_safe(dim.get('Width (mm)')  or dim.get('width_mm')  or 0)
+        height_mm = _to_int_safe(dim.get('Height (mm)') or dim.get('height_mm') or 0)
+        weight_kg = _to_float_safe(dim.get('Weight per coil (KG)') or dim.get('weight_kg') or 0)
+
+        if not length_mm or not width_mm or not height_mm:
+            logger.warning(
+                'container_equivalents: %s has zero/missing dimension(s): '
+                'L=%s W=%s H=%s raw_keys=%s',
+                part_upper, length_mm, width_mm, height_mm, list(dim.keys())
+            )
+            results.append({
+                'indus_part':          part,
+                'customer':            customer,
+                'pallets_available':   pallet_count,
+                'container_type':      container_id,
+                'items_per_container': None,
+                'containers_needed':   None,
+                'utilization_pct':     None,
+                'error':               (
+                    f'Dimensions incomplete in CargoLoad Pro '
+                    f'(L={length_mm} W={width_mm} H={height_mm})'
+                ),
             })
             continue
 
         payload = {
             'indus_part':   part,
-            'length':       int(float(dim.get('Length (mm)') or 0)),
-            'width':        int(float(dim.get('Width (mm)')  or 0)),
-            'height':       int(float(dim.get('Height (mm)') or 0)),
-            'weight':       float(dim.get('Weight per coil (KG)') or 0),
+            'length':       length_mm,
+            'width':        width_mm,
+            'height':       height_mm,
+            'weight':       weight_kg,
             'stackable':    True,
             'rotatable':    True,
             'floor_only':   False,
             'container_id': container_id,
         }
 
+        logger.debug('container_equivalents: packing %s with %s', part, payload)
         pack_result = cargoload_client.pack_single_sku(cfg, payload)
+
         if pack_result is None:
+            logger.warning('container_equivalents: CargoLoad returned None for %s', part)
             results.append({
-                'indus_part': part,
-                'customer': customer,
-                'pallets_available': pallet_count,
-                'container_type': container_id,
+                'indus_part':          part,
+                'customer':            customer,
+                'pallets_available':   pallet_count,
+                'container_type':      container_id,
                 'items_per_container': None,
-                'containers_needed': None,
-                'utilization_pct': None,
-                'error': 'CargoLoad Pro packing call failed',
+                'containers_needed':   None,
+                'utilization_pct':     None,
+                'error':               'CargoLoad Pro packing call failed',
             })
             continue
 
-        items_placed = pack_result.get('items_placed', 0)
-        utilization  = pack_result.get('utilization_pct') or pack_result.get('volume_utilization')
-        containers_needed = (
-            round(pallet_count / items_placed, 2) if items_placed and items_placed > 0 else None
+        items_placed = _safe_int(pack_result.get('items_placed', 0))
+        utilization  = (
+            pack_result.get('utilization_pct')
+            or pack_result.get('volume_utilization_pct')
+        )
+
+        if items_placed > 0 and pallet_count > 0:
+            containers_needed = round(pallet_count / items_placed, 2)
+        elif pallet_count == 0:
+            containers_needed = 0.0
+        else:
+            # items_placed == 0 means single pallet doesn't fit — should never happen
+            # with valid dims, but handle gracefully
+            containers_needed = None
+
+        logger.info(
+            'container_equivalents: OK %s — in_warehouse=%d items_per_ctr=%d '
+            'containers_needed=%s util=%s',
+            part, pallet_count, items_placed, containers_needed, utilization
         )
 
         results.append({
-            'indus_part':         part,
-            'customer':           customer,
-            'pallets_available':  pallet_count,
-            'container_type':     container_id,
-            'items_per_container': items_placed,
-            'containers_needed':  containers_needed,
-            'utilization_pct':    utilization,
-            'error':              None,
+            'indus_part':          part,
+            'customer':            customer,
+            'pallets_available':   pallet_count,
+            'container_type':      container_id,
+            'items_per_container': items_placed if items_placed > 0 else None,
+            'containers_needed':   containers_needed,
+            'utilization_pct':     utilization,
+            'error':               None,
         })
 
-    # Sort: errors last, then by customer, then part
+    # Errors last, then by customer, then by part
     results.sort(key=lambda r: (r['error'] is not None, r['customer'], r['indus_part']))
 
     _container_cache[cache_key] = {'data': results, 'ts': now}
