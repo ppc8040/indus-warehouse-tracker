@@ -31,10 +31,6 @@ class Config:
     if DATABASE_URL.startswith('postgres://'):
         DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 
-    # ── CargoLoad Pro integration ─────────────────────────────────────────
-    CARGOLOAD_API_URL = os.environ.get('CARGOLOAD_API_URL', 'https://cargoload-pro.herokuapp.com')
-    INTERLINK_API_KEY = os.environ.get('INTERLINK_API_KEY', '')
-
     # ── Factory floor auth ───────────────────────────────────────────────────
     SUPERVISOR_PIN  = '9999'
     ADMIN_USERNAME  = 'admin'
