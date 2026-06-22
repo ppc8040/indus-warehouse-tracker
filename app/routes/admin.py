@@ -1554,7 +1554,10 @@ def api_container_equivalents():
     # ── Step 2: fetch cargo item dimensions directly from SharePoint ─────────
     from app.services import sharepoint_master
     dimensions = sharepoint_master.fetch_dimensions()
-
+    logger.info('container_equivalents: loaded %d dimensions', len(dimensions))
+    if not dimensions:
+        return jsonify({'error': 'Dimensions cache empty — SharePoint fetch failed', 
+                        'results': []}), 502
     # ── Step 3: fetch stock for all matched parts in one query ───────────────
     qty = STOCK_QTY_EXPR
     parts_list = list(matched_parts.keys())
