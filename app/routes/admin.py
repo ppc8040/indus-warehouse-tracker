@@ -1560,13 +1560,18 @@ def api_container_equivalents():
     logger.info('container_equivalents: %d parts to process for codes=%s',
                 len(matched_parts), raw_codes or part_filter)
 
-    # ── Step 2: fetch cargo item dimensions from SharePoint ──────────────────
-    from app.services import sharepoint_master
-    dimensions = sharepoint_master.fetch_dimensions()
-    logger.info('container_equivalents: dimensions cache has %d parts', len(dimensions))
-
-    if not dimensions:
-        logger.warning('container_equivalents: dimensions cache EMPTY — SharePoint may be down')
+    # ── Step 2: fetch cargo item dimensions from CargoLoad Pro ───────────────
+    raw_items = cargoload_client.fetch_cargo_items(cfg)
+    if not raw_items or not isinstance(raw_items.get('rows'), list):
+        logger.error('container_equivalents: fetch_cargo_items returned empty or failed')
+        return jsonify({'error': 'Could not load dimensions from CargoLoad Pro'}), 502
+    
+    dimensions = {}
+    for row in raw_items['rows']:
+        key = str(row.get('Indus Part') or '').strip().upper()
+        if key and key not in ('', 'NONE', 'N/A', '#N/A'):
+            dimensions[key] = row
+    logger.info('container_equivalents: loaded %d dimensions via CargoLoad Pro', len(dimensions))
 
     # ── Step 3: fetch IN-WAREHOUSE pallet count per part ─────────────────────
     # COUNT distinct HUs whose LAST movement = STOCK_IN (true physical pallet count).
