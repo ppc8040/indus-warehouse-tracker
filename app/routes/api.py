@@ -179,7 +179,7 @@ def _ivt_validate_code(code: str, location: str = ''):
 # Code structure (pipe-delimited, whitespace-tolerant):
 #   BDR{CustomerCode} | {CustomerPartNumber} | {YYDDD} | {XXXXXX} | T1
 #
-#   CustomerCode     : 9 digits — always '783832005'
+#   CustomerCode     : 9 digits — always '783832304'
 #   CustomerPartNumber: alphanumeric — must be in _BDR_VALID_PARTS
 #   YYDDD            : 5 digits — 2-digit year + 3-digit day-of-year (001-366)
 #   XXXXXX           : 6 alphanumeric chars — serial number
@@ -187,7 +187,7 @@ def _ivt_validate_code(code: str, location: str = ''):
 #
 # Valid locations: M4 or M5
 
-_BDR_CUSTOMER_CODE   = '783832005'
+_BDR_CUSTOMER_CODE   = '783832304'
 _BDR_VALID_PARTS     = {'333536'}
 _BDR_VALID_LOCATIONS = {'M4', 'M5'}
 
@@ -633,7 +633,7 @@ def bdr_check():
 
     Validation:
       1. Format must match BDR regex pattern
-      2. Customer code must equal '783832005'
+      2. Customer code must equal '783832304'
       3. Part number must be in _BDR_VALID_PARTS
       4. Day-of-year must be 001-366
 
