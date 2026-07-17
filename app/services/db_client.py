@@ -38,8 +38,20 @@ Schema (created by scripts/create_schema.py):
   ivt_scans (
       id           SERIAL PRIMARY KEY,
       code         TEXT UNIQUE NOT NULL,
-      scanned_date TEXT NOT NULL,
+      scanned_date TIMESTAMPTZ NOT NULL,
       location     TEXT NOT NULL
+  )
+
+  bdr_scans (
+      id            SERIAL PRIMARY KEY,
+      code          TEXT UNIQUE NOT NULL,
+      customer_code TEXT NOT NULL,
+      part_number   TEXT NOT NULL,
+      year_2d       TEXT NOT NULL,
+      doy           TEXT NOT NULL,
+      serial        TEXT NOT NULL,
+      scanned_date  TIMESTAMPTZ NOT NULL,
+      location      TEXT NOT NULL
   )
 
 Connection strategy:
@@ -441,9 +453,6 @@ def ivt_find_by_serial(serial: str, part_code: str) -> dict | None:
 
 def ivt_insert(code: str, scanned_date: str, location: str) -> None:
     """Insert a new IVT scan. Raises DbError on duplicate."""
-    # scanned_date may arrive as a formatted Dubai string (DD/MM/YYYY HH:MM:SS AM/PM).
-    # The live ivt_scans column is TIMESTAMPTZ, so we must pass a timezone-aware
-    # datetime — not a free-form string — otherwise Postgres rejects the insert.
     from datetime import datetime, timezone
     try:
         dt_value = datetime.strptime(scanned_date, '%d/%m/%Y %I:%M:%S %p').replace(tzinfo=timezone.utc)
@@ -456,6 +465,78 @@ def ivt_insert(code: str, scanned_date: str, location: str) -> None:
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, {"code": code, "scanned_date": dt_value, "location": location})
+
+
+# ---------------------------------------------------------------------------
+# bdr_scans table
+# ---------------------------------------------------------------------------
+
+def bdr_find(code: str) -> dict | None:
+    """Return the bdr_scans row for this code, or None if not found."""
+    sql = """
+        SELECT id, code, customer_code, part_number, year_2d, doy, serial,
+               scanned_date, location
+        FROM bdr_scans WHERE code = %(code)s
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"code": code})
+            row = cur.fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def bdr_find_by_serial(serial: str, part_number: str) -> dict | None:
+    """Return the first bdr_scans row where serial and part_number match."""
+    sql = """
+        SELECT id, code, customer_code, part_number, year_2d, doy, serial,
+               scanned_date, location
+        FROM bdr_scans
+        WHERE serial = %(serial)s
+          AND part_number = %(part_number)s
+        LIMIT 1
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"serial": serial.upper(), "part_number": part_number.upper()})
+            row = cur.fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def bdr_insert(
+    code: str,
+    customer_code: str,
+    part_number: str,
+    year_2d: str,
+    doy: str,
+    serial: str,
+    scanned_date: str,
+    location: str,
+) -> None:
+    """Insert a new BDR scan. Raises DbError on duplicate."""
+    from datetime import datetime, timezone
+    try:
+        dt_value = datetime.strptime(scanned_date, '%d/%m/%Y %I:%M:%S %p').replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        dt_value = datetime.now(timezone.utc)
+    sql = """
+        INSERT INTO bdr_scans
+            (code, customer_code, part_number, year_2d, doy, serial, scanned_date, location)
+        VALUES
+            (%(code)s, %(customer_code)s, %(part_number)s, %(year_2d)s,
+             %(doy)s, %(serial)s, %(scanned_date)s, %(location)s)
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {
+                "code":          code,
+                "customer_code": customer_code,
+                "part_number":   part_number.upper(),
+                "year_2d":       year_2d,
+                "doy":           doy,
+                "serial":        serial.upper(),
+                "scanned_date":  dt_value,
+                "location":      location,
+            })
 
 
 # ---------------------------------------------------------------------------
@@ -506,17 +587,14 @@ def _parse_ts(value) -> datetime:
 def _row_to_dict(row) -> dict:
     """
     Convert a psycopg2 RealDictRow to a plain Python dict.
-    datetime values are formatted as "D MMM YYYY, HH:MM" (24-hour, no seconds)
+    datetime values are formatted as "D MMM YYYY, HH:MM:SS" (24-hour)
     for display in API responses and the admin dashboard.
-    Seconds are preserved in the database (TIMESTAMPTZ) but not shown.
     """
     if row is None:
         return {}
     out = {}
     for k, v in dict(row).items():
         if isinstance(v, datetime):
-            # Format: "27 Apr 2026, 09:33" — day without leading zero,
-            # abbreviated month, 24-hour clock, no seconds.
             out[k] = v.strftime("%-d %b %Y, %H:%M:%S")
         else:
             out[k] = v

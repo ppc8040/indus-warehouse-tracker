@@ -32,6 +32,12 @@ Security:
        date segment. Prevents the same physical unit from being scanned
        twice under a different barcode variant.
 
+  BDR Line — /api/bdr-check and /api/bdr-enter handle the BDR customer
+  scanning flow. BDR codes have the format:
+    BDR{9-digit-customer-code} | {part-number} | {YYDDD} | {6-digit-serial} | T1
+  They are completely isolated from IVT and warehouse movement flows.
+  BDR duplicate guards mirror IVT (full-code + serial-level).
+
   Destinations — /api/destinations returns the list of valid to_location
   values for the STOCK_OUT destination picker on the worker UI.
 """
@@ -81,6 +87,8 @@ _IVT_TOTAL_LENGTH     = 33
 _IVT_VALID_PART_CODES = {'8750722699', '8750722840'}
 # Allowed ONLY when location is M5
 _IVT_M5_ONLY_PART_CODES = {'8750741149', '8750751986'}
+# Allowed ONLY when location is M4
+_IVT_M4_ONLY_PART_CODES = {'8750782685'}
 _IVT_VALID_LOCATIONS  = {'M4', 'M5'}
 
 
@@ -90,9 +98,9 @@ def _ivt_validate_code(code: str, location: str = ''):
     Returns None if valid, or a (error_type, message) tuple if invalid.
 
     When location is empty (e.g. at /api/ivt-check before the worker has
-    selected a location), M5-only part codes pass structure validation and
-    the location restriction is deferred to /api/ivt-enter where location
-    is always present.
+    selected a location), M5-only and M4-only part codes pass structure
+    validation and the location restriction is deferred to /api/ivt-enter
+    where location is always present.
 
     Checks (in order):
       1. Non-numeric characters
@@ -101,8 +109,9 @@ def _ivt_validate_code(code: str, location: str = ''):
       4. Date segment (pos 9-16) — 00DDMMYY with valid DD/MM cross-validated
       5. Customer part code (pos 23-32):
            - Unrestricted codes: 8750722699, 8750722840 (any location)
-           - M5-only codes:      8750741149, 8750751986 (location must be M5,
-             only enforced when location is non-empty)
+           - M5-only codes:      8750741149, 8750751986 (location must be M5)
+           - M4-only codes:      8750782685             (location must be M4)
+             (location restrictions only enforced when location is non-empty)
     """
     bad = re.search(r'[^0-9]', code)
     if bad:
@@ -148,11 +157,100 @@ def _ivt_validate_code(code: str, location: str = ''):
                 f"Part code \u2018{part_code}\u2019 is only permitted at "
                 f"location M5.")
 
-    all_valid = sorted(_IVT_VALID_PART_CODES | _IVT_M5_ONLY_PART_CODES)
+    if part_code in _IVT_M4_ONLY_PART_CODES:
+        if not location:
+            return None  # defer location check to /ivt-enter
+        if location.upper() == 'M4':
+            return None  # M4-only code at M4 — valid
+        return ('invalid_part_code',
+                f"Part code \u2018{part_code}\u2019 is only permitted at "
+                f"location M4.")
+
+    all_valid = sorted(_IVT_VALID_PART_CODES | _IVT_M5_ONLY_PART_CODES | _IVT_M4_ONLY_PART_CODES)
     valid_list = ', '.join(all_valid[:-1]) + ' or ' + all_valid[-1]
     return ('invalid_part_code',
             f"Invalid customer part code \u2018{part_code}\u2019 "
             f"\u2014 must be {valid_list}.")
+
+
+# ---------------------------------------------------------------------------
+# BDR code validation
+# ---------------------------------------------------------------------------
+# Code structure (pipe-delimited, whitespace-tolerant):
+#   BDR{CustomerCode} | {CustomerPartNumber} | {YYDDD} | {XXXXXX} | T1
+#
+#   CustomerCode     : 9 digits — always '783832005'
+#   CustomerPartNumber: alphanumeric — must be in _BDR_VALID_PARTS
+#   YYDDD            : 5 digits — 2-digit year + 3-digit day-of-year (001-366)
+#   XXXXXX           : 6 alphanumeric chars — serial number
+#   T1               : literal suffix
+#
+# Valid locations: M4 or M5
+
+_BDR_CUSTOMER_CODE   = '783832005'
+_BDR_VALID_PARTS     = {'333536'}
+_BDR_VALID_LOCATIONS = {'M4', 'M5'}
+
+# Regex — tolerates any amount of whitespace around each pipe separator
+_BDR_RE = re.compile(
+    r'^BDR(\d{9})\s*\|\s*(\w+)\s*\|\s*(\d{2})(\d{3})\s*\|\s*(\w{6})\s*\|\s*T1$',
+    re.IGNORECASE
+)
+
+
+def _bdr_parse(code: str):
+    """
+    Parse a BDR label string into its components.
+    Returns a dict with keys: customer_code, part_number, year, doy, serial
+    Or returns None if the format does not match at all.
+    """
+    m = _BDR_RE.match(code.strip())
+    if not m:
+        return None
+    return {
+        'customer_code': m.group(1),
+        'part_number':   m.group(2).upper(),
+        'year':          m.group(3),
+        'doy':           m.group(4),
+        'serial':        m.group(5).upper(),
+    }
+
+
+def _bdr_validate_code(code: str, location: str = ''):
+    """
+    Validate a BDR label string.
+    Returns None if valid, or (error_type, message) tuple if invalid.
+    """
+    parsed = _bdr_parse(code)
+    if parsed is None:
+        return ('invalid_format',
+                "Code does not match BDR label format. "
+                "Expected: BDR{CustomerCode} | {PartNumber} | {YYDDD} | {Serial} | T1")
+
+    if parsed['customer_code'] != _BDR_CUSTOMER_CODE:
+        return ('invalid_customer_code',
+                f"Invalid BDR customer code \u2018{parsed['customer_code']}\u2019 "
+                f"\u2014 expected {_BDR_CUSTOMER_CODE}.")
+
+    if parsed['part_number'] not in _BDR_VALID_PARTS:
+        valid_list = ', '.join(sorted(_BDR_VALID_PARTS))
+        return ('invalid_part_code',
+                f"Invalid BDR part number \u2018{parsed['part_number']}\u2019 "
+                f"\u2014 must be {valid_list}.")
+
+    doy = int(parsed['doy'])
+    if doy < 1 or doy > 366:
+        return ('invalid_date',
+                f"Invalid day-of-year \u2018{parsed['doy']}\u2019 "
+                f"\u2014 must be between 001 and 366.")
+
+    if location and location.upper() not in _BDR_VALID_LOCATIONS:
+        return ('invalid_location',
+                f"Invalid location \u2018{location}\u2019 "
+                f"\u2014 BDR scanning is only permitted at M4 or M5.")
+
+    return None
+
 
 # ===========================================================================
 # ROUTES
@@ -362,7 +460,7 @@ def validate_pin():
 # ===========================================================================
 # IVT LINE ROUTES
 # Now backed by the ivt_scans Postgres table.
-# Schema: id (serial), code (text unique), scanned_date (text), location (text)
+# Schema: id (serial), code (text unique), scanned_date (timestamptz), location (text)
 #
 # Duplicate guards (applied in order):
 #   1. Full-code check  — entire 33-digit code must not already exist
@@ -376,9 +474,9 @@ def ivt_check():
     Validate and duplicate-check an IVT QR code.
 
     Called immediately after scan, BEFORE the worker selects a location.
-    Location is therefore NOT used for validation here — the M5-only
-    part code restriction is enforced only at /api/ivt-enter once the
-    worker has confirmed their location.
+    Location is therefore NOT used for validation here — the M5-only and
+    M4-only part code restrictions are enforced only at /api/ivt-enter
+    once the worker has confirmed their location.
 
     Validation rules (server-side mirror of the client-side checks):
       1. No non-numeric characters
@@ -403,7 +501,7 @@ def ivt_check():
     if not code:
         return jsonify({"success": False, "message": "Code is required."}), 400
 
-    # Validate structure only — no location passed, M5 restriction deferred
+    # Validate structure only — no location passed, location restriction deferred
     err = _ivt_validate_code(code)
     if err:
         error_type, message = err
@@ -449,7 +547,8 @@ def ivt_enter():
     Append a validated, unique IVT code to the ivt_scans table.
 
     Location is required and fully validated here, including the M5-only
-    restriction for part codes 8750741149 and 8750751986.
+    restriction for part codes 8750741149 and 8750751986, and the M4-only
+    restriction for part code 8750782685.
 
     Uniqueness is enforced at two levels immediately before the write:
       1. Full-code check  — entire 33-digit code must not already exist
@@ -471,7 +570,7 @@ def ivt_enter():
                         "message": f"Invalid location '{location}'. "
                                    f"Must be M4 or M5."}), 400
 
-    # Full validation including M5-only restriction (location is known here)
+    # Full validation including location restrictions
     err = _ivt_validate_code(code, location)
     if err:
         _, message = err
@@ -511,3 +610,162 @@ def ivt_enter():
         logger.error("IVT enter (Postgres) failed for code %s: %s", code, exc)
         return jsonify({"success": False,
                         "message": "Could not write to IVT database. Try again."}), 502
+
+
+# ===========================================================================
+# BDR LINE ROUTES
+# Backed by the bdr_scans Postgres table.
+# Schema: id (serial), code (text unique), customer_code (text),
+#         part_number (text), year_2d (text), doy (text), serial (text),
+#         scanned_date (timestamptz), location (text)
+#
+# Duplicate guards (applied in order):
+#   1. Full-code check  — entire code string must not already exist
+#   2. Serial check     — 6-char serial must not exist for the same part_number
+# ===========================================================================
+
+@api_bp.route('/bdr-check', methods=['POST'])
+def bdr_check():
+    """
+    Validate and duplicate-check a BDR label string.
+
+    Called immediately after scan, BEFORE the worker selects a location.
+
+    Validation:
+      1. Format must match BDR regex pattern
+      2. Customer code must equal '783832005'
+      3. Part number must be in _BDR_VALID_PARTS
+      4. Day-of-year must be 001-366
+
+    Duplicate checks (in order):
+      A. Full-code match  → duplicate_type: "code"
+      B. Serial match     → duplicate_type: "serial"
+
+    Returns:
+      { "valid": false, "error_type": "...", "message": "..." }
+      { "valid": true, "duplicate": false, "parsed": {...} }
+      { "valid": true, "duplicate": true, "duplicate_type": "code"|"serial",
+        "scanned_date": "...", "parsed": {...} }
+    """
+    data = request.get_json(silent=True) or {}
+    code = str(data.get('code', '')).strip()
+
+    if not code:
+        return jsonify({"success": False, "message": "Code is required."}), 400
+
+    err = _bdr_validate_code(code)
+    if err:
+        error_type, message = err
+        logger.warning("BDR validation failed for code %r [%s]: %s",
+                       code, error_type, message)
+        return jsonify({"valid": False, "error_type": error_type,
+                        "message": message}), 200
+
+    parsed = _bdr_parse(code)
+
+    try:
+        from app.services.db_client import bdr_find, bdr_find_by_serial
+
+        # ── 1. Full-code duplicate check ──
+        existing = bdr_find(code)
+        if existing:
+            return jsonify({"valid": True, "duplicate": True,
+                            "duplicate_type": "code",
+                            "scanned_date": existing.get('scanned_date', ''),
+                            "parsed": parsed}), 200
+
+        # ── 2. Serial-level duplicate check ──
+        serial_hit = bdr_find_by_serial(parsed['serial'], parsed['part_number'])
+        if serial_hit:
+            logger.warning(
+                "BDR serial duplicate: serial=%s part=%s existing_code=%s",
+                parsed['serial'], parsed['part_number'], serial_hit.get('code', '')
+            )
+            return jsonify({"valid": True, "duplicate": True,
+                            "duplicate_type": "serial",
+                            "scanned_date": serial_hit.get('scanned_date', ''),
+                            "parsed": parsed}), 200
+
+        return jsonify({"valid": True, "duplicate": False, "parsed": parsed}), 200
+
+    except Exception as exc:
+        logger.error("BDR check (Postgres) failed for code %s: %s", code, exc)
+        return jsonify({"success": False,
+                        "message": "Could not check BDR database. Try again."}), 502
+
+
+@api_bp.route('/bdr-enter', methods=['POST'])
+def bdr_enter():
+    """
+    Append a validated, unique BDR code to the bdr_scans table.
+
+    Location is required. Valid locations: M4, M5.
+
+    Uniqueness enforced at two levels immediately before the write:
+      1. Full-code check  — entire code must not already exist
+      2. Serial check     — 6-char serial must not exist for the same part_number
+
+    Returns:
+      { "success": true, "scanned_date": "DD/MM/YYYY HH:MM:SS AM/PM", "parsed": {...} }
+    """
+    data = request.get_json(silent=True) or {}
+    code     = str(data.get('code', '')).strip()
+    location = str(data.get('location', '')).strip().upper()
+
+    if not code:
+        return jsonify({"success": False, "message": "Code is required."}), 400
+
+    if location not in _BDR_VALID_LOCATIONS:
+        return jsonify({"success": False,
+                        "message": f"Invalid location '{location}'. "
+                                   f"BDR scanning is only permitted at M4 or M5."}), 400
+
+    err = _bdr_validate_code(code, location)
+    if err:
+        _, message = err
+        return jsonify({"success": False, "message": message}), 400
+
+    parsed = _bdr_parse(code)
+
+    try:
+        from app.services.db_client import bdr_find, bdr_find_by_serial, bdr_insert
+
+        # ── 1. Full-code uniqueness check ──
+        if bdr_find(code):
+            return jsonify({"success": False,
+                            "message": "This BDR code was already scanned."}), 409
+
+        # ── 2. Serial-level uniqueness check ──
+        serial_hit = bdr_find_by_serial(parsed['serial'], parsed['part_number'])
+        if serial_hit:
+            logger.warning(
+                "BDR serial duplicate blocked on enter: serial=%s part=%s "
+                "existing_code=%s",
+                parsed['serial'], parsed['part_number'], serial_hit.get('code', '')
+            )
+            return jsonify({"success": False,
+                            "message": f"Serial '{parsed['serial']}' for part "
+                                       f"{parsed['part_number']} has already been scanned "
+                                       f"(on {serial_hit.get('scanned_date', 'unknown')} "
+                                       f"at {serial_hit.get('location', 'unknown')})."}), 409
+
+        scanned_date = _fmt_dubai(datetime.now(timezone.utc))
+        bdr_insert(
+            code=code,
+            customer_code=parsed['customer_code'],
+            part_number=parsed['part_number'],
+            year_2d=parsed['year'],
+            doy=parsed['doy'],
+            serial=parsed['serial'],
+            scanned_date=scanned_date,
+            location=location,
+        )
+        logger.info("BDR inserted (Postgres): code=%s part=%s location=%s",
+                    code, parsed['part_number'], location)
+        return jsonify({"success": True, "scanned_date": scanned_date,
+                        "parsed": parsed}), 200
+
+    except Exception as exc:
+        logger.error("BDR enter (Postgres) failed for code %s: %s", code, exc)
+        return jsonify({"success": False,
+                        "message": "Could not write to BDR database. Try again."}), 502
