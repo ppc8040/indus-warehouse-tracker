@@ -11,6 +11,7 @@ Features:
   - SAP Recon: compares scanner net qty vs SAP plant stock (Plants 1000 & 2000)
   - SAP Recon Status: lightweight polling endpoint for frontend progress tracking
   - OOR Customer Codes: reads Open Order Report (col H = Indus Part, col R = Customer Code)
+  - BDR scans: list, stats (bdr_today / bdr_total), and Excel export
 """
 import io
 import time
@@ -367,22 +368,11 @@ def api_pallet_statuses():
     """
     Returns the true latest status for every HU by deriving it live from the
     movements table (DISTINCT ON handling_unit ORDER BY timestamp_utc DESC, id DESC).
-
-    The id DESC tiebreaker ensures deterministic row selection when two movements
-    share an identical timestamp_utc (e.g. a STOCK_IN and STOCK_OUT scanned within
-    the same second) — the row with the higher id (inserted later) wins.
-
-    The pallet_status table is still used as a fallback JOIN to fill in
-    indus_part / pallet_qty / last_location when the movements row is missing
-    those fields (e.g. older records).
-
-    Filters: hu, part, location  (location matches last_location / movements.location)
     """
     hu   = (request.args.get('hu')       or '').strip()
     part = (request.args.get('part')     or '').strip()
     loc  = (request.args.get('location') or '').strip()
 
-    # Build optional WHERE clauses applied AFTER the DISTINCT ON subquery
     outer_clauses = []
     params = {}
     if hu:
@@ -403,9 +393,6 @@ def api_pallet_statuses():
 
     sql = f"""
         WITH latest_movement AS (
-            -- One row per HU: the single most-recent non-ERROR movement.
-            -- id DESC tiebreaker prevents arbitrary selection when timestamp_utc
-            -- values collide (e.g. simultaneous IN/OUT within the same second).
             SELECT DISTINCT ON (handling_unit)
                 handling_unit,
                 movement_type        AS last_movement_type,
@@ -420,7 +407,6 @@ def api_pallet_statuses():
         )
         SELECT
             m.handling_unit,
-            -- Derive current_status from the latest movement type
             CASE
                 WHEN m.last_movement_type = 'STOCK_IN'  THEN 'IN_WAREHOUSE'
                 WHEN m.last_movement_type = 'STOCK_OUT' THEN 'OUT_OF_WAREHOUSE'
@@ -517,6 +503,8 @@ def api_stats():
         "pending_keys":    None,
         "ivt_today":       None,
         "ivt_total":       None,
+        "bdr_today":       None,
+        "bdr_total":       None,
         "neg_alerts":      None,
     }
     qty = STOCK_QTY_EXPR
@@ -532,8 +520,6 @@ def api_stats():
                     logger.warning("stats total_movements: %s", e)
 
                 try:
-                    # id DESC tiebreaker prevents arbitrary winner when two movements
-                    # share an identical timestamp_utc (e.g. same-second IN/OUT pair).
                     cur.execute("""
                         WITH latest AS (
                             SELECT DISTINCT ON (handling_unit) movement_type
@@ -584,6 +570,24 @@ def api_stats():
                 except Exception as e:
                     logger.warning("stats ivt_total: %s", e)
 
+                # BDR stats — gracefully skipped if table doesn't exist yet
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM bdr_scans
+                        WHERE DATE(scanned_date::timestamptz AT TIME ZONE 'Asia/Dubai') = CURRENT_DATE
+                    """)
+                    result["bdr_today"] = _fetch_scalar(cur)
+                except Exception as e:
+                    logger.warning("stats bdr_today: %s", e)
+                    result["bdr_today"] = 0
+
+                try:
+                    cur.execute("SELECT COUNT(*) FROM bdr_scans")
+                    result["bdr_total"] = _fetch_scalar(cur)
+                except Exception as e:
+                    logger.warning("stats bdr_total: %s", e)
+                    result["bdr_total"] = 0
+
                 try:
                     cur.execute(f"""
                         SELECT COUNT(*) FROM (
@@ -619,6 +623,169 @@ def api_stats():
 def api_conn_test():
     ok = db_ping()
     return jsonify({"status": "ok" if ok else "error", "db": ok})
+
+
+# ---------------------------------------------------------------------------
+# BDR scans endpoint
+# ---------------------------------------------------------------------------
+
+@admin_bp.route('/api/bdr-scans')
+@_auth_required
+def api_bdr_scans():
+    """
+    Returns all BDR scan records with decoded label fields.
+
+    Query params:
+      part     — filter by part_code (ILIKE)
+      location — filter by location (exact, case-insensitive)
+      limit    — max rows (default 500)
+
+    Response:
+      {
+        "scans": [
+          {
+            "id": 1,
+            "code": "BDR783832304 | 333536 | 26198 | ABC123 | T1",
+            "customer_code": "783832304",
+            "part_code": "333536",
+            "year": "26",
+            "day_of_year": "198",
+            "serial": "ABC123",
+            "location": "M4",
+            "scanned_date": "2026-07-17T13:45:00+04:00"
+          }, ...
+        ],
+        "total": 42
+      }
+    """
+    import re
+    part     = (request.args.get('part')     or '').strip()
+    loc      = (request.args.get('location') or '').strip()
+    limit    = request.args.get('limit', 500, type=int)
+
+    clauses = []
+    params  = {'limit': limit}
+
+    if part:
+        clauses.append("part_code ILIKE %(part)s")
+        params['part'] = f'%{part}%'
+    if loc and loc.upper() != 'ALL':
+        clauses.append("UPPER(location) = UPPER(%(loc)s)")
+        params['loc'] = loc
+
+    where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+
+    sql = f"""
+        SELECT id, code, part_code, location,
+               scanned_date AT TIME ZONE 'Asia/Dubai' AS scanned_date_dubai
+        FROM bdr_scans
+        {where}
+        ORDER BY id DESC
+        LIMIT %(limit)s
+    """
+    count_sql = f"SELECT COUNT(*) FROM bdr_scans {where}"
+
+    # BDR label pattern: BDR{9-digit} | {part} | {YYDDD} | {serial} | T1
+    _BDR_RE = re.compile(
+        r'^BDR(\d{9})\s*\|\s*(\w+)\s*\|\s*(\d{2})(\d{3})\s*\|\s*(\w{6})\s*\|\s*T1$',
+        re.IGNORECASE
+    )
+
+    def _decode(code):
+        m = _BDR_RE.match((code or '').strip())
+        if m:
+            return {
+                'customer_code': m.group(1),
+                'part_code':     m.group(2),
+                'year':          m.group(3),
+                'day_of_year':   m.group(4),
+                'serial':        m.group(5),
+            }
+        return {'customer_code': '', 'part_code': '', 'year': '', 'day_of_year': '', 'serial': ''}
+
+    try:
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                # count (uses same WHERE, no LIMIT)
+                count_params = {k: v for k, v in params.items() if k != 'limit'}
+                cur.execute(count_sql, count_params)
+                total = _fetch_scalar(cur)
+
+                cur.execute(sql, params)
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    decoded = _decode(d.get('code', ''))
+                    # part_code column is stored directly; enrich with full decode
+                    d['customer_code'] = decoded['customer_code']
+                    d['year']          = decoded['year']
+                    d['day_of_year']   = decoded['day_of_year']
+                    d['serial']        = decoded['serial']
+                    # normalise date to ISO string
+                    sd = d.pop('scanned_date_dubai', None)
+                    d['scanned_date'] = sd.isoformat() if sd else None
+                    rows.append(d)
+
+        return jsonify({"scans": rows, "total": total})
+    except Exception as e:
+        logger.error("api_bdr_scans: %s", e)
+        return jsonify({"scans": [], "total": 0, "error": str(e)})
+
+
+@admin_bp.route('/api/analytics/bdr')
+@_auth_required
+def api_bdr_analytics():
+    """
+    Returns BDR scan analytics:
+      - recent: last N scans
+      - daily: scan count per day over last 14 days
+      - by_location: scan count by location
+      - by_part: scan count by part_code
+    """
+    try:
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT code, part_code, location,
+                           scanned_date AT TIME ZONE 'Asia/Dubai' AS scanned_date
+                    FROM bdr_scans ORDER BY id DESC LIMIT 200
+                """)
+                recent = [dict(r) for r in cur.fetchall()]
+
+                cur.execute("""
+                    SELECT TO_CHAR(scanned_date::timestamptz AT TIME ZONE 'Asia/Dubai','YYYY-MM-DD') AS day,
+                           COUNT(*) AS cnt
+                    FROM bdr_scans
+                    WHERE scanned_date::timestamptz >= NOW() - INTERVAL '14 days'
+                    GROUP BY day ORDER BY day
+                """)
+                daily = [dict(r) for r in cur.fetchall()]
+
+                cur.execute("""
+                    SELECT UPPER(location) AS location, COUNT(*) AS cnt
+                    FROM bdr_scans
+                    GROUP BY UPPER(location)
+                    ORDER BY cnt DESC
+                """)
+                by_location = [dict(r) for r in cur.fetchall()]
+
+                cur.execute("""
+                    SELECT UPPER(part_code) AS part_code, COUNT(*) AS cnt
+                    FROM bdr_scans
+                    GROUP BY UPPER(part_code)
+                    ORDER BY cnt DESC
+                """)
+                by_part = [dict(r) for r in cur.fetchall()]
+
+        return jsonify({
+            "recent": recent,
+            "daily": daily,
+            "by_location": by_location,
+            "by_part": by_part,
+        })
+    except Exception as e:
+        logger.error("api_bdr_analytics: %s", e)
+        return jsonify({"recent": [], "daily": [], "by_location": [], "by_part": []})
 
 
 # ---------------------------------------------------------------------------
@@ -745,28 +912,6 @@ def api_total_stock():
 @admin_bp.route('/api/sap-recon-status')
 @_auth_required
 def api_sap_recon_status():
-    """
-    Lightweight status endpoint polled by the frontend every 5 seconds while
-    the background SAP fetch thread is running.
-
-    Returns immediately with:
-      {
-        "is_fetching":      bool,   — True while background thread is alive
-        "has_data":         bool,   — True once cache has been populated at least once
-        "fetch_started":    bool,   — True once a fetch has been triggered
-                                      (lets the frontend distinguish "waiting for first kick"
-                                       from "finished with error")
-        "material_count":   int,    — number of SAP materials cached (0 if not yet done)
-        "cache_age_seconds": float, — seconds since last successful fetch (0 if never)
-        "error":            str|null — last fetch error, or null
-      }
-
-    State machine on the frontend:
-      fetch_started=False                → still waiting for kick-off, keep spinner
-      fetch_started=True, is_fetching=True  → actively fetching, update progress msg
-      fetch_started=True, is_fetching=False, has_data=True  → SUCCESS → load data
-      fetch_started=True, is_fetching=False, has_data=False → ERROR   → show error
-    """
     from app.services.sap_stock_client import (
         is_fetching, cache_age_seconds, last_error, fetch_started,
     )
@@ -797,40 +942,12 @@ def api_sap_recon_status():
 @admin_bp.route('/api/sap-recon')
 @_auth_required
 def api_sap_recon():
-    """
-    Returns a full outer join of:
-      - Scanner net qty per indus_part (from movements table)
-      - SAP plant stock per material (Plants 1000 + 2000, from sap_stock_client)
-
-    Query param:
-      ?force_refresh=1  — bypass the 5-min SAP cache and re-fetch live
-
-    Response JSON:
-      {
-        "rows": [
-          {
-            "indus_part":     "ACN1375",
-            "customer_part":  "...",
-            "scanner_qty":    287,
-            "sap_qty_1000":   287.0,
-            "sap_qty_2000":   0.0,
-            "variance_vs_1000": 0,   -- scanner_qty minus sap_qty_1000
-          },
-          ...
-        ],
-        "cache_age_seconds": 42,
-        "sap_material_count": 1850,
-        "scanner_material_count": 95,
-        "error": null
-      }
-    """
     from app.services.sap_stock_client import (
         fetch_stock, cache_age_seconds, last_error, SAPStockError
     )
 
     force = request.args.get('force_refresh', '0') == '1'
 
-    # ── 1. Fetch SAP stock (cached or live) ────────────────────────────────────
     sap_rows  = []
     sap_error = None
     try:
@@ -839,18 +956,11 @@ def api_sap_recon():
         sap_error = str(exc)
         logger.error("api_sap_recon SAP fetch failed: %s", exc)
 
-    # Build SAP lookup: material -> {sap_qty_1000, sap_qty_2000}
     sap_map = {
         r['material']: r
         for r in sap_rows
     }
 
-    # ── 2. Fetch scanner net qty per indus_part ──────────────────────────────
-    # FIX: GROUP BY must use the same UPPER(COALESCE(...)) expression as the
-    # SELECT alias — not the raw column — so mixed-case variants of the same
-    # part code (e.g. 'cen1375' vs 'CEN1375') are aggregated into ONE row
-    # instead of producing separate rows that then collide as dict keys and
-    # silently drop qty for all but the last row.
     qty = STOCK_QTY_EXPR
     _part_expr = "UPPER(COALESCE(NULLIF(indus_part,''), 'Unknown'))"
     scanner_sql = f"""
@@ -876,7 +986,6 @@ def api_sap_recon():
         logger.error("api_sap_recon scanner query failed: %s", e)
         return jsonify({"rows": [], "error": str(e)}), 500
 
-    # ── 3. Full outer join on material code ──────────────────────────────────
     all_materials = sorted(set(sap_map.keys()) | set(scanner_map.keys()))
 
     rows = []
@@ -969,9 +1078,6 @@ def api_export():
                 if h in _DT_EXPORT_COLS and isinstance(cell_val, datetime):
                     cell.number_format = _DT_EXPORT_FMT
 
-    # ---- OOR customer code lookup — called once per export request --------
-    # Reuses the in-memory cache (_oor_cache) so export never hammers Graph API.
-    # Returns {} on any failure so it never breaks an export.
     def _get_oor_codes_safe():
         now = time.time()
         if _oor_cache['data'] is not None and (now - _oor_cache['ts']) < _OOR_CACHE_TTL:
@@ -1004,7 +1110,6 @@ def api_export():
                     """, params)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
 
-            # Enrich with OOR customer code
             oor = _get_oor_codes_safe()
             for row in data:
                 part_key = (row.get('indus_part') or '').strip().upper()
@@ -1021,8 +1126,6 @@ def api_export():
             filename = 'movements_export.xlsx'
 
         elif sheet_name == 'statuses':
-            # Export uses the same live-derived logic as api_pallet_statuses,
-            # including the id DESC tiebreaker.
             hu   = (request.args.get('hu')   or '').strip()
             part = (request.args.get('part') or '').strip()
             loc  = (request.args.get('location') or '').strip()
@@ -1074,7 +1177,6 @@ def api_export():
                     """, p2)
                     data = [_row_to_dict(r) for r in cur.fetchall()]
 
-            # Enrich with OOR customer code
             oor = _get_oor_codes_safe()
             for row in data:
                 part_key = (row.get('indus_part') or '').strip().upper()
@@ -1125,7 +1227,6 @@ def api_export():
                     """, p3)
                     data = [dict(r) for r in cur.fetchall()]
 
-            # Enrich with OOR customer code
             oor = _get_oor_codes_safe()
             for row in data:
                 part_key = (row.get('indus_part') or '').strip().upper()
@@ -1167,7 +1268,6 @@ def api_export():
                     """, p4)
                     data = [dict(r) for r in cur.fetchall()]
 
-            # Enrich with OOR customer code
             oor = _get_oor_codes_safe()
             for row in data:
                 part_key = (row.get('indus_part') or '').strip().upper()
@@ -1240,8 +1340,60 @@ def api_export():
             _write_rows(ws, headers, data)
             filename = 'ivt_scans_export.xlsx'
 
+        elif sheet_name == 'bdr':
+            # BDR scans export — applies same part/location filters as api_bdr_scans
+            import re as _re
+            _BDR_RE = _re.compile(
+                r'^BDR(\d{9})\s*\|\s*(\w+)\s*\|\s*(\d{2})(\d{3})\s*\|\s*(\w{6})\s*\|\s*T1$',
+                _re.IGNORECASE
+            )
+
+            part_f = (request.args.get('part')     or '').strip()
+            loc_f  = (request.args.get('location') or '').strip()
+            cl_bdr = []
+            p_bdr  = {}
+            if part_f:
+                cl_bdr.append("part_code ILIKE %(part)s")
+                p_bdr['part'] = f'%{part_f}%'
+            if loc_f and loc_f.upper() != 'ALL':
+                cl_bdr.append("UPPER(location) = UPPER(%(loc)s)")
+                p_bdr['loc'] = loc_f
+            where_bdr = ('WHERE ' + ' AND '.join(cl_bdr)) if cl_bdr else ''
+
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        SELECT id, code, part_code, location,
+                               scanned_date AT TIME ZONE 'Asia/Dubai' AS scanned_date
+                        FROM bdr_scans {where_bdr}
+                        ORDER BY id DESC
+                    """, p_bdr)
+                    raw = [dict(r) for r in cur.fetchall()]
+
+            export_rows = []
+            for r in raw:
+                m = _BDR_RE.match((r.get('code') or '').strip())
+                export_rows.append({
+                    'id':            r.get('id', ''),
+                    'code':          r.get('code', ''),
+                    'customer_code': m.group(1) if m else '',
+                    'part_code':     r.get('part_code', ''),
+                    'year':          m.group(3) if m else '',
+                    'day_of_year':   m.group(4) if m else '',
+                    'serial':        m.group(5) if m else '',
+                    'location':      r.get('location', ''),
+                    'scanned_date':  str(r.get('scanned_date', '')) if r.get('scanned_date') else '',
+                })
+
+            ws.title = 'BDR Scans'
+            headers = ['id','code','customer_code','part_code',
+                       'year','day_of_year','serial','location','scanned_date']
+            ws.append(headers)
+            _apply_header(ws, len(headers))
+            _write_rows(ws, headers, export_rows)
+            filename = 'bdr_scans_export.xlsx'
+
         elif sheet_name == 'sap_recon':
-            # Re-use cached SAP data; don't force a fresh pull on export
             from app.services.sap_stock_client import fetch_stock, SAPStockError
             sap_map = {}
             try:
@@ -1250,9 +1402,6 @@ def api_export():
             except SAPStockError as exc:
                 logger.warning("sap_recon export: SAP fetch failed: %s", exc)
 
-            # FIX: same GROUP BY expression fix as api_sap_recon() above —
-            # GROUP BY UPPER(COALESCE(...)) so mixed-case part codes aggregate
-            # into a single row instead of being silently dropped.
             _part_expr = "UPPER(COALESCE(NULLIF(indus_part,''),'Unknown'))"
             scanner_data = []
             with _get_conn() as conn:
@@ -1273,7 +1422,6 @@ def api_export():
             scanner_map = {r['indus_part']: r for r in scanner_data}
             all_mats = sorted(set(sap_map.keys()) | set(scanner_map.keys()))
 
-            # Enrich with OOR customer code
             oor = _get_oor_codes_safe()
 
             export_rows = []
@@ -1293,7 +1441,6 @@ def api_export():
                     'variance_vs_1000': sq - s1,
                 })
 
-            # ── Apply SAP Recon-specific filters (mirrors client-side logic) ──
             search_q   = (request.args.get('search') or '').strip().lower()
             var_filter = (request.args.get('variance_filter') or 'ALL').strip().upper()
 
@@ -1322,7 +1469,6 @@ def api_export():
             _apply_header(ws, len(headers))
             _write_rows(ws, headers, export_rows)
 
-            # Conditional formatting: red fill for negative variance rows
             NEG_FILL = PatternFill('solid', fgColor='2D0A0A')
             NEG_FONT = Font(size=10, name='Calibri', color='FCA5A5')
             for i, row in enumerate(export_rows, start=2):
@@ -1380,7 +1526,6 @@ def api_by_location():
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
-                # id DESC tiebreaker ensures the higher-id row wins on timestamp collision.
                 cur.execute("""
                     WITH latest AS (
                         SELECT DISTINCT ON (handling_unit)
@@ -1407,12 +1552,6 @@ def api_by_location():
 @admin_bp.route('/api/analytics/by-part')
 @_auth_required
 def api_by_part():
-    """
-    Returns the top 15 parts currently IN_WAREHOUSE, derived live from the
-    movements table using the same DISTINCT ON logic as api_pallet_statuses.
-    Replaces the old pallet_status read which could show stale IN_WAREHOUSE
-    rows for pallets that have already been STOCK_OUT.
-    """
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
