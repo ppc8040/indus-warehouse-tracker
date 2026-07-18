@@ -33,8 +33,10 @@ Security:
        twice under a different barcode variant.
 
   BDR Line — /api/bdr-check and /api/bdr-enter handle the BDR customer
-  scanning flow. BDR codes have the format:
-    BDR{9-digit-customer-code} | {part-number} | {YYDDD} | {6-digit-serial} | T1
+  scanning flow. BDR codes are accepted in two formats:
+    Piped:   BDR{9-digit-customer-code} | {part-number} | {YYDDD} | {6-char-serial} | T1
+    Compact: BDR{9-digit-customer-code}{6-char-part}{5-digit-YYDDD}{6-char-serial}T1
+  Both formats are normalised to the piped canonical form before storage.
   They are completely isolated from IVT and warehouse movement flows.
   BDR duplicate guards mirror IVT (full-code + serial-level).
 
@@ -176,14 +178,22 @@ def _ivt_validate_code(code: str, location: str = ''):
 # ---------------------------------------------------------------------------
 # BDR code validation
 # ---------------------------------------------------------------------------
-# Code structure (pipe-delimited, whitespace-tolerant):
-#   BDR{CustomerCode} | {CustomerPartNumber} | {YYDDD} | {XXXXXX} | T1
+# Accepted formats (both parsed identically):
 #
-#   CustomerCode     : 9 digits — always '783832304'
-#   CustomerPartNumber: alphanumeric — must be in _BDR_VALID_PARTS
-#   YYDDD            : 5 digits — 2-digit year + 3-digit day-of-year (001-366)
-#   XXXXXX           : 6 alphanumeric chars — serial number
-#   T1               : literal suffix
+#   Piped (scanner output with separators):
+#     BDR{CustomerCode} | {PartNumber} | {YYDDD} | {Serial} | T1
+#
+#   Compact (scanner output without separators, 31 chars total):
+#     BDR{9-digit customer}{6-char part}{5-digit YYDDD}{6-char serial}T1
+#     e.g. BDR7838200533353626200123456T1
+#          ^^^         ^^^^^^     ^^^^^  ^^^^^^  ^^
+#          BDR  customer(9) part(6) YYDDD(5) serial(6) T1(2)
+#
+#   CustomerCode  : 9 digits  — always '783832304'
+#   PartNumber    : 6 alphanum — must be in _BDR_VALID_PARTS (e.g. '333536')
+#   YYDDD         : 5 digits  — 2-digit year + 3-digit day-of-year (001-366)
+#   Serial        : 6 alphanum — unique per part_number
+#   T1            : literal suffix
 #
 # Valid locations: M4 or M5
 
@@ -191,41 +201,62 @@ _BDR_CUSTOMER_CODE   = '783832304'
 _BDR_VALID_PARTS     = {'333536'}
 _BDR_VALID_LOCATIONS = {'M4', 'M5'}
 
-# Regex — tolerates any amount of whitespace around each pipe separator
-_BDR_RE = re.compile(
+# Piped format — tolerates any whitespace around pipe separators
+_BDR_RE_PIPED = re.compile(
     r'^BDR(\d{9})\s*\|\s*(\w+)\s*\|\s*(\d{2})(\d{3})\s*\|\s*(\w{6})\s*\|\s*T1$',
+    re.IGNORECASE
+)
+
+# Compact format — no separators, fixed field widths:
+#   BDR + 9 + 6 + 2 + 3 + 6 + T1  =  3+9+6+2+3+6+2 = 31 chars
+_BDR_RE_COMPACT = re.compile(
+    r'^BDR(\d{9})(\w{6})(\d{2})(\d{3})(\w{6})T1$',
     re.IGNORECASE
 )
 
 
 def _bdr_parse(code: str):
     """
-    Parse a BDR label string into its components.
+    Parse a BDR label string (piped or compact) into its components.
     Returns a dict with keys: customer_code, part_number, year, doy, serial
-    Or returns None if the format does not match at all.
+    Or returns None if neither format matches.
     """
-    m = _BDR_RE.match(code.strip())
-    if not m:
-        return None
-    return {
-        'customer_code': m.group(1),
-        'part_number':   m.group(2).upper(),
-        'year':          m.group(3),
-        'doy':           m.group(4),
-        'serial':        m.group(5).upper(),
-    }
+    s = code.strip()
+
+    m = _BDR_RE_PIPED.match(s)
+    if m:
+        return {
+            'customer_code': m.group(1),
+            'part_number':   m.group(2).upper(),
+            'year':          m.group(3),
+            'doy':           m.group(4),
+            'serial':        m.group(5).upper(),
+        }
+
+    m = _BDR_RE_COMPACT.match(s)
+    if m:
+        return {
+            'customer_code': m.group(1),
+            'part_number':   m.group(2).upper(),
+            'year':          m.group(3),
+            'doy':           m.group(4),
+            'serial':        m.group(5).upper(),
+        }
+
+    return None
 
 
 def _bdr_validate_code(code: str, location: str = ''):
     """
-    Validate a BDR label string.
+    Validate a BDR label string (piped or compact format).
     Returns None if valid, or (error_type, message) tuple if invalid.
     """
     parsed = _bdr_parse(code)
     if parsed is None:
         return ('invalid_format',
                 "Code does not match BDR label format. "
-                "Expected: BDR{CustomerCode} | {PartNumber} | {YYDDD} | {Serial} | T1")
+                "Expected piped: BDR{CustomerCode} | {PartNumber} | {YYDDD} | {Serial} | T1  "
+                "or compact: BDR{9-digit customer}{6-char part}{YYDDD}{6-char serial}T1")
 
     if parsed['customer_code'] != _BDR_CUSTOMER_CODE:
         return ('invalid_customer_code',
@@ -630,9 +661,10 @@ def bdr_check():
     Validate and duplicate-check a BDR label string.
 
     Called immediately after scan, BEFORE the worker selects a location.
+    Accepts both piped and compact (no-separator) barcode formats.
 
     Validation:
-      1. Format must match BDR regex pattern
+      1. Format must match piped or compact BDR regex
       2. Customer code must equal '783832304'
       3. Part number must be in _BDR_VALID_PARTS
       4. Day-of-year must be 001-366
@@ -700,6 +732,7 @@ def bdr_enter():
     Append a validated, unique BDR code to the bdr_scans table.
 
     Location is required. Valid locations: M4, M5.
+    Accepts both piped and compact (no-separator) barcode formats.
 
     Uniqueness enforced at two levels immediately before the write:
       1. Full-code check  — entire code must not already exist
