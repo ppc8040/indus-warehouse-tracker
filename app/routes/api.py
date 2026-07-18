@@ -189,7 +189,7 @@ def _ivt_validate_code(code: str, location: str = ''):
 #          ^^^         ^^^^^^     ^^^^^  ^^^^^^  ^^
 #          BDR  customer(9) part(6) YYDDD(5) serial(6) T1(2)
 #
-#   CustomerCode  : 9 digits  — always '783832304'
+#   CustomerCode  : 9 digits  — one of '783832005', '783832304'
 #   PartNumber    : 6 alphanum — must be in _BDR_VALID_PARTS (e.g. '333536')
 #   YYDDD         : 5 digits  — 2-digit year + 3-digit day-of-year (001-366)
 #   Serial        : 6 alphanum — unique per part_number
@@ -197,8 +197,9 @@ def _ivt_validate_code(code: str, location: str = ''):
 #
 # Valid locations: M4 or M5
 
-_BDR_CUSTOMER_CODE   = '783832304'
-_BDR_VALID_PARTS     = {'333536'}
+_BDR_CUSTOMER_CODE   = 'BDR'           # prefix only — part numbers validated separately
+_BDR_VALID_PART_NUMBERS = {'783832005', '783832304'}
+_BDR_VALID_SUPPLIER  = '333536'
 _BDR_VALID_LOCATIONS = {'M4', 'M5'}
 
 # Piped format — tolerates any whitespace around pipe separators
@@ -258,16 +259,15 @@ def _bdr_validate_code(code: str, location: str = ''):
                 "Expected piped: BDR{CustomerCode} | {PartNumber} | {YYDDD} | {Serial} | T1  "
                 "or compact: BDR{9-digit customer}{6-char part}{YYDDD}{6-char serial}T1")
 
-    if parsed['customer_code'] != _BDR_CUSTOMER_CODE:
+    if parsed['customer_code'] not in _BDR_VALID_PART_NUMBERS:
         return ('invalid_customer_code',
-                f"Invalid BDR customer code \u2018{parsed['customer_code']}\u2019 "
-                f"\u2014 expected {_BDR_CUSTOMER_CODE}.")
-
-    if parsed['part_number'] not in _BDR_VALID_PARTS:
-        valid_list = ', '.join(sorted(_BDR_VALID_PARTS))
+                f"Invalid BDR customer part number \u2018{parsed['customer_code']}\u2019 "
+                f"\u2014 expected one of: {', '.join(sorted(_BDR_VALID_PART_NUMBERS))}.")
+    
+    if parsed['part_number'] != _BDR_VALID_SUPPLIER:
         return ('invalid_part_code',
-                f"Invalid BDR part number \u2018{parsed['part_number']}\u2019 "
-                f"\u2014 must be {valid_list}.")
+                f"Invalid BDR supplier number \u2018{parsed['part_number']}\u2019 "
+                f"\u2014 expected {_BDR_VALID_SUPPLIER}.")
 
     doy = int(parsed['doy'])
     if doy < 1 or doy > 366:
