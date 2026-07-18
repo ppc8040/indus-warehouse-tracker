@@ -873,7 +873,7 @@
       <h2 style="font-size:1.1rem;margin-bottom:6px;color:#5B21B6">Scan BDR Barcode</h2>
       <p style="font-size:.82rem;color:#757575;margin-bottom:14px">
         Scan or type the full BDR code in the format:<br>
-        <span style="font-family:monospace;font-size:.78rem;color:#7C3AED">BDR{9 digits}{6-digit part}{5-digit date}{6-char serial}T1</span><br>
+        <span style="font-family:monospace;font-size:.78rem;color:#7C3AED">BDR{9-digit part}{6-digit supplier}{5-digit date YYDDD}{6-char serial}T1 (31 chars, no spaces)</span><br>
         Invalid and duplicate codes are blocked automatically.
       </p>
       <div id="bdrScannerContainer" style="width:100%;margin-bottom:14px"></div>
@@ -1449,18 +1449,16 @@ function _bdrParseCode(raw) {
   var date     = body.substring(15, 20); // 26200
   var serial   = body.substring(20, 26); // 123456
   var suffix   = body.substring(26, 28); // T1
-  return { custCode: custCode, part: part, date: date, serial: serial, suffix: suffix };
+  return { custCode: custCode, partNumber: partNumber, supplierNo: supplierNo, date: date, serial: serial, suffix: suffix };
 }
 
 function _bdrValidateCodeClient(raw) {
   var p = _bdrParseCode(raw);
-  if (!p) return 'Invalid format. Expected BDR + 9-digit customer + 6-digit part + 5-digit date + 6-char serial + T1 (31 chars total).';
+  if (!p) return 'Invalid format. Expected BDR + 9-digit part + 6-digit supplier + 5-digit date + 6-char serial + T1 (31 chars total).';
   if (BDR_VALID_PART_NUMBERS.indexOf(p.partNumber) === -1)
-      return 'Invalid part number \u2018' + p.partNumber + '\u2019 \u2014 expected 783832005 or 783832304.';
+    return 'Invalid part number \u2018' + p.partNumber + '\u2019 \u2014 expected 783832005 or 783832304.';
   if (p.supplierNo !== BDR_SUPPLIER_NUMBER)
-      return 'Invalid supplier number \u2018' + p.supplierNo + '\u2019 \u2014 expected 333536.';
-  if (BDR_VALID_PARTS.indexOf(p.part) === -1)
-    return 'Invalid part number \u2018' + p.part + '\u2019 \u2014 expected: ' + BDR_VALID_PARTS.join(', ') + '.';
+    return 'Invalid supplier number \u2018' + p.supplierNo + '\u2019 \u2014 expected 333536.';
   if (!/^\d{5}$/.test(p.date))
     return 'Invalid date segment \u2018' + p.date + '\u2019 \u2014 must be 5 digits YYDDD.';
   if (p.suffix !== 'T1')
@@ -1574,7 +1572,7 @@ async function _bdrDoCheck(raw) {
         var ddd = _bdrParsed.date.substring(2);
         grid.innerHTML =
           _bdrDecodedItem('Customer', _bdrParsed.custCode) +
-          _bdrDecodedItem('Part No.', _bdrParsed.part) +
+          _bdrDecodedItem('Part No.', _bdrParsed.partNumber) +
           _bdrDecodedItem('Year', '20' + yy) +
           _bdrDecodedItem('Day of Year', ddd) +
           _bdrDecodedItem('Serial No.', _bdrParsed.serial) +
