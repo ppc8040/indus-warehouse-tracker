@@ -363,7 +363,7 @@
     <table>
       <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
       <tbody>
-        <tr><td><kbd>1</kbd> – <kbd>8</kbd></td><td>Switch to tab (1=Movements … 8=SAP Recon)</td></tr>
+        <tr><td><kbd>1</kbd> – <kbd>9</kbd></td><td>Switch to tab (1=Movements … 9=SAP Recon)</td></tr>
         <tr><td><kbd id="kbdModCycleAR">Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>Cycle auto-refresh interval (OFF → 30s → 1m → 5m)</td></tr>
         <tr><td><kbd>R</kbd></td><td>Refresh current tab data</td></tr>
         <tr><td><kbd id="kbdModExport">Ctrl</kbd>+<kbd>E</kbd></td><td>Export current tab to Excel</td></tr>
@@ -391,6 +391,7 @@
   <div class="kpi"><div class="kpi-num neg" id="kNeg">&#8212;</div><div class="kpi-lbl">Neg. Stock Alerts</div></div>
   <div class="kpi"><div class="kpi-num info" id="kIvtToday">&#8212;</div><div class="kpi-lbl">IVT Today</div></div>
   <div class="kpi"><div class="kpi-num info" id="kIvtTotal">&#8212;</div><div class="kpi-lbl">IVT Total</div></div>
+  <div class="kpi"><div class="kpi-num" style="color:#a78bfa" id="kBdrTotal">&#8212;</div><div class="kpi-lbl">BDR Total</div></div>
   <div class="kpi"><div class="kpi-num warn" id="kPend">&#8212;</div><div class="kpi-lbl">Pending Sync</div></div>
 </div>
 
@@ -440,6 +441,7 @@
   <button class="tab"     onclick="switchTab('analytics',this)">&#128202; Analytics</button>
   <button class="tab"     onclick="switchTab('ivt',this)">&#128269; IVT Scans<span class="tab-badge" id="badge-ivt"></span></button>
   <button class="tab"     onclick="switchTab('errors',this)">&#9888;&#65039; Errors<span class="tab-badge" id="badge-errors"></span></button>
+  <button class="tab"     onclick="switchTab('bdr',this)">&#128204; BDR Scans<span class="tab-badge" id="badge-bdr"></span></button>
   <button class="tab"     onclick="switchTab('saprecon',this)">&#128260; SAP Recon<span class="tab-badge" id="badge-saprecon"></span></button>
 </div>
 
@@ -565,6 +567,48 @@
   <div class="tbl-wrap" id="tbl-errors"><div class="empty">Loading&#8230;</div></div>
 </div>
 
+<!-- BDR -->
+<div class="tab-pane" id="pane-bdr">
+  <div class="tab-hdr">
+    <h2>BDR Scans</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-export-sel" id="exportsel-bdr" onclick="exportSelection('bdr')">&#8659; Export Selection</button>
+      <button class="btn btn-green" onclick="window.location.href='/admin/api/bdr-scans?export=csv'">&#8659; Export CSV</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+    <div class="kpi" style="min-width:120px">
+      <div class="kpi-num" style="color:#a78bfa" id="bdrKpiTotal">&#8212;</div>
+      <div class="kpi-lbl">Total Scans</div>
+    </div>
+    <div class="kpi" style="min-width:120px">
+      <div class="kpi-num info" id="bdrKpiM4">&#8212;</div>
+      <div class="kpi-lbl">M4 Scans</div>
+    </div>
+    <div class="kpi" style="min-width:120px">
+      <div class="kpi-num ok" id="bdrKpiM5">&#8212;</div>
+      <div class="kpi-lbl">M5 Scans</div>
+    </div>
+    <div class="kpi" style="min-width:120px">
+      <div class="kpi-num warn" id="bdrKpiPart">&#8212;</div>
+      <div class="kpi-lbl">Part 333536</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <select id="bdrFilterLoc" onchange="renderBdrTable()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 8px;font-size:12px">
+      <option value="ALL">All Locations</option>
+      <option value="M4">M4</option>
+      <option value="M5">M5</option>
+    </select>
+    <select id="bdrFilterPart" onchange="renderBdrTable()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 8px;font-size:12px">
+      <option value="ALL">All Parts</option>
+      <option value="333536">333536</option>
+    </select>
+  </div>
+  <div id="col-summary-bar-bdr" class="col-summary-bar"></div>
+  <div class="tbl-wrap" id="tbl-bdr"><div class="empty">Loading&#8230;</div></div>
+</div>
+  
 <!-- SAP Recon -->
 <div class="tab-pane" id="pane-saprecon">
   <div class="tab-hdr">
@@ -610,6 +654,7 @@ const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAg
 if (isMac) ['kbdModCycleAR','kbdModExport','kbdModSelAll','kbdModCopy','kbdModFind'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '⌘'; });
 let filterTimer = null;
 let _reconRows  = [];
+let _bdrRows    = [];
 let _oorCodes   = {};
 let _currentTheme = 'dark';
 
@@ -653,10 +698,10 @@ function _refreshChartColors() {
 }
 
 // ── Tab management ────────────────────────────────────────────────────────────
-const TAB_ORDER = ['movements','statuses','stock','totalstock','analytics','ivt','errors','saprecon'];
+const TAB_ORDER = ['movements','statuses','stock','totalstock','analytics','ivt','bdr','errors','saprecon'];
 const TAB_EXPORT_KEYS = {
   movements: 'movements', statuses: 'statuses', stock: 'stock',
-  totalstock: 'total_stock', ivt: 'ivt', errors: 'errors', saprecon: 'sap_recon'
+  totalstock: 'total_stock', ivt: 'ivt', bdr: 'bdr', errors: 'errors', saprecon: 'sap_recon'
 };
 let _activeTab = 'movements';
 
@@ -667,6 +712,7 @@ const TAB_LOADERS = {
   totalstock: () => loadTotalStock(),
   analytics:  () => loadAnalytics(),
   ivt:        () => loadIvt(),
+  bdr:        () => loadBdr(),
   errors:     () => loadErrors(),
   saprecon:   () => loadSapRecon(false),
 };
@@ -819,6 +865,7 @@ async function loadStats() {
     set('kNeg',      d.neg_alerts);
     set('kIvtToday', d.ivt_today);
     set('kIvtTotal', d.ivt_total);
+    set('kBdrTotal', d.bdr_total);
     set('kPend',     d.pending_keys);
   } catch (e) {
     console.error('loadStats failed:', e);
@@ -1089,6 +1136,54 @@ async function loadErrors() {
 // ── SAP Reconciliation ────────────────────────────────────────────────────────
 let _sapReconPollTimer = null;
 let _sapReconElapsedTimer = null;
+
+async function loadBdr() {
+  const el = document.getElementById('tbl-bdr');
+  el.innerHTML = '<div class="empty">Loading&#8230;</div>';
+  try {
+    const d = await fetch('/admin/api/bdr-scans').then(r => r.json());
+    _bdrRows = d.scans || [];
+    // stats
+    const total = _bdrRows.length;
+    const m4 = _bdrRows.filter(r => r.location === 'M4').length;
+    const m5 = _bdrRows.filter(r => r.location === 'M5').length;
+    const part = _bdrRows.filter(r => r.part_number === '333536').length;
+    document.getElementById('bdrKpiTotal').textContent = total;
+    document.getElementById('bdrKpiM4').textContent    = m4;
+    document.getElementById('bdrKpiM5').textContent    = m5;
+    document.getElementById('bdrKpiPart').textContent  = part;
+    _setTabBadge('bdr', total);
+    renderBdrTable();
+  } catch(e) { el.innerHTML = '<div class="empty">Failed to load BDR scans.</div>'; console.error('loadBdr', e); }
+}
+
+function renderBdrTable() {
+  const el   = document.getElementById('tbl-bdr');
+  const loc  = document.getElementById('bdrFilterLoc').value;
+  const part = document.getElementById('bdrFilterPart').value;
+  let rows   = _bdrRows;
+  if (loc  !== 'ALL') rows = rows.filter(r => r.location    === loc);
+  if (part !== 'ALL') rows = rows.filter(r => r.part_number === part);
+  if (!rows.length) { el.innerHTML = '<div class="empty">No BDR scans match filters.</div>'; return; }
+  let h = `<table><thead><tr>
+    <th>Scanned At (Dubai)</th><th>BDR Code</th><th>Part No.</th>
+    <th>Year</th><th>Day-of-Year</th><th>Serial</th><th>Location</th><th>Operator</th>
+  </tr></thead><tbody>`;
+  for (const r of rows) {
+    h += `<tr>
+      <td>${fmtTime(r.scanned_at)}</td>
+      <td style="font-family:monospace;font-size:11px">${r.bdr_code || '&#8212;'}</td>
+      <td>${r.part_number || '&#8212;'}</td>
+      <td>${r.year_code || '&#8212;'}</td>
+      <td>${r.day_of_year || '&#8212;'}</td>
+      <td>${r.serial_number || '&#8212;'}</td>
+      <td>${r.location || '&#8212;'}</td>
+      <td>${r.operator_id || '&#8212;'}</td>
+    </tr>`;
+  }
+  el.innerHTML = h + '</tbody></table>';
+  _makeTableSelectable(el);
+}
 
 async function loadSapRecon(forceRefresh = false) {
   const tbl = document.getElementById('tbl-saprecon');
