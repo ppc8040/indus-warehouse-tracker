@@ -873,7 +873,7 @@
       <h2 style="font-size:1.1rem;margin-bottom:6px;color:#5B21B6">Scan BDR Barcode</h2>
       <p style="font-size:.82rem;color:#757575;margin-bottom:14px">
         Scan or type the full BDR code in the format:<br>
-        <span style="font-family:monospace;font-size:.78rem;color:#7C3AED">BDR{9 digits} | {part} | {YYDDD} | {6 chars} | T1</span><br>
+        <span style="font-family:monospace;font-size:.78rem;color:#7C3AED">BDR{9 digits}{6-digit part}{5-digit date}{6-char serial}T1</span><br>
         Invalid and duplicate codes are blocked automatically.
       </p>
       <div id="bdrScannerContainer" style="width:100%;margin-bottom:14px"></div>
@@ -893,7 +893,7 @@
         <input
           type="text"
           id="bdrCodeInput"
-          placeholder="e.g. BDR783832304 | 333536 | 26145 | ABC123 | T1"
+          placeholder="e.g. BDR783832005333536262001234561T1"
           autocomplete="off"
           autocorrect="off"
           spellcheck="false"
@@ -1414,9 +1414,10 @@ function _ivtToast(msg, type, duration) {
 <script>
 'use strict';
 
-// BDR format: BDR{9-digit customer code} | {part} | {YYDDD} | {6 chars} | T1
-// e.g. BDR783832304 | 333536 | 26145 | ABC123 | T1
-var BDR_CUSTOMER_CODE  = '783832304';
+// BDR format: BDR{9-digit customer code}{6-digit part}{5-digit date YYDDD}{6-char serial}T1
+// e.g. BDR783832005333536262001234561T1
+// Total length: 3 + 9 + 6 + 5 + 6 + 2 = 31 characters
+var BDR_CUSTOMER_CODE  = '783832005';
 var BDR_VALID_PARTS    = ['333536'];
 var BDR_VALID_LOCS     = ['M4', 'M5'];
 
@@ -1428,24 +1429,30 @@ var _bdrSelectedLoc     = '';
 var _bdrParsed          = null;  // stores decoded fields for the unique card
 
 function _bdrParseCode(raw) {
-  // Normalise: strip internal spaces around pipes
-  var s = raw.replace(/\s*\|\s*/g, '|').trim();
-  var parts = s.split('|');
-  if (parts.length !== 5) return null;
-  var serial = parts[0].trim();   // BDR783832304
-  var part   = parts[1].trim();   // 333536
-  var date   = parts[2].trim();   // YYDDD e.g. 26145
-  var batch  = parts[3].trim();   // 6-char alphanumeric
-  var suffix = parts[4].trim();   // T1
-  // Validate serial prefix
-  if (!serial.startsWith('BDR')) return null;
-  var custCode = serial.substring(3);
-  return { serial: serial, custCode: custCode, part: part, date: date, batch: batch, suffix: suffix };
+  // Format: BDR{9}{6}{5}{6}T1 — 31 chars, no delimiters
+  // Also accept pipe-delimited input from manual typing: BDR{9} | {6} | {5} | {6} | T1
+  var s = raw.replace(/\s/g, '');  // strip all whitespace
+  // Normalise pipe-delimited input to concatenated form
+  if (s.indexOf('|') !== -1) {
+    var parts = s.split('|');
+    if (parts.length !== 5) return null;
+    s = parts[0] + parts[1] + parts[2] + parts[3] + parts[4];
+  }
+  if (!s.startsWith('BDR')) return null;
+  // After 'BDR': 9 customer + 6 part + 5 date + 6 serial + 2 suffix = 28 chars
+  var body = s.substring(3);
+  if (body.length !== 28) return null;
+  var custCode = body.substring(0, 9);   // 783832005
+  var part     = body.substring(9, 15);  // 333536
+  var date     = body.substring(15, 20); // 26200
+  var serial   = body.substring(20, 26); // 123456
+  var suffix   = body.substring(26, 28); // T1
+  return { custCode: custCode, part: part, date: date, serial: serial, suffix: suffix };
 }
 
 function _bdrValidateCodeClient(raw) {
   var p = _bdrParseCode(raw);
-  if (!p) return 'Code must have exactly 5 pipe-separated segments: BDR{customer} | {part} | {YYDDD} | {batch} | T1';
+  if (!p) return 'Invalid format. Expected BDR + 9-digit customer + 6-digit part + 5-digit date + 6-char serial + T1 (31 chars total).';
   if (p.custCode !== BDR_CUSTOMER_CODE)
     return 'Invalid customer code \u2018' + p.custCode + '\u2019 \u2014 expected ' + BDR_CUSTOMER_CODE + '.';
   if (BDR_VALID_PARTS.indexOf(p.part) === -1)
@@ -1566,7 +1573,7 @@ async function _bdrDoCheck(raw) {
           _bdrDecodedItem('Part No.', _bdrParsed.part) +
           _bdrDecodedItem('Year', '20' + yy) +
           _bdrDecodedItem('Day of Year', ddd) +
-          _bdrDecodedItem('Serial / Batch', _bdrParsed.batch) +
+          _bdrDecodedItem('Serial No.', _bdrParsed.serial) +
           _bdrDecodedItem('Suffix', _bdrParsed.suffix);
       }
       document.getElementById('bdrResultUnique').classList.add('visible');
