@@ -1417,8 +1417,9 @@ function _ivtToast(msg, type, duration) {
 // BDR format: BDR{9-digit customer code}{6-digit part}{5-digit date YYDDD}{6-char serial}T1
 // e.g. BDR783832005333536262001234561T1
 // Total length: 3 + 9 + 6 + 5 + 6 + 2 = 31 characters
-var BDR_CUSTOMER_CODE  = '783832005';
-var BDR_VALID_PARTS    = ['333536'];
+var BDR_CUSTOMER_CODE       = 'BDR';
+var BDR_VALID_PART_NUMBERS  = ['783832005', '783832304'];
+var BDR_SUPPLIER_NUMBER     = '333536';
 var BDR_VALID_LOCS     = ['M4', 'M5'];
 
 var _bdrScanner         = null;
@@ -1442,8 +1443,9 @@ function _bdrParseCode(raw) {
   // After 'BDR': 9 customer + 6 part + 5 date + 6 serial + 2 suffix = 28 chars
   var body = s.substring(3);
   if (body.length !== 28) return null;
-  var custCode = body.substring(0, 9);   // 783832005
-  var part     = body.substring(9, 15);  // 333536
+  var custCode    = 'BDR';               // always BDR (first 3 chars already stripped)
+  var partNumber  = body.substring(0, 9);  // customer part no: 783832005 or 783832304
+  var supplierNo  = body.substring(9, 15); // supplier no: 333536
   var date     = body.substring(15, 20); // 26200
   var serial   = body.substring(20, 26); // 123456
   var suffix   = body.substring(26, 28); // T1
@@ -1453,8 +1455,10 @@ function _bdrParseCode(raw) {
 function _bdrValidateCodeClient(raw) {
   var p = _bdrParseCode(raw);
   if (!p) return 'Invalid format. Expected BDR + 9-digit customer + 6-digit part + 5-digit date + 6-char serial + T1 (31 chars total).';
-  if (p.custCode !== BDR_CUSTOMER_CODE)
-    return 'Invalid customer code \u2018' + p.custCode + '\u2019 \u2014 expected ' + BDR_CUSTOMER_CODE + '.';
+  if (BDR_VALID_PART_NUMBERS.indexOf(p.partNumber) === -1)
+      return 'Invalid part number \u2018' + p.partNumber + '\u2019 \u2014 expected 783832005 or 783832304.';
+  if (p.supplierNo !== BDR_SUPPLIER_NUMBER)
+      return 'Invalid supplier number \u2018' + p.supplierNo + '\u2019 \u2014 expected 333536.';
   if (BDR_VALID_PARTS.indexOf(p.part) === -1)
     return 'Invalid part number \u2018' + p.part + '\u2019 \u2014 expected: ' + BDR_VALID_PARTS.join(', ') + '.';
   if (!/^\d{5}$/.test(p.date))
