@@ -676,7 +676,7 @@ def api_bdr_scans():
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
 
     sql = f"""
-        SELECT id, code, location,                     # ✅ no part_code column
+        SELECT id, code, location,
                scanned_date AT TIME ZONE 'Asia/Dubai' AS scanned_date_dubai
         FROM bdr_scans
         {where}
