@@ -591,7 +591,11 @@
     </div>
     <div class="kpi" style="min-width:120px">
       <div class="kpi-num warn" id="bdrKpiPart">&#8212;</div>
-      <div class="kpi-lbl">Part 333536</div>
+      <div class="kpi-lbl">Cust Part 783832304</div>
+    </div>
+    <div class="kpi" style="min-width:120px">
+      <div class="kpi-num warn" id="bdrKpiPart2">&#8212;</div>
+      <div class="kpi-lbl">Cust Part 783823005</div>
     </div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
@@ -601,8 +605,9 @@
       <option value="M5">M5</option>
     </select>
     <select id="bdrFilterPart" onchange="renderBdrTable()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 8px;font-size:12px">
-      <option value="ALL">All Parts</option>
-      <option value="333536">333536</option>
+      <option value="ALL">All Cust. Parts</option>
+      <option value="783832304">783832304</option>
+      <option value="783823005">783823005</option>
     </select>
   </div>
   <div id="col-summary-bar-bdr" class="col-summary-bar"></div>
@@ -1145,13 +1150,15 @@ async function loadBdr() {
     _bdrRows = d.scans || [];
     // stats
     const total = _bdrRows.length;
-    const m4 = _bdrRows.filter(r => r.location === 'M4').length;
-    const m5 = _bdrRows.filter(r => r.location === 'M5').length;
-    const part = _bdrRows.filter(r => r.part_code === '333536').length;
+    const m4    = _bdrRows.filter(r => r.location === 'M4').length;
+    const m5    = _bdrRows.filter(r => r.location === 'M5').length;
+    const p1    = _bdrRows.filter(r => r.cust_part_code === '783832304').length;
+    const p2    = _bdrRows.filter(r => r.cust_part_code === '783823005').length;
     document.getElementById('bdrKpiTotal').textContent = total;
     document.getElementById('bdrKpiM4').textContent    = m4;
     document.getElementById('bdrKpiM5').textContent    = m5;
-    document.getElementById('bdrKpiPart').textContent  = part;
+    document.getElementById('bdrKpiPart').textContent  = p1;
+    document.getElementById('bdrKpiPart2').textContent = p2;
     _setTabBadge('bdr', total);
     renderBdrTable();
   } catch(e) { el.innerHTML = '<div class="empty">Failed to load BDR scans.</div>'; console.error('loadBdr', e); }
@@ -1163,17 +1170,18 @@ function renderBdrTable() {
   const part = document.getElementById('bdrFilterPart').value;
   let rows   = _bdrRows;
   if (loc  !== 'ALL') rows = rows.filter(r => r.location    === loc);
-  if (part !== 'ALL') rows = rows.filter(r => r.part_code === part);
+  if (part !== 'ALL') rows = rows.filter(r => r.cust_part_code === part);
   if (!rows.length) { el.innerHTML = '<div class="empty">No BDR scans match filters.</div>'; return; }
   let h = `<table><thead><tr>
-    <th>Scanned At (Dubai)</th><th>BDR Code</th><th>Part No.</th>
-    <th>Year</th><th>Day-of-Year</th><th>Serial</th><th>Location</th><th>Operator</th>
+    <th>Scanned At</th><th>Raw Code</th><th>Cust. Part Code</th>
+    <th>Supplier Code</th><th>Year</th><th>Day of Year</th><th>Serial No.</th>
+    <th>Location</th><th>Operator</th>
   </tr></thead><tbody>`;
   for (const r of rows) {
     h += `<tr>
       <td>${fmtTime(r.scanned_date)}</td>
       <td style="font-family:monospace;font-size:11px">${r.code || '&#8212;'}</td>
-      <td>${r.part_code || '&#8212;'}</td>
+      <td>${r.supplier_code  || '&#8212;'}</td>
       <td>${r.year_code || '&#8212;'}</td>
       <td>${r.day_of_year || '&#8212;'}</td>
       <td>${r.serial_number || '&#8212;'}</td>
