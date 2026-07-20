@@ -746,7 +746,7 @@ def api_bdr_analytics():
         with _get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT code, part_code, location,
+                    SELECT code, location,
                            scanned_date AT TIME ZONE 'Asia/Dubai' AS scanned_date
                     FROM bdr_scans ORDER BY id DESC LIMIT 200
                 """)
@@ -770,9 +770,9 @@ def api_bdr_analytics():
                 by_location = [dict(r) for r in cur.fetchall()]
 
                 cur.execute("""
-                    SELECT UPPER(part_code) AS part_code, COUNT(*) AS cnt
+                    SELECT UPPER(SPLIT_PART(code, '|', 2)) AS part_code, COUNT(*) AS cnt
                     FROM bdr_scans
-                    GROUP BY UPPER(part_code)
+                    GROUP BY UPPER(SPLIT_PART(code, '|', 2))
                     ORDER BY cnt DESC
                 """)
                 by_part = [dict(r) for r in cur.fetchall()]
@@ -1353,7 +1353,7 @@ def api_export():
             cl_bdr = []
             p_bdr  = {}
             if part_f:
-                cl_bdr.append("part_code ILIKE %(part)s")
+                cl_bdr.append("code ILIKE %(part)s"))
                 p_bdr['part'] = f'%{part_f}%'
             if loc_f and loc_f.upper() != 'ALL':
                 cl_bdr.append("UPPER(location) = UPPER(%(loc)s)")
@@ -1363,7 +1363,7 @@ def api_export():
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"""
-                        SELECT id, code, part_code, location,
+                        SELECT id, code, location,
                                scanned_date AT TIME ZONE 'Asia/Dubai' AS scanned_date
                         FROM bdr_scans {where_bdr}
                         ORDER BY id DESC
@@ -1377,7 +1377,7 @@ def api_export():
                     'id':            r.get('id', ''),
                     'code':          r.get('code', ''),
                     'customer_code': m.group(1) if m else '',
-                    'part_code':     r.get('part_code', ''),
+                    'part_code':     m.group(2) if m else '',
                     'year':          m.group(3) if m else '',
                     'day_of_year':   m.group(4) if m else '',
                     'serial':        m.group(5) if m else '',
