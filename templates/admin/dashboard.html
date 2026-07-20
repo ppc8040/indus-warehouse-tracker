@@ -1467,7 +1467,8 @@ async function loadIvt() {
   const el = document.getElementById('tbl-ivt');
   el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
-    const d = await fetch('/admin/api/analytics/ivt').then(r => r.json());
+    const limit = _hasActiveServerFilters() ? 9999999 : 200;
+    const d = await fetch(`/admin/api/analytics/ivt?limit=${limit}`).then(r => r.json());
     _ivtRows = d.recent || [];
     // Populate part code filter from actual data
     const partSel = document.getElementById('ivtFilterPart');
