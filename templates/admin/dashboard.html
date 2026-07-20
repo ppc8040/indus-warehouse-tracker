@@ -1500,18 +1500,6 @@ function renderIvtTable() {
   el.innerHTML = h + '</tbody></table>';
   _makeTableSelectable(el);
 }
-    const el = document.getElementById('tbl-ivt');
-    const rows = d.recent || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty">No IVT scans yet.</div>'; return; }
-    let h = `<table><thead><tr><th>Code</th><th>Scanned At</th><th>Location</th></tr></thead><tbody>`;
-    for (const r of rows) {
-      h += `<tr><td style="font-family:monospace;font-size:11px">${r.code}</td><td>${r.scanned_date || '&#8212;'}</td><td>${r.location || '&#8212;'}</td></tr>`;
-    }
-    el.innerHTML = h + '</tbody></table>';
-    _makeTableSelectable(el);
-    _setTabBadge('ivt', rows.length);
-  } catch (e) { console.error('IVT', e); }
-}
 
 // Tracks which tabs have been loaded at least once
 const _tabLoaded = {};
