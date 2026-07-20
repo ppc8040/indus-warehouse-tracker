@@ -1612,10 +1612,14 @@ def api_operators():
 @admin_bp.route('/api/analytics/ivt')
 @_auth_required
 def api_ivt():
+    limit = request.args.get('limit', 200, type=int)
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT code, scanned_date, location FROM ivt_scans ORDER BY id DESC")
+                cur.execute(
+                    "SELECT code, scanned_date, location FROM ivt_scans ORDER BY id DESC LIMIT %s",
+                    (limit,)
+                )
                 recent = [dict(r) for r in cur.fetchall()]
                 cur.execute("""
                     SELECT TO_CHAR(scanned_date::timestamptz AT TIME ZONE 'Asia/Dubai','YYYY-MM-DD') AS day,
