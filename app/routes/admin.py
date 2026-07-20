@@ -667,7 +667,7 @@ def api_bdr_scans():
     params  = {'limit': limit}
 
     if part:
-        clauses.append("part_code ILIKE %(part)s")
+        clauses.append("code ILIKE %(part)s")
         params['part'] = f'%{part}%'
     if loc and loc.upper() != 'ALL':
         clauses.append("UPPER(location) = UPPER(%(loc)s)")
@@ -676,7 +676,7 @@ def api_bdr_scans():
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
 
     sql = f"""
-        SELECT id, code, part_code, location,
+        SELECT id, code, location,                     # ✅ no part_code column
                scanned_date AT TIME ZONE 'Asia/Dubai' AS scanned_date_dubai
         FROM bdr_scans
         {where}
