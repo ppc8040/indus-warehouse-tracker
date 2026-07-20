@@ -1147,7 +1147,7 @@ async function loadBdr() {
     const total = _bdrRows.length;
     const m4 = _bdrRows.filter(r => r.location === 'M4').length;
     const m5 = _bdrRows.filter(r => r.location === 'M5').length;
-    const part = _bdrRows.filter(r => r.part_number === '333536').length;
+    const part = _bdrRows.filter(r => r.part_code === '333536').length;
     document.getElementById('bdrKpiTotal').textContent = total;
     document.getElementById('bdrKpiM4').textContent    = m4;
     document.getElementById('bdrKpiM5').textContent    = m5;
@@ -1163,7 +1163,7 @@ function renderBdrTable() {
   const part = document.getElementById('bdrFilterPart').value;
   let rows   = _bdrRows;
   if (loc  !== 'ALL') rows = rows.filter(r => r.location    === loc);
-  if (part !== 'ALL') rows = rows.filter(r => r.part_number === part);
+  if (part !== 'ALL') rows = rows.filter(r => r.part_code === part);
   if (!rows.length) { el.innerHTML = '<div class="empty">No BDR scans match filters.</div>'; return; }
   let h = `<table><thead><tr>
     <th>Scanned At (Dubai)</th><th>BDR Code</th><th>Part No.</th>
@@ -1171,9 +1171,9 @@ function renderBdrTable() {
   </tr></thead><tbody>`;
   for (const r of rows) {
     h += `<tr>
-      <td>${fmtTime(r.scanned_at)}</td>
-      <td style="font-family:monospace;font-size:11px">${r.bdr_code || '&#8212;'}</td>
-      <td>${r.part_number || '&#8212;'}</td>
+      <td>${fmtTime(r.scanned_date)}</td>
+      <td style="font-family:monospace;font-size:11px">${r.code || '&#8212;'}</td>
+      <td>${r.part_code || '&#8212;'}</td>
       <td>${r.year_code || '&#8212;'}</td>
       <td>${r.day_of_year || '&#8212;'}</td>
       <td>${r.serial_number || '&#8212;'}</td>
