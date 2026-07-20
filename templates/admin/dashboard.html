@@ -537,13 +537,17 @@
       <button class="btn btn-green" onclick="exportSheet('ivt')">&#8659; Export Excel</button>
     </div>
   </div>
-  <div id="col-summary-bar-ivt" class="col-summary-bar"></div>
-  <div class="chart-grid" style="margin-bottom:14px">
-    <div class="chart-card">
-      <h3>IVT Daily Scans &#8212; last 14 days</h3>
-      <div class="chart-wrap"><canvas id="cIvt"></canvas></div>
-    </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <select id="ivtFilterLoc" onchange="renderIvtTable()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 8px;font-size:12px">
+      <option value="ALL">All Locations</option>
+      <option value="M4">M4</option>
+      <option value="M5">M5</option>
+    </select>
+    <select id="ivtFilterPart" onchange="renderIvtTable()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 8px;font-size:12px">
+      <option value="ALL">All Part Codes</option>
+    </select>
   </div>
+  <div id="col-summary-bar-ivt" class="col-summary-bar"></div>
   <div class="tbl-wrap" id="tbl-ivt"><div class="empty">Loading&#8230;</div></div>
 </div>
 
@@ -1457,25 +1461,45 @@ async function loadAnalytics() {
   await Promise.all([loadVelocity(), loadLocationChart(), loadPartsChart(), loadOperators()]);
 }
 
+let _ivtRows = [];
+
 async function loadIvt() {
+  const el = document.getElementById('tbl-ivt');
+  el.innerHTML = '<div class="empty">Loading&#8230;</div>';
   try {
     const d = await fetch('/admin/api/analytics/ivt').then(r => r.json());
-    const daily = d.daily || [];
-    const c = _getChartColors();
-    destroyChart('ivt');
-    if (daily.length) {
-      charts['ivt'] = new Chart(document.getElementById('cIvt'), {
-        type: 'line',
-        data: { labels: daily.map(r => r.day), datasets: [{ label: 'Scans', data: daily.map(r => parseInt(r.cnt)),
-            borderColor: '#60a5fa', backgroundColor: '#60a5fa20', fill: true, tension: .35, pointRadius: 4 }] },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { color: c.tick, font: { size: 10 } }, grid: { color: c.grid } },
-            y: { ticks: { color: c.tick }, grid: { color: c.grid }, beginAtZero: true }
-          }
-        }
-      });
-    }
+    _ivtRows = d.recent || [];
+    // Populate part code filter from actual data
+    const partSel = document.getElementById('ivtFilterPart');
+    const parts = [...new Set(_ivtRows.map(r => r.code ? r.code.split('|')[0].replace(/^IVT/i,'').trim() : '').filter(Boolean))].sort();
+    partSel.innerHTML = '<option value="ALL">All Part Codes</option>' +
+      parts.map(p => `<option value="${p}">${p}</option>`).join('');
+    _setTabBadge('ivt', _ivtRows.length);
+    renderIvtTable();
+  } catch (e) { el.innerHTML = '<div class="empty">Failed to load IVT scans.</div>'; console.error('IVT', e); }
+}
+
+function renderIvtTable() {
+  const el   = document.getElementById('tbl-ivt');
+  const loc  = document.getElementById('ivtFilterLoc').value;
+  const part = document.getElementById('ivtFilterPart').value;
+  let rows   = _ivtRows;
+  if (loc  !== 'ALL') rows = rows.filter(r => r.location === loc);
+  if (part !== 'ALL') rows = rows.filter(r => (r.code || '').includes(part));
+  if (!rows.length) { el.innerHTML = '<div class="empty">No IVT scans match filters.</div>'; return; }
+  let h = `<table><thead><tr>
+    <th>Code</th><th>Scanned At</th><th>Location</th>
+  </tr></thead><tbody>`;
+  for (const r of rows) {
+    h += `<tr>
+      <td style="font-family:monospace;font-size:11px">${r.code || '&#8212;'}</td>
+      <td>${fmtTime(r.scanned_date)}</td>
+      <td>${r.location || '&#8212;'}</td>
+    </tr>`;
+  }
+  el.innerHTML = h + '</tbody></table>';
+  _makeTableSelectable(el);
+}
     const el = document.getElementById('tbl-ivt');
     const rows = d.recent || [];
     if (!rows.length) { el.innerHTML = '<div class="empty">No IVT scans yet.</div>'; return; }
