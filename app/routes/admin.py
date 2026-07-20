@@ -717,8 +717,8 @@ def api_bdr_scans():
                     d = dict(r)
                     decoded = _decode(d.get('code', ''))
                     # part_code column is stored directly; enrich with full decode
-                    d['customer_code'] = decoded['customer_code']
-                    d['part_code']     = decoded['part_code']
+                    d['cust_part_code']    = decoded['customer_code']
+                    d['supplier_code']     = decoded['part_code']
                     d['year']          = decoded['year']
                     d['day_of_year']   = decoded['day_of_year']
                     d['serial']        = decoded['serial']
@@ -771,7 +771,7 @@ def api_bdr_analytics():
                 by_location = [dict(r) for r in cur.fetchall()]
 
                 cur.execute("""
-                    SELECT UPPER(SPLIT_PART(code, '|', 2)) AS part_code, COUNT(*) AS cnt
+                    SELECT UPPER(SUBSTRING(code FROM 4 FOR 9)) AS cust_part_code, COUNT(*) AS cnt
                     FROM bdr_scans
                     GROUP BY UPPER(SPLIT_PART(code, '|', 2))
                     ORDER BY cnt DESC
