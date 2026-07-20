@@ -718,6 +718,7 @@ def api_bdr_scans():
                     decoded = _decode(d.get('code', ''))
                     # part_code column is stored directly; enrich with full decode
                     d['customer_code'] = decoded['customer_code']
+                    d['part_code']     = decoded['part_code']
                     d['year']          = decoded['year']
                     d['day_of_year']   = decoded['day_of_year']
                     d['serial']        = decoded['serial']
