@@ -466,14 +466,7 @@
     }
     .btn-ivt-enter:active   { background: #1B5E20; }
     .btn-ivt-enter:disabled { opacity: .45; cursor: not-allowed; }
-    .btn-ivt-skip {
-      flex: 1; padding: 15px;
-      background: #fff; color: #555;
-      border: 2px solid #E0E0E0; border-radius: 8px;
-      font-weight: 700; font-size: 1rem;
-      cursor: pointer; transition: background .15s;
-    }
-    .btn-ivt-skip:active { background: #F5F5F5; }
+
     .btn-ivt-next {
       width: 100%; padding: 15px;
       background: #004D40; color: #fff;
@@ -847,7 +840,6 @@
         <p style="font-size:.82rem;color:#555;margin-bottom:0">This code has not been scanned before. Select a location and tap ENTER to record it.</p>
         <div class="ivt-action-btns">
           <button class="btn-ivt-enter" id="btnIVTEnter" onclick="ivtEnter()">&#10003; ENTER</button>
-          <button class="btn-ivt-skip" onclick="ivtReset()">SKIP</button>
         </div>
       </div>
       <div class="ivt-result-card duplicate" id="ivtResultDuplicate">
