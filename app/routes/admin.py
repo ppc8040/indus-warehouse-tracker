@@ -1353,7 +1353,7 @@ def api_export():
             cl_bdr = []
             p_bdr  = {}
             if part_f:
-                cl_bdr.append("code ILIKE %(part)s"))
+                cl_bdr.append("code ILIKE %(part)s")
                 p_bdr['part'] = f'%{part_f}%'
             if loc_f and loc_f.upper() != 'ALL':
                 cl_bdr.append("UPPER(location) = UPPER(%(loc)s)")
