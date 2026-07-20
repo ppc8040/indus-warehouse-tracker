@@ -1181,10 +1181,11 @@ function renderBdrTable() {
     h += `<tr>
       <td>${fmtTime(r.scanned_date)}</td>
       <td style="font-family:monospace;font-size:11px">${r.code || '&#8212;'}</td>
+      <td>${r.cust_part_code || '&#8212;'}</td>
       <td>${r.supplier_code  || '&#8212;'}</td>
-      <td>${r.year_code || '&#8212;'}</td>
+      <td>${r.year || '&#8212;'}</td>
       <td>${r.day_of_year || '&#8212;'}</td>
-      <td>${r.serial_number || '&#8212;'}</td>
+      <td>${r.serial || '&#8212;'}</td>
       <td>${r.location || '&#8212;'}</td>
       <td>${r.operator_id || '&#8212;'}</td>
     </tr>`;
