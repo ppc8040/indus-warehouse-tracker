@@ -12,6 +12,10 @@ Fields used:
   HandlingUnitExternalID  → handling_unit
   Material                → indus_part
   HandlingUnitQuantity    → pallet_qty (integer, stored as string)
+  Batch                   → hu_batch (from HandlingUnitItem, immutable per HU run)
+
+Header fields:
+  CreationDateTime        → hu_creation_date (from HandlingUnit header, immutable)
 
 error_code values returned inside SAPLookupError:
   HU_NOT_FOUND   — API returned 0 items for this HU (HU exists in warehouse but not in SAP)
@@ -54,7 +58,7 @@ class SAPLookupError(Exception):
 
 def lookup_hu(handling_unit: str) -> dict:
     """
-    Look up a Handling Unit in SAP and return its material and quantity.
+    Look up a Handling Unit in SAP and return its material, quantity, and batch.
 
     Args:
         handling_unit: The 18-20 digit HU number (already validated).
@@ -64,6 +68,7 @@ def lookup_hu(handling_unit: str) -> dict:
           - handling_unit  (str)  — the HU number as returned by SAP
           - indus_part     (str)  — the Material field (e.g. 'AJM0488')
           - pallet_qty     (str)  — HandlingUnitQuantity as a plain integer string (e.g. '36')
+          - hu_batch       (str)  — Batch number from HandlingUnitItem (may be empty string)
 
     Raises:
         SAPLookupError: if the API is unreachable, returns an error,
@@ -73,7 +78,7 @@ def lookup_hu(handling_unit: str) -> dict:
     url = f"{_SAP_BASE_URL}/HandlingUnitItem"
     params = {
         "$filter": f"HandlingUnitExternalID eq '{handling_unit}'",
-        "$select": "HandlingUnitExternalID,Material,HandlingUnitQuantity",
+        "$select": "HandlingUnitExternalID,Material,HandlingUnitQuantity,Batch",
         "$top": "1",
     }
     headers = {
@@ -136,10 +141,6 @@ def lookup_hu(handling_unit: str) -> dict:
     # OData4 wraps results in {"value": [...]}
     items = data.get("value", [])
     if not items:
-        # This is the specific case where the HU physically exists in the
-        # warehouse but is not (or no longer) active in SAP HandlingUnitItem.
-        # The frontend uses error_code=HU_NOT_FOUND to trigger the supervisor
-        # override path instead of a plain error toast.
         logger.warning("SAP returned no items for HU %s", handling_unit)
         raise SAPLookupError(
             f"Handling Unit {handling_unit} was not found in SAP. "
@@ -157,7 +158,6 @@ def lookup_hu(handling_unit: str) -> dict:
             error_code="HU_NO_MATERIAL",
         )
 
-    # HandlingUnitQuantity is a number in the API; convert to plain integer string
     raw_qty = item.get("HandlingUnitQuantity", 0)
     try:
         qty_int = int(float(str(raw_qty)))
@@ -175,14 +175,74 @@ def lookup_hu(handling_unit: str) -> dict:
         )
 
     hu_from_sap = str(item.get("HandlingUnitExternalID", handling_unit)).strip()
+    hu_batch = str(item.get("Batch", "")).strip()
 
     logger.info(
-        "SAP lookup OK: HU=%s material=%s qty=%s",
-        hu_from_sap, material, qty_int
+        "SAP lookup OK: HU=%s material=%s qty=%s batch=%s",
+        hu_from_sap, material, qty_int, hu_batch or "(none)"
     )
 
     return {
         "handling_unit": hu_from_sap,
         "indus_part": material,
         "pallet_qty": str(qty_int),
+        "hu_batch": hu_batch,
     }
+
+
+def lookup_hu_creation_date(handling_unit: str, warehouse: str = "1001") -> str | None:
+    """
+    Fetch the CreationDateTime for a HandlingUnit header from SAP.
+
+    This is a separate call to the HandlingUnit (header) entity because
+    CreationDateTime lives on HandlingUnitType, not HandlingUnitItemType.
+
+    Only called for first-time scans (when hu_creation_date is not yet
+    stored in pallet_status). Returns ISO string or None on failure.
+
+    Args:
+        handling_unit: The HU external ID.
+        warehouse:     Warehouse key (default "1001").
+
+    Returns:
+        ISO datetime string (e.g. "2024-05-30T13:31:37Z") or None.
+    """
+    url = f"{_SAP_BASE_URL}/HandlingUnit"
+    params = {
+        "$filter": f"HandlingUnitExternalID eq '{handling_unit}' and Warehouse eq '{warehouse}'",
+        "$select": "HandlingUnitExternalID,CreationDateTime",
+        "$top": "1",
+    }
+    headers = {
+        "Accept": "application/json",
+    }
+
+    try:
+        resp = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            auth=HTTPBasicAuth(_SAP_USERNAME, _SAP_PASSWORD),
+            timeout=_REQUEST_TIMEOUT,
+        )
+        if not resp.ok:
+            logger.warning(
+                "lookup_hu_creation_date HTTP %s for HU %s",
+                resp.status_code, handling_unit
+            )
+            return None
+
+        data = resp.json()
+        items = data.get("value", [])
+        if not items:
+            logger.warning("lookup_hu_creation_date: no header record for HU %s", handling_unit)
+            return None
+
+        creation_dt = items[0].get("CreationDateTime")
+        if creation_dt:
+            logger.info("SAP creation date for HU %s: %s", handling_unit, creation_dt)
+        return creation_dt or None
+
+    except Exception as exc:
+        logger.warning("lookup_hu_creation_date failed for HU %s: %s", handling_unit, exc)
+        return None
