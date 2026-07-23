@@ -723,6 +723,14 @@
           <span class="sap-lbl">Quantity</span>
           <span class="sap-val" id="val-qty">&mdash;</span>
         </div>
+        <div class="sap-row" id="row-batch" style="display:none">
+          <span class="sap-lbl">Batch</span>
+          <span class="sap-val" id="val-batch">&mdash;</span>
+        </div>
+        <div class="sap-row" id="row-created" style="display:none">
+          <span class="sap-lbl">HU Created</span>
+          <span class="sap-val" id="val-created">&mdash;</span>
+        </div>
         <button class="btn-change-qty" onclick="openQtyEdit()" title="Manually adjust the quantity">
           &#9998; Change Qty
         </button>
@@ -730,6 +738,8 @@
       <span id="st-hu"    style="display:none"></span>
       <span id="st-indus" style="display:none"></span>
       <span id="st-qty"   style="display:none"></span>
+      <span id="st-batch"   style="display:none"></span>
+      <span id="st-created" style="display:none"></span>
     </div>
 
     <div class="btn-group">
@@ -752,6 +762,8 @@
         <div class="det"><span class="det-lbl">Indus Part</span><span class="det-val" id="dIndus">&mdash;</span></div>
         <div class="det"><span class="det-lbl">Customer Part</span><span class="det-val" id="dCust">&mdash;</span></div>
         <div class="det"><span class="det-lbl">Pallet Qty</span><span class="det-val" id="dQty">&mdash;</span></div>
+        <div class="det" id="det-batch" style="display:none"><span class="det-lbl">Batch</span><span class="det-val" id="dBatch">&mdash;</span></div>
+        <div class="det" id="det-created" style="display:none"><span class="det-lbl">HU Created</span><span class="det-val" id="dCreated">&mdash;</span></div>
       </div>
     </div>
     <div class="btn-group">
