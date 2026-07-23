@@ -413,6 +413,8 @@ def lookup_hu():
             "current_status": "",
             "last_location": "",
             "last_movement_type": "",
+            "hu_batch": result.get("hu_batch") or "",          # ← ADD
+            "hu_creation_date": "",                             # ← ADD (empty for new HU — SAP fetch happens at movement write)
             "source": "sap",
         }), 200
     except Exception as exc:
