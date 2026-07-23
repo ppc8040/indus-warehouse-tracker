@@ -84,8 +84,22 @@ function goAction() {
   document.getElementById('dIndus').textContent = scanned.indus_part || '\u2014';
   document.getElementById('dCust').textContent = scanned.customer_part || '\u2014';
   document.getElementById('dQty').textContent = scanned.pallet_qty || '\u2014';
-  stopScanner();
-  showScreen('scrAction');
+  // After existing dQty assignment:
+  const dBatch   = document.getElementById('dBatch');
+  const dCreated = document.getElementById('dCreated');
+  const detBatch   = document.getElementById('det-batch');
+  const detCreated = document.getElementById('det-created');
+   
+  const batch   = document.getElementById('st-batch')?.textContent   || '';
+  const created = document.getElementById('st-created')?.textContent || '';
+   
+  if (dBatch)   dBatch.textContent   = batch   || '\u2014';
+  if (dCreated) dCreated.textContent = created ? _fmtDubaiTime(created) : '\u2014';
+   
+  if (detBatch)   detBatch.style.display   = batch   ? '' : 'none';
+  if (detCreated) detCreated.style.display = created ? '' : 'none';
+ stopScanner();
+ showScreen('scrAction');
 }
 
 // ── Toast ──
@@ -478,10 +492,42 @@ function nfoCancelOverride() {
 //  SCAN DISPLAY + RESET
 // ═══════════════════════════════════════════════════════════
 
+function _fmtDubaiTime(iso) {
+  if (!iso) return '\u2014';
+  try {
+    return new Date(iso).toLocaleString('en-GB', {
+      timeZone: 'Asia/Dubai',
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    });
+  } catch { return iso; }
+}
+
 function updateScanDisplay() {
   _updateField('hu',    scanned.handling_unit);
   _updateField('indus', scanned.indus_part);
   _updateField('qty',   scanned.pallet_qty);
+   // After existing val-qty assignment:
+   const batch   = scanned.hu_batch    || '';
+   const created = scanned.hu_creation_date || '';
+   
+   const batchEl   = document.getElementById('val-batch');
+   const createdEl = document.getElementById('val-created');
+   const rowBatch   = document.getElementById('row-batch');
+   const rowCreated = document.getElementById('row-created');
+   
+   if (batchEl)   batchEl.textContent   = batch   || '\u2014';
+   if (createdEl) createdEl.textContent = created ? _fmtDubaiTime(created) : '\u2014';
+   
+   // Show rows only when data exists
+   if (rowBatch)   rowBatch.style.display   = batch   ? '' : 'none';
+   if (rowCreated) rowCreated.style.display = created ? '' : 'none';
+   
+   // Persist to hidden state spans
+   const stBatch   = document.getElementById('st-batch');
+   const stCreated = document.getElementById('st-created');
+   if (stBatch)   stBatch.textContent   = batch;
+   if (stCreated) stCreated.textContent = created;
 
   const card = document.getElementById('sapResultCard');
   if (card) {
