@@ -63,6 +63,7 @@ Result object:
 import logging
 import uuid
 from datetime import datetime, timezone
+from app.services.sap_client import lookup_hu, lookup_hu_creation_date, SAPLookupError
 
 from app.utils.validators import (
     validate_handling_unit,
@@ -337,7 +338,38 @@ def process_movement(
                       'Could not save. Saved locally — will sync automatically.',
                       {'needs_sync': True})
 
-    # ── 10. Upsert pallet_status ───────────────────────────────────────────
+    # ── 10. Fetch HU creation date + batch for first-time scans ──────────
+    # These two fields are immutable once set — only fetched if not already
+    # stored in pallet_status (i.e. brand-new HU, first scan ever).
+    hu_creation_date = None
+    hu_batch_for_upsert = None
+
+    if movement == 'STOCK_IN':
+        try:
+            existing_ps = get_pallet_status(hu)
+        except DbError:
+            existing_ps = None
+
+        is_new_hu = (
+            existing_ps is None
+            or not existing_ps.get("hu_creation_date")
+        )
+
+        if is_new_hu:
+            # Batch comes back from lookup_hu which was already called by
+            # the frontend/scan flow — but movement_service doesn't hold
+            # that return value here. We re-use indus_clean context:
+            # batch is passed in via indus_part flow only if caller sets it.
+            # So we make the SAP calls here for new HUs only.
+            try:
+                sap_data = lookup_hu(hu)
+                hu_batch_for_upsert = sap_data.get("hu_batch") or None
+            except SAPLookupError:
+                hu_batch_for_upsert = None
+
+            hu_creation_date = lookup_hu_creation_date(hu)
+
+    # ── 11. Upsert pallet_status ───────────────────────────────────────────
     current_status = 'IN_WAREHOUSE' if movement == 'STOCK_IN' else 'OUT_OF_WAREHOUSE'
     try:
         upsert_pallet_status(
@@ -349,36 +381,11 @@ def process_movement(
             indus_part=indus_clean,
             pallet_qty=qty_clean,
             last_location=loc,
+            hu_creation_date=hu_creation_date,
+            hu_batch=hu_batch_for_upsert,
         )
     except DbError as exc:
         logger.error("upsert_pallet_status failed (movement already written): %s", exc)
-
-    logger.info(
-        "Movement OK: %s HU=%s part=%s location=%s from=%s to=%s event=%s",
-        movement, hu, indus_clean, loc, from_loc, to_loc, event_id,
-    )
-
-    display_type = 'Stock IN' if movement == 'STOCK_IN' else 'Stock OUT'
-    return Result(
-        True,
-        'success_synced',
-        f"{display_type} recorded.",
-        {
-            'handling_unit': hu,
-            'movement_type': movement,
-            'event_id': event_id,
-            'timestamp': timestamp,
-            'current_status': current_status,
-            'location': loc,
-            'from_location': from_loc,
-            'to_location': to_loc,
-            'indus_part': indus_clean,
-            'customer_part': cust_clean,
-            'pallet_qty': qty_clean,
-            'job_no': _s(job_no),
-            'is_override': is_override,
-        },
-    )
 
 
 # ---------------------------------------------------------------------------
