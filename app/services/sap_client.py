@@ -182,11 +182,19 @@ def lookup_hu(handling_unit: str) -> dict:
         hu_from_sap, material, qty_int, hu_batch or "(none)"
     )
 
+    # At the end of lookup_hu(), before the return statement:
+    hu_creation_date = ''
+    try:
+        hu_creation_date = lookup_hu_creation_date(hu_from_sap) or ''
+    except Exception:
+        pass  # non-fatal
+    
     return {
         "handling_unit": hu_from_sap,
         "indus_part": material,
         "pallet_qty": str(qty_int),
         "hu_batch": hu_batch,
+        "hu_creation_date": hu_creation_date,
     }
 
 
