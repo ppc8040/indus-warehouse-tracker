@@ -957,8 +957,11 @@ async function loadStatuses() {
     let rows = d.statuses || [];
     rows = rows.filter(s => _matchesCustFilter(s.indus_part));
     if (!rows.length) { el.innerHTML = '<div class="empty">No pallet statuses match filters.</div>'; return; }
-    let h = `<table><thead><tr><th>HU</th><th>Status</th><th>Last Move</th><th>Last Time (Dubai)</th>
-      <th>Location</th><th>Indus Part</th><th>Customer</th><th>Qty</th></tr></thead><tbody>`;
+    let h = `<table><thead><tr>
+      <th>HU</th><th>Status</th><th>Last Move</th><th>Last Time (Dubai)</th>
+      <th>Location</th><th>Indus Part</th><th>Customer</th><th>Qty</th>
+      <th>HU Created</th><th>Batch</th>
+    </tr></thead><tbody>`;
     for (const s of rows) {
       const cs = (s.current_status || '').toUpperCase();
       const stTag = cs === 'IN_WAREHOUSE' ? tag('IN','tok') : cs === 'OUT_OF_WAREHOUSE' ? tag('OUT','terr') : tag(cs || '&#8212;','tinfo');
@@ -972,6 +975,8 @@ async function loadStatuses() {
         <td>${s.indus_part || '&#8212;'}</td>
         <td style="color:var(--muted)">${_cust(s.indus_part)}</td>
         <td>${s.pallet_qty || '&#8212;'}</td>
+        <td>${s.hu_creation_date_dubai ? fmtTime(s.hu_creation_date_dubai) : '&#8212;'}</td>
+        <td>${s.hu_batch || '&#8212;'}</td>
       </tr>`;
     }
     el.innerHTML = h + '</tbody></table>';
