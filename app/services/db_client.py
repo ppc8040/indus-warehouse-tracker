@@ -346,30 +346,20 @@ def upsert_pallet_status(
     indus_part: str = "",
     pallet_qty: str = "",
     last_location: str = "",
+    hu_creation_date: str = None,
+    hu_batch: str = None,
 ) -> None:
-    """
-    Insert or update the pallet_status row for this HU.
-
-    The ON CONFLICT DO UPDATE is guarded by a WHERE clause that checks
-    the incoming last_movement_time is strictly newer than what is already
-    stored. This prevents a late-arriving or out-of-order event (e.g. an
-    OUT scan processed after an IN scan that happened seconds later) from
-    overwriting the correct current state.
-
-    If two events share the exact same timestamp, the existing row wins
-    (no update). In practice this is extremely rare; the id-based tiebreak
-    in get_last_movement_for_hu handles the display/query side of the
-    same-second edge case.
-    """
     sql = """
         INSERT INTO pallet_status (
             handling_unit, current_status, last_event_id,
             last_movement_type, last_movement_time,
-            indus_part, pallet_qty, last_location
+            indus_part, pallet_qty, last_location,
+            hu_creation_date, hu_batch
         ) VALUES (
             %(handling_unit)s, %(current_status)s, %(last_event_id)s,
             %(last_movement_type)s, %(last_movement_time)s,
-            %(indus_part)s, %(pallet_qty)s, %(last_location)s
+            %(indus_part)s, %(pallet_qty)s, %(last_location)s,
+            %(hu_creation_date)s, %(hu_batch)s
         )
         ON CONFLICT (handling_unit) DO UPDATE SET
             current_status     = EXCLUDED.current_status,
@@ -378,7 +368,9 @@ def upsert_pallet_status(
             last_movement_time = EXCLUDED.last_movement_time,
             indus_part         = EXCLUDED.indus_part,
             pallet_qty         = EXCLUDED.pallet_qty,
-            last_location      = EXCLUDED.last_location
+            last_location      = EXCLUDED.last_location,
+            hu_creation_date   = COALESCE(pallet_status.hu_creation_date, EXCLUDED.hu_creation_date),
+            hu_batch           = COALESCE(pallet_status.hu_batch, EXCLUDED.hu_batch)
         WHERE pallet_status.last_movement_time < EXCLUDED.last_movement_time
     """
     params = dict(
@@ -390,37 +382,43 @@ def upsert_pallet_status(
         indus_part=indus_part or "",
         pallet_qty=pallet_qty or "",
         last_location=last_location or "",
+        hu_creation_date=_parse_ts(hu_creation_date) if hu_creation_date else None,
+        hu_batch=hu_batch or None,
     )
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
-    logger.debug("upsert_pallet_status: hu=%s status=%s location=%s", handling_unit, current_status, last_location)
+    logger.debug(
+        "upsert_pallet_status: hu=%s status=%s location=%s batch=%s",
+        handling_unit, current_status, last_location, hu_batch
+    )
 
 
 def get_all_pallet_statuses() -> list[dict]:
-    """Return latest status per HU, derived live from movements using
-    timestamp DESC, id DESC tiebreak — matches movements dashboard exactly."""
+    """Return latest status per HU with creation date and batch from pallet_status."""
     sql = """
-        SELECT DISTINCT ON (handling_unit)
-            handling_unit,
-            CASE WHEN movement_type = 'STOCK_IN' THEN 'IN_WAREHOUSE'
+        SELECT DISTINCT ON (m.handling_unit)
+            m.handling_unit,
+            CASE WHEN m.movement_type = 'STOCK_IN' THEN 'IN_WAREHOUSE'
                  ELSE 'OUT_OF_WAREHOUSE' END AS current_status,
-            event_id          AS last_event_id,
-            movement_type     AS last_movement_type,
-            timestamp_utc AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
-            indus_part,
-            pallet_qty,
-            location          AS last_location
-        FROM movements
-        WHERE movement_type IN ('STOCK_IN', 'STOCK_OUT')
-        ORDER BY handling_unit, timestamp_utc DESC, id DESC
+            m.event_id          AS last_event_id,
+            m.movement_type     AS last_movement_type,
+            m.timestamp_utc AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
+            m.indus_part,
+            m.pallet_qty,
+            m.location          AS last_location,
+            ps.hu_creation_date AT TIME ZONE 'Asia/Dubai' AS hu_creation_date_dubai,
+            ps.hu_batch
+        FROM movements m
+        LEFT JOIN pallet_status ps ON ps.handling_unit = m.handling_unit
+        WHERE m.movement_type IN ('STOCK_IN', 'STOCK_OUT')
+        ORDER BY m.handling_unit, m.timestamp_utc DESC, m.id DESC
     """
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql)
             rows = cur.fetchall()
     return [_row_to_dict(r) for r in rows]
-
 
 # ---------------------------------------------------------------------------
 # ivt_scans table
