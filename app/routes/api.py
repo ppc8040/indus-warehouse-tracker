@@ -391,7 +391,7 @@ def lookup_hu():
                     "last_location": existing.get('last_location', ''),
                     "last_movement_type": existing.get('last_movement_type', ''),
                     "hu_batch": existing.get('hu_batch') or '',
-                    "hu_creation_date": str(existing.get('hu_creation_date') or ''),
+                    "hu_creation_date": str(existing.get('hu_creation_date_dubai') or ''),
                     "source": "pallet_status",
                 }), 200
     except Exception as ps_exc:
