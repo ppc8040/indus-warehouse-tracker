@@ -26,8 +26,10 @@ const HU_PATTERN = /^\d{18,20}$/;
 let scanned = {
   handling_unit: '',
   indus_part: '',
-  customer_part: '',  // always '' in the new workflow, kept for payload compatibility
+  customer_part: '',
   pallet_qty: '',
+  hu_batch: '',           // ← ADD
+  hu_creation_date: '',   // ← ADD
 };
 let scanner = null;
 let scannerRunning = false;
@@ -316,6 +318,8 @@ async function _doSAPLookup(hu) {
       scanned.indus_part    = data.indus_part;
       scanned.pallet_qty    = data.pallet_qty;
       scanned.customer_part = '';
+      scanned.hu_batch         = data.hu_batch         || '';
+      scanned.hu_creation_date = data.hu_creation_date || '';
       _isNotFoundOverride   = false;
       _nfoSupervisorPin     = '';
 
