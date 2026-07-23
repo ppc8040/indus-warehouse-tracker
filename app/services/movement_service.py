@@ -387,6 +387,34 @@ def process_movement(
     except DbError as exc:
         logger.error("upsert_pallet_status failed (movement already written): %s", exc)
 
+    # ── 12. Return success ─────────────────────────────────────────────────
+    logger.info(
+        "Movement OK: %s HU=%s part=%s location=%s from=%s to=%s event=%s",
+        movement, hu, indus_clean, loc, from_loc, to_loc, event_id,
+    )
+
+    display_type = 'Stock IN' if movement == 'STOCK_IN' else 'Stock OUT'
+    return Result(
+        True,
+        'success_synced',
+        f"{display_type} recorded.",
+        {
+            'handling_unit': hu,
+            'movement_type': movement,
+            'event_id': event_id,
+            'timestamp': timestamp,
+            'current_status': current_status,
+            'location': loc,
+            'from_location': from_loc,
+            'to_location': to_loc,
+            'indus_part': indus_clean,
+            'customer_part': cust_clean,
+            'pallet_qty': qty_clean,
+            'job_no': _s(job_no),
+            'is_override': is_override,
+        },
+    )
+
 
 # ---------------------------------------------------------------------------
 # Public API — offline sync
