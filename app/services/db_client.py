@@ -32,7 +32,9 @@ Schema (created by scripts/create_schema.py):
       last_movement_time  TIMESTAMPTZ,
       indus_part          TEXT,
       pallet_qty          TEXT,
-      last_location       TEXT
+      last_location       TEXT,
+      hu_creation_date    TIMESTAMPTZ,
+      hu_batch            TEXT
   )
 
   ivt_scans (
@@ -311,23 +313,27 @@ def get_all_movements_for_hu(handling_unit: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_pallet_status(handling_unit: str) -> dict | None:
-    """Return current status for a single HU, derived from movements
-    with timestamp DESC, id DESC tiebreak."""
+    """Return current status for a single HU, including creation date and batch
+    from pallet_status (write-once fields). Used by movement_service to detect
+    whether this is a first-time scan."""
     sql = """
-        SELECT DISTINCT ON (handling_unit)
-            handling_unit,
-            CASE WHEN movement_type = 'STOCK_IN' THEN 'IN_WAREHOUSE'
+        SELECT DISTINCT ON (m.handling_unit)
+            m.handling_unit,
+            CASE WHEN m.movement_type = 'STOCK_IN' THEN 'IN_WAREHOUSE'
                  ELSE 'OUT_OF_WAREHOUSE' END AS current_status,
-            event_id          AS last_event_id,
-            movement_type     AS last_movement_type,
-            timestamp_utc AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
-            indus_part,
-            pallet_qty,
-            location          AS last_location
-        FROM movements
-        WHERE handling_unit = %(hu)s
-          AND movement_type IN ('STOCK_IN', 'STOCK_OUT')
-        ORDER BY handling_unit, timestamp_utc DESC, id DESC
+            m.event_id          AS last_event_id,
+            m.movement_type     AS last_movement_type,
+            m.timestamp_utc AT TIME ZONE 'Asia/Dubai' AS last_movement_time_dubai,
+            m.indus_part,
+            m.pallet_qty,
+            m.location          AS last_location,
+            ps.hu_creation_date AT TIME ZONE 'Asia/Dubai' AS hu_creation_date_dubai,
+            ps.hu_batch
+        FROM movements m
+        LEFT JOIN pallet_status ps ON ps.handling_unit = m.handling_unit
+        WHERE m.handling_unit = %(hu)s
+          AND m.movement_type IN ('STOCK_IN', 'STOCK_OUT')
+        ORDER BY m.handling_unit, m.timestamp_utc DESC, m.id DESC
         LIMIT 1
     """
     with _get_conn() as conn:
