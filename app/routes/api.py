@@ -636,7 +636,7 @@ def ivt_enter():
                                        f" at {serial_hit.get('location', 'unknown')}"
                                        f")."}), 409
 
-        scanned_date = _fmt_dubai(datetime.now(timezone.utc))
+        scanned_date = datetime.now(timezone.utc)
         ivt_insert(code, scanned_date, location)
         logger.info("IVT inserted (Postgres): code=%s location=%s", code, location)
         return jsonify({"success": True, "scanned_date": scanned_date}), 200
