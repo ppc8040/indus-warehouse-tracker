@@ -1640,7 +1640,7 @@ def api_ivt():
         return jsonify({"recent": [], "daily": []})
 
 @admin_bp.route("/api/loadings")
-@admin_required
+@_auth_required
 def admin_loadings():
     status = request.args.get("status", "").strip().upper()
     limit_raw = request.args.get("limit", "100")
@@ -1661,7 +1661,7 @@ def admin_loadings():
     })
 
 @admin_bp.route("/api/loadings/<loading_id>")
-@admin_required
+@_auth_required
 def admin_loading_detail(loading_id):
     header = get_loading_header(loading_id)
 
