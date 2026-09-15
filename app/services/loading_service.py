@@ -508,40 +508,40 @@ def post_loading(payload: dict) -> LoadingResult:
                         {"loading_id": str(existing["loading_id"])},
                     )
 
-                  cursor.execute(
-                      """
-                      INSERT INTO loading_headers (
-                          loading_id,
-                          idempotency_key,
-                          status,
-                          source_location,
-                          destination,
-                          operator_id,
-                          device_id,
-                          shipment_reference,
-                          supervisor_override,
-                          override_reason,
-                          item_count,
-                          created_at
-                      )
-                      VALUES (
-                          %s, %s, 'POSTING', %s, %s, %s, %s, %s, %s, %s, %s, %s
-                      )
-                      """,
-                      (
-                          loading_id,
-                          request["idempotency_key"],
-                          request["source_location"],
-                          DESTINATION,
-                          request["operator_id"],
-                          request["device_id"],
-                          request["shipment_reference"],
-                          request["supervisor_approved"],
-                          request["override_reason"],
-                          len(request["items"]),
-                          now,
-                      ),
-                  )
+                cursor.execute(
+                    """
+                    INSERT INTO loading_headers (
+                        loading_id,
+                        idempotency_key,
+                        status,
+                        source_location,
+                        destination,
+                        operator_id,
+                        device_id,
+                        shipment_reference,
+                        supervisor_override,
+                        override_reason,
+                        item_count,
+                        created_at
+                    )
+                    VALUES (
+                        %s, %s, 'POSTING', %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        loading_id,
+                        request["idempotency_key"],
+                        request["source_location"],
+                        DESTINATION,
+                        request["operator_id"],
+                        request["device_id"],
+                        request["shipment_reference"],
+                        request["supervisor_approved"],
+                        request["override_reason"],
+                        len(request["items"]),
+                        now,
+                    ),
+                )
 
                 planned = []
                 missing_items = []
