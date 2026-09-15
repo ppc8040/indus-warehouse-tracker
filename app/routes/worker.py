@@ -10,6 +10,9 @@ worker_bp = Blueprint('worker', __name__)
 def index():
     return render_template('worker/index.html')
 
+@worker_bp.route("/loading-review")
+def loading_review_page():
+    return render_template("worker/loading_review.html")
 
 @worker_bp.route('/manifest.json')
 def manifest():
