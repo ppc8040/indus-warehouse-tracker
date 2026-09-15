@@ -1274,6 +1274,15 @@ function clearLoadingDraft() {
   renderLoadingDraft();
 }
 
+function updateLoadingModeLayout() {
+  const loadingEnabled = loadingModeEnabled();
+  const normalActions = document.getElementById('normalMovementActions');
+
+  if (normalActions) {
+    normalActions.hidden = loadingEnabled;
+  }
+}
+
 function setupLoadingMode() {
   const {
     toggle,
@@ -1283,7 +1292,6 @@ function setupLoadingMode() {
   } = getLoadingModeElements();
 
   const sourceSelect = document.getElementById('loadingSourceLocation');
-  const normalMovementButton = document.getElementById('btnProceed');
   const modeKey = 'indus.loadingMode.enabled';
 
   if (!toggle) {
@@ -1298,12 +1306,6 @@ function setupLoadingMode() {
     }
   }
 
-  function updateNormalMovementVisibility() {
-    if (normalMovementButton) {
-      normalMovementButton.hidden = toggle.checked;
-    }
-  }
-
   toggle.checked = sessionStorage.getItem(modeKey) === 'true';
 
   if (sourceSelect && loadingDraft.source_location) {
@@ -1311,13 +1313,13 @@ function setupLoadingMode() {
   }
 
   updateLoadingModeLabel();
-  updateNormalMovementVisibility();
+  updateLoadingModeLayout();
 
   toggle.addEventListener('change', () => {
     sessionStorage.setItem(modeKey, toggle.checked ? 'true' : 'false');
 
     updateLoadingModeLabel();
-    updateNormalMovementVisibility();
+    updateLoadingModeLayout();
     renderLoadingDraft();
   });
 
