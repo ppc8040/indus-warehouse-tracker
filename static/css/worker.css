@@ -143,3 +143,193 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-s
 .hide{display:none!important}
 input,textarea,select{font-size:16px}
 @supports(padding-top:env(safe-area-inset-top)){.hdr{padding-top:calc(12px + env(safe-area-inset-top))}}
+
+/* ── Loading Mode ────────────────────────────────────────────────────────── */
+
+.loading-mode-card {
+  margin: 16px 0;
+  padding: 14px;
+  border: 2px solid #f2c94c;
+  border-radius: 12px;
+  background: #fff8d6;
+  color: #2e2600;
+}
+
+.loading-mode-row,
+.loading-queue-header,
+.loading-queue-actions,
+.review-actions,
+.loading-review-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.loading-mode-card h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.loading-mode-card p {
+  margin: 4px 0 0;
+  font-size: 0.88rem;
+}
+
+.loading-switch {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.loading-switch input {
+  width: 20px;
+  height: 20px;
+  accent-color: #d6a600;
+}
+
+.loading-queue-header {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(46, 38, 0, 0.2);
+}
+
+.loading-queue-actions {
+  margin: 12px 0;
+}
+
+.loading-queue-table-wrap,
+.table-wrap {
+  overflow-x: auto;
+}
+
+.loading-queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.loading-queue-table th,
+.loading-queue-table td {
+  padding: 8px;
+  border-bottom: 1px solid rgba(46, 38, 0, 0.18);
+  text-align: left;
+}
+
+.btn-warning {
+  background: #d6a600;
+  color: #1f1a00;
+}
+
+.btn-warning:hover {
+  background: #bd9300;
+}
+
+.btn-secondary {
+  background: #ececec;
+  color: #222;
+}
+
+.btn-link-danger {
+  border: 0;
+  background: transparent;
+  color: #ae1c1c;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.is-disabled {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.loading-review-page {
+  min-height: 100vh;
+}
+
+.loading-review-meta {
+  margin: 16px 0;
+}
+
+.loading-review-meta > div {
+  min-width: 120px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+
+.loading-review-meta span,
+.loading-review-meta strong {
+  display: block;
+}
+
+.loading-review-meta span {
+  font-size: 0.78rem;
+  color: #666;
+}
+
+.override-panel {
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid #d6a600;
+  border-radius: 8px;
+  background: #fff8d6;
+}
+
+.override-panel label {
+  display: block;
+  margin-top: 12px;
+  font-weight: 600;
+}
+
+.override-panel input,
+.override-panel textarea {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 8px;
+}
+
+.status-message {
+  padding: 10px;
+  border-radius: 8px;
+  background: #f1f1f1;
+}
+
+.status-message.success {
+  background: #dff5e4;
+  color: #175a2a;
+}
+
+.status-message.warning {
+  background: #fff2c2;
+  color: #6d5100;
+}
+
+.status-message.error {
+  background: #ffe0e0;
+  color: #8a1515;
+}
+
+.review-ok {
+  color: #175a2a;
+}
+
+.review-error {
+  color: #8a1515;
+  font-weight: 600;
+}
+
+.confirm-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 20px;
+  border: 0;
+  border-radius: 12px;
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
