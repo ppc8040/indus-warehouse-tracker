@@ -472,7 +472,14 @@
         <option value="FAILED">Failed</option>
       </select>
       <button class="btn btn-primary" onclick="loadLoadings()">↻ Refresh</button>
-      <a id="exportLoadingsButton"class="btn btn-secondary"href="/admin/api/loadings/export">Export Excel</a>
+      <button
+        id="exportLoadingsButton"
+        class="btn btn-secondary"
+        type="button"
+        onclick="exportLoadings()"
+      >
+        Export Excel
+      </button>
     </div>
   </div>
 
@@ -1059,6 +1066,22 @@ async function loadLoadings() {
     console.error('loadLoadings', error);
     el.innerHTML = '<div class="empty">Failed to load loading records.</div>';
   }
+}
+
+function exportLoadings() {
+  const statusFilter = document.getElementById('loadingStatusFilter');
+  const status = statusFilter ? statusFilter.value.trim() : '';
+
+  const url = new URL(
+    '/admin/api/loadings/export',
+    window.location.origin
+  );
+
+  if (status) {
+    url.searchParams.set('status', status);
+  }
+
+  window.location.assign(url.toString());
 }
 
 async function loadLoadingDetail(loadingId) {
