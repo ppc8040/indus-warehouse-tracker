@@ -366,6 +366,31 @@
         width: 100%;
       }
     }
+    .loading-review-page .loading-shipment-reference-label {
+      display: block;
+      margin-top: 18px;
+      color: #475569;
+      font-size: 0.84rem;
+      font-weight: 800;
+    }
+    
+    .loading-review-page .loading-shipment-reference-label input {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      margin-top: 7px;
+      padding: 10px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #1f2937;
+      font: inherit;
+    }
+    
+    .loading-review-page .loading-shipment-reference-label input:focus {
+      border-color: #c99d00;
+      outline: 3px solid rgba(201, 157, 0, 0.18);
+    }
   </style>
 </head>
 
@@ -457,10 +482,22 @@
   <dialog id="confirmDialog" class="confirm-dialog">
     <form method="dialog">
       <h2>Confirm final loading</h2>
+  
       <p id="confirmDialogText">
         This will post the reviewed handling units to LOADING.
       </p>
-
+  
+      <label class="loading-shipment-reference-label" for="shipmentReference">
+        Container / shipment reference
+        <input
+          id="shipmentReference"
+          type="text"
+          maxlength="200"
+          autocomplete="off"
+          placeholder="e.g. container number, truck number, delivery note"
+        >
+      </label>
+  
       <div class="loading-review-actions">
         <button class="btn btn-secondary" value="cancel">Cancel</button>
         <button
