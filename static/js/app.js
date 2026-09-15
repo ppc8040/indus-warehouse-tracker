@@ -1210,15 +1210,26 @@ function setupLoadingMode() {
 
   if (!toggle) return;
 
-  toggle.checked = sessionStorage.getItem('indus.loadingMode.enabled') === 'true';
+   function updateLoadingModeLabel() {
+     const label = document.getElementById('loadingModeLabel');
+   
+     if (label) {
+       label.textContent = toggle.checked ? 'ON' : 'OFF';
+     }
+   }
 
-  toggle.addEventListener('change', () => {
-    sessionStorage.setItem(
-      'indus.loadingMode.enabled',
-      toggle.checked ? 'true' : 'false'
-    );
-    renderLoadingDraft();
-  });
+toggle.checked = sessionStorage.getItem('indus.loadingMode.enabled') === 'true';
+updateLoadingModeLabel();
+
+toggle.addEventListener('change', () => {
+  sessionStorage.setItem(
+    'indus.loadingMode.enabled',
+    toggle.checked ? 'true' : 'false'
+  );
+
+  updateLoadingModeLabel();
+  renderLoadingDraft();
+});
 
   addButton?.addEventListener('click', addCurrentScanToLoadingDraft);
 
