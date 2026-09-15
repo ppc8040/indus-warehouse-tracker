@@ -35,6 +35,43 @@ Every STOCK_IN, STOCK_OUT, and ERROR event posted by warehouse operators.
 
 ---
 
+## Loading audit
+
+### `loading_headers`
+
+One row per confirmed loading batch.
+
+- `loading_id`: UUID primary key.
+- `idempotency_key`: unique client-generated key. Retrying the same confirmed request returns the original load instead of posting duplicate STOCK_OUT movements.
+- `status`: `POSTING`, `COMPLETED`, or `FAILED`.
+- `source_location`: warehouse location from which HUs are loaded.
+- `destination`: always `LOADING` for this workflow.
+- `operator_id`, `device_id`: worker audit metadata.
+- `supervisor_override`, `override_reason`: recorded only where missing-HU fallback was approved.
+- `item_count`, `created_at`, `completed_at`: batch audit fields.
+
+### `loading_items`
+
+One row per HU in a loading batch.
+
+- `resolution = EXISTING_STOCK_IN`: HU already existed and was currently STOCK_IN.
+- `resolution = MISSING_HU_FALLBACK`: HU did not exist in warehouse records; a supervisor-approved traceable STOCK_IN then STOCK_OUT pair was created.
+- `stock_in_event_id`: populated only for missing-HU fallback.
+- `stock_out_event_id`: populated for every loaded HU.
+
+### Movement linkage
+
+`movements.loading_id` and `movements.loading_item_id` are nullable audit linkage fields. Existing normal scanner movements do not use them.
+
+### Policy
+
+- Existing HUs not currently in `STOCK_IN` are blocked.
+- A supervisor cannot force-post an existing HU with non-`STOCK_IN` status.
+- Only genuinely missing warehouse records may use approved fallback `STOCK_IN → STOCK_OUT`.
+- The final loading transaction is atomic: validation failure on any HU rolls back the complete batch.
+
+---
+
 ### `pallet_status`
 Current state of every Handling Unit ever seen. Upserted on every movement.
 
