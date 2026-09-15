@@ -977,3 +977,253 @@ async function syncPendingEvents() {
     console.error('Sync failed:', e);
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loading Mode — isolated client-side draft queue.
+// This code intentionally does not modify normal movement request payloads.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LOADING_DRAFT_KEY = 'indus.loadingDraft.v1';
+
+let loadingDraft = loadLoadingDraft();
+
+function newLoadingDraft() {
+  return {
+    idempotency_key: (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `load-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    source_location: '',
+    operator_id: '',
+    device_id: '',
+    items: []
+  };
+}
+
+function loadLoadingDraft() {
+  try {
+    const raw = sessionStorage.getItem(LOADING_DRAFT_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Array.isArray(parsed.items) &&
+      parsed.idempotency_key
+    ) {
+      return parsed;
+    }
+  } catch (_) {
+    // Start with a clean draft if the previous browser value is malformed.
+  }
+
+  return newLoadingDraft();
+}
+
+function saveLoadingDraft() {
+  sessionStorage.setItem(LOADING_DRAFT_KEY, JSON.stringify(loadingDraft));
+}
+
+function getLoadingModeElements() {
+  return {
+    toggle: document.getElementById('loadingModeToggle'),
+    queuePanel: document.getElementById('loadingQueuePanel'),
+    queueCount: document.getElementById('loadingQueueCount'),
+    queueBody: document.getElementById('loadingQueueBody'),
+    addButton: document.getElementById('addToLoadingButton'),
+    clearButton: document.getElementById('clearLoadingButton'),
+    reviewButton: document.getElementById('reviewLoadingButton')
+  };
+}
+
+function loadingModeEnabled() {
+  return Boolean(document.getElementById('loadingModeToggle')?.checked);
+}
+
+function getCurrentLoadingSourceLocation() {
+  /*
+   * Replace `locationSelect` below with the existing location element ID or
+   * existing location getter used in this file. Do not introduce a second
+   * location control.
+   */
+  const locationSelect = document.getElementById('location');
+  return String(locationSelect?.value || '').trim().toUpperCase();
+}
+
+function getCurrentResolvedScanForLoading() {
+  /*
+   * Replace these element IDs with the actual existing scanner form IDs.
+   * Use the same already-resolved values that normal movement posting uses.
+   *
+   * Do not perform a new lookup here.
+   */
+  return {
+    handling_unit: String(document.getElementById('handlingUnit')?.value || '').trim(),
+    indus_part: String(document.getElementById('indusPart')?.value || '').trim(),
+    customer_part: String(document.getElementById('customerPart')?.value || '').trim(),
+    pallet_qty: String(document.getElementById('palletQty')?.value || '').trim()
+  };
+}
+
+function showLoadingMessage(message) {
+  /*
+   * Replace this with the existing scanner toast/message helper if present.
+   * `alert` is only a safe fallback while integrating.
+   */
+  if (typeof showToast === 'function') {
+    showToast(message);
+    return;
+  }
+
+  window.alert(message);
+}
+
+function renderLoadingDraft() {
+  const { queuePanel, queueCount, queueBody, reviewButton } = getLoadingModeElements();
+
+  if (!queuePanel || !queueCount || !queueBody) return;
+
+  queuePanel.hidden = !loadingModeEnabled();
+  queueCount.textContent = `${loadingDraft.items.length} HU${loadingDraft.items.length === 1 ? '' : 's'}`;
+
+  if (!loadingDraft.items.length) {
+    queueBody.innerHTML = '<tr><td colspan="5">No HUs added yet.</td></tr>';
+  } else {
+    queueBody.innerHTML = loadingDraft.items.map((item, index) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${escapeLoadingHtml(item.handling_unit)}</td>
+        <td>${escapeLoadingHtml(item.indus_part)}</td>
+        <td>${escapeLoadingHtml(item.pallet_qty)}</td>
+        <td>
+          <button type="button" class="btn-link-danger"
+            data-loading-remove-index="${index}">
+            Remove
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  queueBody.querySelectorAll('[data-loading-remove-index]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const index = Number(button.dataset.loadingRemoveIndex);
+      if (!Number.isInteger(index)) return;
+
+      loadingDraft.items.splice(index, 1);
+      saveLoadingDraft();
+      renderLoadingDraft();
+    });
+  });
+
+  if (reviewButton) {
+    reviewButton.classList.toggle('is-disabled', loadingDraft.items.length === 0);
+    reviewButton.setAttribute(
+      'aria-disabled',
+      loadingDraft.items.length === 0 ? 'true' : 'false'
+    );
+  }
+}
+
+function escapeLoadingHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function addCurrentScanToLoadingDraft() {
+  if (!loadingModeEnabled()) {
+    showLoadingMessage('Turn on Loading Mode before adding to the loading queue.');
+    return;
+  }
+
+  const item = getCurrentResolvedScanForLoading();
+  const sourceLocation = getCurrentLoadingSourceLocation();
+
+  if (!sourceLocation) {
+    showLoadingMessage('Select a source location first.');
+    return;
+  }
+
+  if (!item.handling_unit || !item.indus_part || !item.pallet_qty) {
+    showLoadingMessage('Scan and resolve a valid HU, part, and quantity before adding.');
+    return;
+  }
+
+  if (
+    loadingDraft.source_location &&
+    loadingDraft.source_location !== sourceLocation
+  ) {
+    showLoadingMessage(
+      `This queue is for ${loadingDraft.source_location}. Clear it before selecting ${sourceLocation}.`
+    );
+    return;
+  }
+
+  if (
+    loadingDraft.items.some(
+      (existing) => existing.handling_unit === item.handling_unit
+    )
+  ) {
+    showLoadingMessage(`HU ${item.handling_unit} is already in this loading.`);
+    return;
+  }
+
+  loadingDraft.source_location = sourceLocation;
+  loadingDraft.items.push(item);
+  saveLoadingDraft();
+  renderLoadingDraft();
+  showLoadingMessage(`Added HU ${item.handling_unit} to the loading queue.`);
+}
+
+function clearLoadingDraft() {
+  if (!loadingDraft.items.length) return;
+
+  const accepted = window.confirm(
+    'Clear this loading queue? This cannot be undone, but nothing has been posted.'
+  );
+
+  if (!accepted) return;
+
+  loadingDraft = newLoadingDraft();
+  saveLoadingDraft();
+  renderLoadingDraft();
+}
+
+function setupLoadingMode() {
+  const {
+    toggle,
+    addButton,
+    clearButton,
+    reviewButton
+  } = getLoadingModeElements();
+
+  if (!toggle) return;
+
+  toggle.checked = sessionStorage.getItem('indus.loadingMode.enabled') === 'true';
+
+  toggle.addEventListener('change', () => {
+    sessionStorage.setItem(
+      'indus.loadingMode.enabled',
+      toggle.checked ? 'true' : 'false'
+    );
+    renderLoadingDraft();
+  });
+
+  addButton?.addEventListener('click', addCurrentScanToLoadingDraft);
+
+  clearButton?.addEventListener('click', clearLoadingDraft);
+
+  reviewButton?.addEventListener('click', (event) => {
+    if (!loadingDraft.items.length) {
+      event.preventDefault();
+      showLoadingMessage('Add at least one HU before reviewing the loading.');
+    }
+  });
+
+  renderLoadingDraft();
+}
+
+document.addEventListener('DOMContentLoaded', setupLoadingMode);
