@@ -200,7 +200,7 @@ def _fetch_status_for_update(cursor, handling_unit: str) -> dict | None:
         SELECT
             handling_unit,
             current_status,
-            event_id,
+            last_event_id,
             last_movement_type,
             last_movement_time,
             indus_part,
@@ -225,7 +225,7 @@ def _fetch_status_for_update(cursor, handling_unit: str) -> dict | None:
 def _write_movement(
     cursor,
     *,
-    event_id: str,
+    last_event_id: str,
     timestamp_utc: str,
     handling_unit: str,
     movement_type: str,
@@ -244,7 +244,7 @@ def _write_movement(
     cursor.execute(
         """
         INSERT INTO movements (
-            event_id,
+            last_event_id,
             timestamp_utc,
             handling_unit,
             movement_type,
@@ -306,7 +306,7 @@ def _upsert_pallet_status(
         INSERT INTO pallet_status (
             handling_unit,
             current_status,
-            event_id,
+            last_event_id,
             last_movement_type,
             last_movement_time,
             indus_part,
@@ -317,7 +317,7 @@ def _upsert_pallet_status(
         ON CONFLICT (handling_unit)
         DO UPDATE SET
             current_status = EXCLUDED.current_status,
-            event_id = EXCLUDED.event_id,
+            last_event_id = EXCLUDED.last_event_id,
             last_movement_type = EXCLUDED.last_movement_type,
             last_movement_time = EXCLUDED.last_movement_time,
             indus_part = EXCLUDED.indus_part,
@@ -358,7 +358,6 @@ def review_loading(payload: dict) -> LoadingResult:
 
     try:
         with db_transaction() as connection:
-            connection.rollback()
             with connection.cursor() as cursor:
                 for item in request["items"]:
                     current = _fetch_status_for_update(cursor, item["handling_unit"])
@@ -448,7 +447,12 @@ def review_loading(payload: dict) -> LoadingResult:
             {"errors": [str(exc)]},
         )
 
-    blocked = [row for row in results if not row["eligible"]]
+    blocked = [
+        row
+        for row in results
+        if not row["eligible"]
+        and row["resolution"] != "MISSING_HU_FALLBACK"
+    ]
     needs_approval = missing_count > 0 and not request["supervisor_approved"]
 
     return LoadingResult(
