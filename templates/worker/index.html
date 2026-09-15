@@ -752,6 +752,56 @@
     </div>
   </div>
 
+  <section class="loading-mode-card" id="loadingModeCard">
+  <div class="loading-mode-row">
+    <div>
+      <h2>Loading Mode</h2>
+      <p>Queue HUs for one confirmed outbound loading batch.</p>
+    </div>
+
+    <label class="loading-switch">
+      <input id="loadingModeToggle" type="checkbox">
+      <span>OFF</span>
+    </label>
+  </div>
+
+  <div id="loadingQueuePanel" hidden>
+    <div class="loading-queue-header">
+      <strong>Loading queue</strong>
+      <span id="loadingQueueCount">0 HUs</span>
+    </div>
+
+    <div class="loading-queue-actions">
+      <button id="addToLoadingButton" type="button" class="btn btn-warning">
+        Add scanned HU
+      </button>
+
+      <button id="clearLoadingButton" type="button" class="btn btn-secondary">
+        Clear queue
+      </button>
+
+      <a id="reviewLoadingButton" class="btn btn-warning" href="/loading-review">
+        Review loading
+      </a>
+    </div>
+
+    <div class="loading-queue-table-wrap">
+      <table class="loading-queue-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Handling Unit</th>
+            <th>Part</th>
+            <th>Qty</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="loadingQueueBody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+  
   <!-- ═══ SCREEN 2: CONFIRM & CHOOSE MOVEMENT ═══ -->
   <div class="scr" id="scrAction">
     <div class="card" id="palletCard">
