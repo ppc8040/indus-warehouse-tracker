@@ -15,6 +15,7 @@
   const dialog = document.getElementById('confirmDialog');
   const finalPostButton = document.getElementById('finalPostButton');
   const confirmDialogText = document.getElementById('confirmDialogText');
+  const shipmentReferenceEl = document.getElementById('shipmentReference');
 
   let draft = null;
   let lastReview = null;
@@ -53,9 +54,15 @@
       source_location: draft.source_location,
       operator_id: draft.operator_id || 'WORKER',
       device_id: draft.device_id || '',
+      shipment_reference: shipmentReferenceEl
+        ? shipmentReferenceEl.value.trim()
+        : '',
       items: draft.items,
       supervisor_override: {
-        approved: Boolean(includeSupervisor && lastReview?.data?.requires_supervisor_approval),
+        approved: Boolean(
+          includeSupervisor &&
+          lastReview?.data?.requires_supervisor_approval
+        ),
         pin: includeSupervisor ? supervisorPinEl.value : '',
         reason: includeSupervisor ? overrideReasonEl.value.trim() : ''
       }
@@ -221,8 +228,12 @@
     confirmDialogText.textContent =
       `This will post ${count} HU(s) from ${draft.source_location} to LOADING. ` +
       'This action creates inventory movements and cannot be undone automatically.';
-
+    
     dialog.showModal();
+    
+    if (shipmentReferenceEl) {
+      shipmentReferenceEl.focus();
+    }
   });
 
   finalPostButton.addEventListener('click', (event) => {
