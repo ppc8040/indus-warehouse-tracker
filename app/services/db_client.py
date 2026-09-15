@@ -219,7 +219,7 @@ def insert_movement(
             %(event_id)s, %(timestamp_utc)s, %(handling_unit)s, %(indus_part)s,
             %(customer_part)s, %(pallet_qty)s, %(job_no)s, %(movement_type)s,
             %(operator_id)s, %(device_id)s, %(sync_status)s, %(validation_status)s,
-            %(location)s, %(from_location)s, %(to_location)s, %s, %s
+            %(location)s, %(from_location)s, %(to_location)s, %(loading_id)s, %(loading_item_id)s
         )
         ON CONFLICT (event_id) DO NOTHING
     """
@@ -239,8 +239,8 @@ def insert_movement(
         location=location or "",
         from_location=from_location or "",
         to_location=to_location or "",
-        loading_id or None,
-        loading_item_id or None,
+        loading_id=loading_id or None,
+        loading_item_id=loading_item_id or None,
     )
     with _get_conn() as conn:
         with conn.cursor() as cur:
@@ -608,6 +608,21 @@ def _row_to_dict(row) -> dict:
             out[k] = v
     return out
 
+def fetch_one(sql: str, params=()) -> dict | None:
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def fetch_all(sql: str, params=()) -> list[dict]:
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [_row_to_dict(row) for row in rows]
+
 def get_loading_by_idempotency_key(idempotency_key: str) -> dict | None:
     sql = """
         SELECT
@@ -707,23 +722,8 @@ def get_recent_loadings(limit: int = 100, status: str = "") -> list:
 
     return fetch_all(sql, tuple(params))
 
-from contextlib import contextmanager
-
 @contextmanager
 def db_transaction():
-    """
-    Yield one PostgreSQL connection for an all-or-nothing loading transaction.
-
-    The caller must use connection.cursor() and should raise on any failure.
-    This helper commits only after the yield completes successfully.
-    """
-    connection = get_connection()
-    try:
-        connection.autocommit = False
+    """Use one pooled connection for an atomic transaction."""
+    with _get_conn() as connection:
         yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
