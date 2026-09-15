@@ -222,7 +222,7 @@ def _fetch_status_for_update(cursor, handling_unit: str) -> dict | None:
 def _write_movement(
     cursor,
     *,
-    last_event_id: str,
+    event_id: str,
     timestamp_utc: str,
     handling_unit: str,
     movement_type: str,
