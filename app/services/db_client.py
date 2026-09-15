@@ -202,6 +202,8 @@ def insert_movement(
     location: str = "",
     from_location: str = "",
     to_location: str = "",
+    loading_id: str = "",
+    loading_item_id: str = "",
 ) -> None:
     """
     Append one row to the movements table.
@@ -212,12 +214,12 @@ def insert_movement(
             event_id, timestamp_utc, handling_unit, indus_part,
             customer_part, pallet_qty, job_no, movement_type,
             operator_id, device_id, sync_status, validation_status,
-            location, from_location, to_location
+            location, from_location, to_location, loading_id, loading_item_id
         ) VALUES (
             %(event_id)s, %(timestamp_utc)s, %(handling_unit)s, %(indus_part)s,
             %(customer_part)s, %(pallet_qty)s, %(job_no)s, %(movement_type)s,
             %(operator_id)s, %(device_id)s, %(sync_status)s, %(validation_status)s,
-            %(location)s, %(from_location)s, %(to_location)s
+            %(location)s, %(from_location)s, %(to_location)s, %s, %s
         )
         ON CONFLICT (event_id) DO NOTHING
     """
@@ -237,6 +239,8 @@ def insert_movement(
         location=location or "",
         from_location=from_location or "",
         to_location=to_location or "",
+        loading_id or None,
+        loading_item_id or None,
     )
     with _get_conn() as conn:
         with conn.cursor() as cur:
@@ -603,3 +607,123 @@ def _row_to_dict(row) -> dict:
         else:
             out[k] = v
     return out
+
+def get_loading_by_idempotency_key(idempotency_key: str) -> dict | None:
+    sql = """
+        SELECT
+            loading_id,
+            idempotency_key,
+            status,
+            source_location,
+            destination,
+            operator_id,
+            device_id,
+            supervisor_override,
+            override_reason,
+            item_count,
+            created_at,
+            completed_at
+        FROM loading_headers
+        WHERE idempotency_key = %s
+        LIMIT 1
+    """
+    return fetch_one(sql, (idempotency_key,))
+
+def get_loading_header(loading_id: str) -> dict | None:
+    sql = """
+        SELECT
+            loading_id,
+            idempotency_key,
+            status,
+            source_location,
+            destination,
+            operator_id,
+            device_id,
+            supervisor_override,
+            override_reason,
+            item_count,
+            created_at,
+            completed_at
+        FROM loading_headers
+        WHERE loading_id = %s
+        LIMIT 1
+    """
+    return fetch_one(sql, (loading_id,))
+
+def get_loading_items(loading_id: str) -> list:
+    sql = """
+        SELECT
+            li.loading_item_id,
+            li.loading_id,
+            li.handling_unit,
+            li.sequence_no,
+            li.resolution,
+            li.stock_in_event_id,
+            li.stock_out_event_id,
+            li.indus_part,
+            li.customer_part,
+            li.pallet_qty,
+            li.created_at,
+            stock_out.timestamp_utc AS stock_out_timestamp,
+            stock_out.location AS source_location,
+            stock_out.to_location AS destination
+        FROM loading_items li
+        LEFT JOIN movements stock_out
+            ON stock_out.event_id = li.stock_out_event_id
+        WHERE li.loading_id = %s
+        ORDER BY li.sequence_no ASC
+    """
+    return fetch_all(sql, (loading_id,))
+
+def get_recent_loadings(limit: int = 100, status: str = "") -> list:
+    params = []
+    where = ""
+
+    if status:
+        where = "WHERE status = %s"
+        params.append(status)
+
+    params.append(limit)
+
+    sql = f"""
+        SELECT
+            loading_id,
+            idempotency_key,
+            status,
+            source_location,
+            destination,
+            operator_id,
+            device_id,
+            supervisor_override,
+            override_reason,
+            item_count,
+            created_at,
+            completed_at
+        FROM loading_headers
+        {where}
+        ORDER BY created_at DESC
+        LIMIT %s
+    """
+
+    return fetch_all(sql, tuple(params))
+
+from contextlib import contextmanager
+
+@contextmanager
+def db_transaction():
+    """
+    Yield one PostgreSQL connection for an all-or-nothing loading transaction.
+
+    The caller must use connection.cursor() and should raise on any failure.
+    This helper commits only after the yield completes successfully.
+    """
+    connection = get_connection()
+    try:
+        connection.autocommit = False
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
