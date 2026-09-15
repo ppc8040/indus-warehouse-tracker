@@ -26,6 +26,11 @@ from app.services.db_client import (
     _get_conn,
     _row_to_dict,
 )
+from app.services.db_client import (
+    get_loading_header,
+    get_loading_items,
+    get_recent_loadings,
+)
 from app.utils.idempotency import pending_count
 
 logger = logging.getLogger(__name__)
@@ -1633,3 +1638,39 @@ def api_ivt():
     except Exception as e:
         logger.error("api_ivt: %s", e)
         return jsonify({"recent": [], "daily": []})
+
+@admin_bp.route("/api/loadings")
+@admin_required
+def admin_loadings():
+    status = request.args.get("status", "").strip().upper()
+    limit_raw = request.args.get("limit", "100")
+
+    try:
+        limit = max(1, min(int(limit_raw), 500))
+    except ValueError:
+        limit = 100
+
+    valid_statuses = {"", "POSTING", "COMPLETED", "FAILED"}
+    if status not in valid_statuses:
+        return jsonify({"error": "Invalid loading status filter."}), 400
+
+    rows = get_recent_loadings(limit=limit, status=status)
+
+    return jsonify({
+        "loadings": rows,
+    })
+
+@admin_bp.route("/api/loadings/<loading_id>")
+@admin_required
+def admin_loading_detail(loading_id):
+    header = get_loading_header(loading_id)
+
+    if not header:
+        return jsonify({"error": "Loading not found."}), 404
+
+    items = get_loading_items(loading_id)
+
+    return jsonify({
+        "header": header,
+        "items": items,
+    })
