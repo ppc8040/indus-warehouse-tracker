@@ -1040,39 +1040,34 @@ function loadingModeEnabled() {
 }
 
 function getCurrentLoadingSourceLocation() {
-  /*
-   * Replace `locationSelect` below with the existing location element ID or
-   * existing location getter used in this file. Do not introduce a second
-   * location control.
-   */
-  const locationSelect = document.getElementById('location');
-  return String(locationSelect?.value || '').trim().toUpperCase();
+  return String(
+    document.getElementById('locationSelect')?.value || ''
+  ).trim().toUpperCase();
 }
 
 function getCurrentResolvedScanForLoading() {
-  /*
-   * Replace these element IDs with the actual existing scanner form IDs.
-   * Use the same already-resolved values that normal movement posting uses.
-   *
-   * Do not perform a new lookup here.
-   */
   return {
-    handling_unit: String(document.getElementById('handlingUnit')?.value || '').trim(),
-    indus_part: String(document.getElementById('indusPart')?.value || '').trim(),
-    customer_part: String(document.getElementById('customerPart')?.value || '').trim(),
-    pallet_qty: String(document.getElementById('palletQty')?.value || '').trim()
+    handling_unit: String(
+      document.getElementById('huInput')?.value || ''
+    ).trim(),
+
+    indus_part: String(
+      document.getElementById('indusPartInput')?.value || ''
+    ).trim(),
+
+    customer_part: String(
+      document.getElementById('customerPartInput')?.value || ''
+    ).trim(),
+
+    pallet_qty: String(
+      document.getElementById('palletQtyInput')?.value || ''
+    ).trim()
   };
 }
 
-function showLoadingMessage(message) {
-  /*
-   * Replace this with the existing scanner toast/message helper if present.
-   * `alert` is only a safe fallback while integrating.
-   */
-  if (typeof showToast === 'function') {
-    showToast(message);
-    return;
-  }
+function showLoadingMessage(message, type = 'info') {
+  showResult(message, type);
+}
 
   window.alert(message);
 }
@@ -1135,7 +1130,10 @@ function escapeLoadingHtml(value) {
 
 function addCurrentScanToLoadingDraft() {
   if (!loadingModeEnabled()) {
-    showLoadingMessage('Turn on Loading Mode before adding to the loading queue.');
+    showLoadingMessage(
+      'Turn on Loading Mode before adding to the loading queue.',
+      'error'
+    );
     return;
   }
 
@@ -1143,12 +1141,15 @@ function addCurrentScanToLoadingDraft() {
   const sourceLocation = getCurrentLoadingSourceLocation();
 
   if (!sourceLocation) {
-    showLoadingMessage('Select a source location first.');
+    showLoadingMessage('Select a source location first.', 'error');
     return;
   }
 
   if (!item.handling_unit || !item.indus_part || !item.pallet_qty) {
-    showLoadingMessage('Scan and resolve a valid HU, part, and quantity before adding.');
+    showLoadingMessage(
+      'Scan and resolve a valid HU, part, and quantity before adding.',
+      'error'
+    );
     return;
   }
 
@@ -1157,25 +1158,44 @@ function addCurrentScanToLoadingDraft() {
     loadingDraft.source_location !== sourceLocation
   ) {
     showLoadingMessage(
-      `This queue is for ${loadingDraft.source_location}. Clear it before selecting ${sourceLocation}.`
+      `This queue is for ${loadingDraft.source_location}. ` +
+      `Clear it before selecting ${sourceLocation}.`,
+      'error'
     );
     return;
   }
 
   if (
     loadingDraft.items.some(
-      (existing) => existing.handling_unit === item.handling_unit
+      existing => existing.handling_unit === item.handling_unit
     )
   ) {
-    showLoadingMessage(`HU ${item.handling_unit} is already in this loading.`);
+    showLoadingMessage(
+      `HU ${item.handling_unit} is already in this loading.`,
+      'error'
+    );
     return;
   }
 
   loadingDraft.source_location = sourceLocation;
+
+  loadingDraft.operator_id = String(
+    document.getElementById('operatorInput')?.value || 'WORKER'
+  ).trim() || 'WORKER';
+
+  loadingDraft.device_id = String(
+    document.getElementById('deviceIdInput')?.value || ''
+  ).trim();
+
   loadingDraft.items.push(item);
+
   saveLoadingDraft();
   renderLoadingDraft();
-  showLoadingMessage(`Added HU ${item.handling_unit} to the loading queue.`);
+
+  showLoadingMessage(
+    `Added HU ${item.handling_unit} to the loading queue.`,
+    'success'
+  );
 }
 
 function clearLoadingDraft() {
