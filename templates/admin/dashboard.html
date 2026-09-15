@@ -363,7 +363,7 @@
     <table>
       <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
       <tbody>
-        <tr><td><kbd>1</kbd> – <kbd>9</kbd></td><td>Switch to tab (1=Movements … 9=SAP Recon)</td></tr>
+        <tr><td><kbd>1</kbd> – <kbd>9</kbd></td><td>Switch to tab (1=Movements … 10=SAP Recon)</td></tr>
         <tr><td><kbd id="kbdModCycleAR">Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>Cycle auto-refresh interval (OFF → 30s → 1m → 5m)</td></tr>
         <tr><td><kbd>R</kbd></td><td>Refresh current tab data</td></tr>
         <tr><td><kbd id="kbdModExport">Ctrl</kbd>+<kbd>E</kbd></td><td>Export current tab to Excel</td></tr>
@@ -435,6 +435,7 @@
 
 <div class="tabs">
   <button class="tab on"  onclick="switchTab('movements',this)">&#128230; Movements<span class="tab-badge" id="badge-movements"></span></button>
+  <button class="tab" onclick="switchTab('loadings',this)">🚚 Loadings<span class="tab-badge" id="badge-loadings"></span></button>
   <button class="tab"     onclick="switchTab('statuses',this)">&#128994; Pallet Status<span class="tab-badge" id="badge-statuses"></span></button>
   <button class="tab"     onclick="switchTab('stock',this)">&#128200; Stock by Location<span class="tab-badge" id="badge-stock"></span></button>
   <button class="tab"     onclick="switchTab('totalstock',this)">&#128451; Total Stock<span class="tab-badge" id="badge-totalstock"></span></button>
@@ -456,6 +457,29 @@
   </div>
   <div id="col-summary-bar-movements" class="col-summary-bar"></div>
   <div class="tbl-wrap" id="tbl-movements"><div class="empty">Loading&#8230;</div></div>
+</div>
+
+<!-- Loadings -->
+<div class="tab-pane" id="pane-loadings">
+  <div class="tab-hdr">
+    <h2>Loading Audit</h2>
+    <div class="tab-hdr-actions">
+      <select id="loadingStatusFilter" onchange="loadLoadings()"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 8px;font-size:12px">
+        <option value="">All statuses</option>
+        <option value="COMPLETED">Completed</option>
+        <option value="POSTING">Posting</option>
+        <option value="FAILED">Failed</option>
+      </select>
+      <button class="btn btn-primary" onclick="loadLoadings()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div class="tbl-wrap" id="tbl-loadings">
+    <div class="empty">Click the tab to load loading records…</div>
+  </div>
+
+  <div id="loading-detail-panel" style="margin-top:16px"></div>
 </div>
 
 <!-- Pallet Status -->
@@ -707,7 +731,18 @@ function _refreshChartColors() {
 }
 
 // ── Tab management ────────────────────────────────────────────────────────────
-const TAB_ORDER = ['movements','statuses','stock','totalstock','analytics','ivt','bdr','errors','saprecon'];
+const TAB_ORDER = [
+  'movements',
+  'loadings',
+  'statuses',
+  'stock',
+  'totalstock',
+  'analytics',
+  'ivt',
+  'bdr',
+  'errors',
+  'saprecon'
+];
 const TAB_EXPORT_KEYS = {
   movements: 'movements', statuses: 'statuses', stock: 'stock',
   totalstock: 'total_stock', ivt: 'ivt', bdr: 'bdr', errors: 'errors', saprecon: 'sap_recon'
@@ -716,6 +751,7 @@ let _activeTab = 'movements';
 
 const TAB_LOADERS = {
   movements:  () => loadMovements(),
+  loadings: () => loadLoadings(),
   statuses:   () => loadStatuses(),
   stock:      () => loadStock(),
   totalstock: () => loadTotalStock(),
@@ -943,6 +979,175 @@ async function loadMovements() {
     _makeTableSelectable(el);
     _setTabBadge('movements', rows.length);
   } catch (e) { el.innerHTML = '<div class="empty">Failed to load movements.</div>'; console.error('loadMovements', e); }
+}
+
+async function loadLoadings() {
+  const el = document.getElementById('tbl-loadings');
+  const detailEl = document.getElementById('loading-detail-panel');
+  const status = document.getElementById('loadingStatusFilter').value;
+
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  detailEl.innerHTML = '';
+
+  try {
+    const qs = new URLSearchParams({ limit: '200' });
+    if (status) qs.set('status', status);
+
+    const response = await fetch('/admin/api/loadings?' + qs.toString());
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    const rows = data.loadings || [];
+
+    _setTabBadge('loadings', rows.length);
+
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No loadings match the selected filter.</div>';
+      return;
+    }
+
+    let html = `
+      <table>
+        <thead>
+          <tr>
+            <th>Created</th>
+            <th>Status</th>
+            <th>Source</th>
+            <th>Destination</th>
+            <th>HUs</th>
+            <th>Operator</th>
+            <th>Override</th>
+            <th>Completed</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+
+    for (const row of rows) {
+      const statusText = String(row.status || '').toUpperCase();
+      const statusTag =
+        statusText === 'COMPLETED' ? tag('COMPLETED', 'tok') :
+        statusText === 'FAILED' ? tag('FAILED', 'terr') :
+        tag(statusText || 'UNKNOWN', 'twarn');
+
+      html += `
+        <tr>
+          <td>${fmtTime(row.created_at)}</td>
+          <td>${statusTag}</td>
+          <td>${row.source_location || '—'}</td>
+          <td>${row.destination || '—'}</td>
+          <td>${row.item_count || 0}</td>
+          <td>${row.operator_id || '—'}</td>
+          <td>${row.supervisor_override ? tag('YES', 'twarn') : tag('NO', 'tinfo')}</td>
+          <td>${fmtTime(row.completed_at)}</td>
+          <td>
+            <button class="btn btn-primary"
+              onclick="loadLoadingDetail('${row.loading_id}')">
+              View
+            </button>
+          </td>
+        </tr>
+      `;
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    _makeTableSelectable(el);
+  } catch (error) {
+    console.error('loadLoadings', error);
+    el.innerHTML = '<div class="empty">Failed to load loading records.</div>';
+  }
+}
+
+async function loadLoadingDetail(loadingId) {
+  const el = document.getElementById('loading-detail-panel');
+  el.innerHTML = '<div class="empty">Loading audit detail…</div>';
+
+  try {
+    const response = await fetch('/admin/api/loadings/' + encodeURIComponent(loadingId));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    const header = data.header || {};
+    const items = data.items || [];
+
+    let html = `
+      <div class="chart-card">
+        <h3>Loading Detail</h3>
+        <div class="recon-meta">
+          <span>Load ID: <strong>${header.loading_id || '—'}</strong></span>
+          <span>Source: <strong>${header.source_location || '—'}</strong></span>
+          <span>Destination: <strong>${header.destination || '—'}</strong></span>
+          <span>Operator: <strong>${header.operator_id || '—'}</strong></span>
+          <span>Override: <strong>${header.supervisor_override ? 'YES' : 'NO'}</strong></span>
+          <span>Reason: <strong>${header.override_reason || '—'}</strong></span>
+        </div>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>HU</th>
+                <th>Part</th>
+                <th>Qty</th>
+                <th>Resolution</th>
+                <th>Fallback IN Event</th>
+                <th>OUT Event</th>
+                <th>Source</th>
+                <th>Destination</th>
+                <th>Posted</th>
+              </tr>
+            </thead>
+            <tbody>
+    `;
+
+    for (const item of items) {
+      const resolution = String(item.resolution || '');
+      const resolutionTag =
+        resolution === 'MISSING_HU_FALLBACK'
+          ? tag('MISSING HU FALLBACK', 'twarn')
+          : tag('EXISTING STOCK IN', 'tok');
+
+      html += `
+        <tr>
+          <td>${item.sequence_no || '—'}</td>
+          <td><strong>${item.handling_unit || '—'}</strong></td>
+          <td>${item.indus_part || '—'}</td>
+          <td>${item.pallet_qty || '—'}</td>
+          <td>${resolutionTag}</td>
+          <td>${item.stock_in_event_id || '—'}</td>
+          <td>${item.stock_out_event_id || '—'}</td>
+          <td>${item.source_location || '—'}</td>
+          <td>${item.destination || 'LOADING'}</td>
+          <td>${fmtTime(item.stock_out_timestamp)}</td>
+        </tr>
+      `;
+    }
+
+    html += `
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    el.innerHTML = html;
+    _makeTableSelectable(el);
+  } catch (error) {
+    console.error('loadLoadingDetail', error);
+    el.innerHTML = '<div class="empty">Failed to load the selected loading audit record.</div>';
+  }
+}
+
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 async function loadStatuses() {
