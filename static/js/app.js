@@ -1041,35 +1041,28 @@ function loadingModeEnabled() {
 
 function getCurrentLoadingSourceLocation() {
   return String(
-    document.getElementById('locationSelect')?.value || ''
+    document.getElementById('loadingSourceLocation')?.value || ''
   ).trim().toUpperCase();
 }
 
 function getCurrentResolvedScanForLoading() {
   return {
-    handling_unit: String(
-      document.getElementById('huInput')?.value || ''
-    ).trim(),
-
-    indus_part: String(
-      document.getElementById('indusPartInput')?.value || ''
-    ).trim(),
-
-    customer_part: String(
-      document.getElementById('customerPartInput')?.value || ''
-    ).trim(),
-
-    pallet_qty: String(
-      document.getElementById('palletQtyInput')?.value || ''
-    ).trim()
+    handling_unit: String(scanned.handling_unit || '').trim(),
+    indus_part: String(scanned.indus_part || '').trim(),
+    customer_part: String(scanned.customer_part || '').trim(),
+    pallet_qty: String(scanned.pallet_qty || '').trim()
   };
 }
 
 function showLoadingMessage(message, type = 'info') {
-  showResult(message, type);
-}
+  const toastType = {
+    error: 'fail',
+    success: 'ok',
+    warning: 'warn',
+    info: 'info'
+  }[type] || 'info';
 
-  window.alert(message);
+  toast(message, toastType);
 }
 
 function renderLoadingDraft() {
@@ -1179,13 +1172,8 @@ function addCurrentScanToLoadingDraft() {
 
   loadingDraft.source_location = sourceLocation;
 
-  loadingDraft.operator_id = String(
-    document.getElementById('operatorInput')?.value || 'WORKER'
-  ).trim() || 'WORKER';
-
-  loadingDraft.device_id = String(
-    document.getElementById('deviceIdInput')?.value || ''
-  ).trim();
+  loadingDraft.operator_id = 'WORKER';
+  loadingDraft.device_id = deviceId;
 
   loadingDraft.items.push(item);
 
