@@ -1066,12 +1066,49 @@ function showLoadingMessage(message, type = 'info') {
 }
 
 function renderLoadingDraft() {
-  const { queuePanel, queueCount, queueBody, reviewButton } = getLoadingModeElements();
+  const {
+    toggle,
+    queuePanel,
+    queueCount,
+    queueBody,
+    reviewButton
+  } = getLoadingModeElements();
 
-  if (!queuePanel || !queueCount || !queueBody) return;
+  const sourceSelect = document.getElementById('loadingSourceLocation');
+  const normalMovementButton = document.getElementById('btnProceed');
+  const enabled = loadingModeEnabled();
 
-  queuePanel.hidden = !loadingModeEnabled();
-  queueCount.textContent = `${loadingDraft.items.length} HU${loadingDraft.items.length === 1 ? '' : 's'}`;
+  if (queuePanel) {
+    queuePanel.hidden = !enabled;
+  }
+
+  /*
+   * A loading may use one source location only.
+   * Once the first HU is queued, lock the chosen source until the queue
+   * is explicitly cleared or successfully posted.
+   */
+  if (sourceSelect) {
+    if (loadingDraft.source_location) {
+      sourceSelect.value = loadingDraft.source_location;
+    }
+
+    sourceSelect.disabled = loadingDraft.items.length > 0;
+  }
+
+  /*
+   * Loading Mode is its own workflow. Normal movement posting is hidden
+   * only while this mode is enabled; turning it off restores it immediately.
+   */
+  if (normalMovementButton) {
+    normalMovementButton.hidden = enabled;
+  }
+
+  if (!queueCount || !queueBody) {
+    return;
+  }
+
+  queueCount.textContent =
+    `${loadingDraft.items.length} HU${loadingDraft.items.length === 1 ? '' : 's'}`;
 
   if (!loadingDraft.items.length) {
     queueBody.innerHTML = '<tr><td colspan="5">No HUs added yet.</td></tr>';
@@ -1083,8 +1120,11 @@ function renderLoadingDraft() {
         <td>${escapeLoadingHtml(item.indus_part)}</td>
         <td>${escapeLoadingHtml(item.pallet_qty)}</td>
         <td>
-          <button type="button" class="btn-link-danger"
-            data-loading-remove-index="${index}">
+          <button
+            type="button"
+            class="btn-link-danger"
+            data-loading-remove-index="${index}"
+          >
             Remove
           </button>
         </td>
@@ -1095,20 +1135,43 @@ function renderLoadingDraft() {
   queueBody.querySelectorAll('[data-loading-remove-index]').forEach((button) => {
     button.addEventListener('click', () => {
       const index = Number(button.dataset.loadingRemoveIndex);
-      if (!Number.isInteger(index)) return;
+
+      if (!Number.isInteger(index)) {
+        return;
+      }
 
       loadingDraft.items.splice(index, 1);
+
+      /*
+       * If the last item was removed, allow selecting the source again.
+       * The existing source remains displayed until the worker changes it
+       * or uses Clear Queue.
+       */
       saveLoadingDraft();
       renderLoadingDraft();
     });
   });
 
   if (reviewButton) {
-    reviewButton.classList.toggle('is-disabled', loadingDraft.items.length === 0);
-    reviewButton.setAttribute(
-      'aria-disabled',
-      loadingDraft.items.length === 0 ? 'true' : 'false'
-    );
+    const empty = loadingDraft.items.length === 0;
+
+    reviewButton.classList.toggle('is-disabled', empty);
+    reviewButton.setAttribute('aria-disabled', empty ? 'true' : 'false');
+    reviewButton.tabIndex = empty ? -1 : 0;
+  }
+
+  /*
+   * Keep the selected source in the draft even before the first HU is added.
+   * This makes refresh/back navigation preserve the worker's choice.
+   */
+  if (
+    sourceSelect &&
+    sourceSelect.value &&
+    !loadingDraft.items.length &&
+    loadingDraft.source_location !== sourceSelect.value
+  ) {
+    loadingDraft.source_location = sourceSelect.value;
+    saveLoadingDraft();
   }
 }
 
@@ -1177,13 +1240,24 @@ function addCurrentScanToLoadingDraft() {
 
   loadingDraft.items.push(item);
 
-  saveLoadingDraft();
-  renderLoadingDraft();
-
-  showLoadingMessage(
-    `Added HU ${item.handling_unit} to the loading queue.`,
-    'success'
-  );
+   saveLoadingDraft();
+   renderLoadingDraft();
+   
+   showLoadingMessage(
+     `Added HU ${item.handling_unit} to the loading queue.`,
+     'success'
+   );
+   
+   /*
+    * Clear only the currently scanned HU data. The draft, source location,
+    * Loading Mode state, and queued HUs remain preserved.
+    */
+   resetScans();
+   
+   const huInput = document.getElementById('huManualInput');
+   if (huInput) {
+     huInput.focus();
+   }
 }
 
 function clearLoadingDraft() {
@@ -1208,37 +1282,73 @@ function setupLoadingMode() {
     reviewButton
   } = getLoadingModeElements();
 
-  if (!toggle) return;
+  const sourceSelect = document.getElementById('loadingSourceLocation');
+  const normalMovementButton = document.getElementById('btnProceed');
+  const modeKey = 'indus.loadingMode.enabled';
 
-   function updateLoadingModeLabel() {
-     const label = document.getElementById('loadingModeLabel');
-   
-     if (label) {
-       label.textContent = toggle.checked ? 'ON' : 'OFF';
-     }
-   }
+  if (!toggle) {
+    return;
+  }
 
-toggle.checked = sessionStorage.getItem('indus.loadingMode.enabled') === 'true';
-updateLoadingModeLabel();
+  function updateLoadingModeLabel() {
+    const label = document.getElementById('loadingModeLabel');
 
-toggle.addEventListener('change', () => {
-  sessionStorage.setItem(
-    'indus.loadingMode.enabled',
-    toggle.checked ? 'true' : 'false'
-  );
+    if (label) {
+      label.textContent = toggle.checked ? 'ON' : 'OFF';
+    }
+  }
+
+  function updateNormalMovementVisibility() {
+    if (normalMovementButton) {
+      normalMovementButton.hidden = toggle.checked;
+    }
+  }
+
+  toggle.checked = sessionStorage.getItem(modeKey) === 'true';
+
+  if (sourceSelect && loadingDraft.source_location) {
+    sourceSelect.value = loadingDraft.source_location;
+  }
 
   updateLoadingModeLabel();
-  renderLoadingDraft();
-});
+  updateNormalMovementVisibility();
+
+  toggle.addEventListener('change', () => {
+    sessionStorage.setItem(modeKey, toggle.checked ? 'true' : 'false');
+
+    updateLoadingModeLabel();
+    updateNormalMovementVisibility();
+    renderLoadingDraft();
+  });
+
+  sourceSelect?.addEventListener('change', () => {
+    /*
+     * This selection is only editable while the queue is empty.
+     * Once an HU is added, renderLoadingDraft() disables the selector.
+     */
+    if (loadingDraft.items.length > 0) {
+      sourceSelect.value = loadingDraft.source_location;
+      return;
+    }
+
+    loadingDraft.source_location = String(sourceSelect.value || '')
+      .trim()
+      .toUpperCase();
+
+    saveLoadingDraft();
+    renderLoadingDraft();
+  });
 
   addButton?.addEventListener('click', addCurrentScanToLoadingDraft);
-
   clearButton?.addEventListener('click', clearLoadingDraft);
 
   reviewButton?.addEventListener('click', (event) => {
     if (!loadingDraft.items.length) {
       event.preventDefault();
-      showLoadingMessage('Add at least one HU before reviewing the loading.');
+      showLoadingMessage(
+        'Add at least one HU before reviewing the loading.',
+        'error'
+      );
     }
   });
 
