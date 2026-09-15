@@ -214,12 +214,9 @@ def _fetch_status_for_update(cursor, handling_unit: str) -> dict | None:
         """,
         (handling_unit,),
     )
-    row = cursor.fetchone()
-    if not row:
-        return None
 
-    columns = [column.name for column in cursor.description]
-    return dict(zip(columns, row))
+    row = cursor.fetchone()
+    return dict(row) if row else None
 
 
 def _write_movement(
