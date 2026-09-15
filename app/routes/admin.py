@@ -18,6 +18,11 @@ import time
 import logging
 from datetime import datetime, timezone
 from functools import wraps
+import csv
+import io
+
+from flask import Response
+from app.services.db_client import get_recent_loadings, get_loading_items
 
 from flask import Blueprint, render_template, request, Response, jsonify, current_app, send_file, redirect, url_for, session
 from app.services.db_client import (
@@ -52,6 +57,121 @@ def _auth_required(f):
 # ---------------------------------------------------------------------------
 # Login / Logout
 # ---------------------------------------------------------------------------
+
+@admin_bp.route("/api/loadings/export", methods=["GET"])
+@_auth_required
+def export_loadings_csv():
+    status = request.args.get("status", "").strip().upper()
+
+    allowed_statuses = {"", "POSTING", "COMPLETED", "FAILED"}
+    if status not in allowed_statuses:
+        return jsonify({
+            "success": False,
+            "message": "Invalid loading status filter."
+        }), 400
+
+    loadings = get_recent_loadings(limit=5000, status=status)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Loading ID",
+        "Idempotency Key",
+        "Loading Status",
+        "Created At",
+        "Completed At",
+        "Source Location",
+        "Destination",
+        "Shipment / Container Reference",
+        "Operator",
+        "Device ID",
+        "Supervisor Override",
+        "Override Reason",
+        "Header Item Count",
+        "Item Sequence",
+        "Handling Unit",
+        "Indus Part",
+        "Customer Part",
+        "Pallet Quantity",
+        "Resolution",
+        "Fallback Stock IN Event ID",
+        "Stock OUT Event ID",
+        "Item Posted At",
+        "Item Source",
+        "Item Destination",
+    ])
+
+    for loading in loadings:
+        loading_id = str(loading["loading_id"])
+        items = get_loading_items(loading_id)
+
+        if not items:
+            writer.writerow([
+                loading_id,
+                loading.get("idempotency_key", ""),
+                loading.get("status", ""),
+                loading.get("created_at", ""),
+                loading.get("completed_at", ""),
+                loading.get("source_location", ""),
+                loading.get("destination", ""),
+                loading.get("shipment_reference", ""),
+                loading.get("operator_id", ""),
+                loading.get("device_id", ""),
+                "YES" if loading.get("supervisor_override") else "NO",
+                loading.get("override_reason", ""),
+                loading.get("item_count", ""),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ])
+            continue
+
+        for item in items:
+            writer.writerow([
+                loading_id,
+                loading.get("idempotency_key", ""),
+                loading.get("status", ""),
+                loading.get("created_at", ""),
+                loading.get("completed_at", ""),
+                loading.get("source_location", ""),
+                loading.get("destination", ""),
+                loading.get("shipment_reference", ""),
+                loading.get("operator_id", ""),
+                loading.get("device_id", ""),
+                "YES" if loading.get("supervisor_override") else "NO",
+                loading.get("override_reason", ""),
+                loading.get("item_count", ""),
+                item.get("sequence_no", ""),
+                item.get("handling_unit", ""),
+                item.get("indus_part", ""),
+                item.get("customer_part", ""),
+                item.get("pallet_qty", ""),
+                item.get("resolution", ""),
+                item.get("stock_in_event_id", ""),
+                item.get("stock_out_event_id", ""),
+                item.get("stock_out_timestamp", ""),
+                item.get("source_location", ""),
+                item.get("destination", ""),
+            ])
+
+    filename = "indus_loading_audit.csv"
+
+    return Response(
+        "\ufeff" + output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
 
 @admin_bp.route('/login', methods=['GET', 'POST'])
 def login():
