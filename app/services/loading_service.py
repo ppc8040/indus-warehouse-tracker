@@ -135,6 +135,7 @@ def _validate_request(payload: dict) -> tuple[dict | None, list]:
     source_location = _normalise_location(payload.get("source_location", ""))
     operator_id = _text(payload.get("operator_id", "WORKER"), max_len=100) or "WORKER"
     device_id = _text(payload.get("device_id", ""), max_len=200)
+    shipment_reference = _text(payload.get("shipment_reference", ""),max_len=200,)
     override = payload.get("supervisor_override") or {}
 
     errors = []
@@ -151,16 +152,17 @@ def _validate_request(payload: dict) -> tuple[dict | None, list]:
     errors.extend(item_errors)
 
     return (
-        {
-            "idempotency_key": idempotency_key,
-            "source_location": source_location,
-            "operator_id": operator_id,
-            "device_id": device_id,
-            "items": items,
-            "supervisor_approved": bool(override.get("approved")),
-            "supervisor_pin": _text(override.get("pin", ""), max_len=100),
-            "override_reason": _text(override.get("reason", ""), max_len=500),
-        },
+      {
+          "idempotency_key": idempotency_key,
+          "source_location": source_location,
+          "operator_id": operator_id,
+          "device_id": device_id,
+          "shipment_reference": shipment_reference,
+          "items": items,
+          "supervisor_approved": bool(override.get("approved")),
+          "supervisor_pin": _text(override.get("pin", ""), max_len=100),
+          "override_reason": _text(override.get("reason", ""), max_len=500),
+      },
         errors,
     )
 
@@ -175,6 +177,7 @@ def _load_existing_header(cursor, idempotency_key: str) -> dict | None:
             destination,
             operator_id,
             device_id,
+            shipment_reference,
             supervisor_override,
             override_reason,
             item_count,
@@ -505,36 +508,40 @@ def post_loading(payload: dict) -> LoadingResult:
                         {"loading_id": str(existing["loading_id"])},
                     )
 
-                cursor.execute(
-                    """
-                    INSERT INTO loading_headers (
-                        loading_id,
-                        idempotency_key,
-                        status,
-                        source_location,
-                        destination,
-                        operator_id,
-                        device_id,
-                        supervisor_override,
-                        override_reason,
-                        item_count,
-                        created_at
-                    )
-                    VALUES (%s, %s, 'POSTING', %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        loading_id,
-                        request["idempotency_key"],
-                        request["source_location"],
-                        DESTINATION,
-                        request["operator_id"],
-                        request["device_id"],
-                        request["supervisor_approved"],
-                        request["override_reason"],
-                        len(request["items"]),
-                        now,
-                    ),
-                )
+                  cursor.execute(
+                      """
+                      INSERT INTO loading_headers (
+                          loading_id,
+                          idempotency_key,
+                          status,
+                          source_location,
+                          destination,
+                          operator_id,
+                          device_id,
+                          shipment_reference,
+                          supervisor_override,
+                          override_reason,
+                          item_count,
+                          created_at
+                      )
+                      VALUES (
+                          %s, %s, 'POSTING', %s, %s, %s, %s, %s, %s, %s, %s, %s
+                      )
+                      """,
+                      (
+                          loading_id,
+                          request["idempotency_key"],
+                          request["source_location"],
+                          DESTINATION,
+                          request["operator_id"],
+                          request["device_id"],
+                          request["shipment_reference"],
+                          request["supervisor_approved"],
+                          request["override_reason"],
+                          len(request["items"]),
+                          now,
+                      ),
+                  )
 
                 planned = []
                 missing_items = []
