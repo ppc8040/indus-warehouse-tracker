@@ -48,6 +48,7 @@ import logging
 from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify, current_app
+from app.services.loading_service import post_loading, review_loading
 from app.services.movement_service import (
     process_movement,
     sync_offline_event,
@@ -806,3 +807,26 @@ def bdr_enter():
         logger.error("BDR enter (Postgres) failed for code %s: %s", code, exc)
         return jsonify({"success": False,
                         "message": "Could not write to BDR database. Try again."}), 502
+
+@api_bp.route("/loadings/review", methods=["POST"])
+def loading_review():
+    payload = request.get_json(silent=True) or {}
+    result = review_loading(payload)
+    status_code = 200 if result.success else 400
+    return jsonify(result.to_dict()), status_code
+
+@api_bp.route("/loadings", methods=["POST"])
+def post_loading_batch():
+    payload = request.get_json(silent=True) or {}
+    result = post_loading(payload)
+
+    if result.success:
+        status_code = 200
+    elif result.status == "posting_in_progress":
+        status_code = 409
+    elif result.status == "failed_write_logged":
+        status_code = 503
+    else:
+        status_code = 400
+
+    return jsonify(result.to_dict()), status_code
