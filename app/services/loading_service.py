@@ -241,7 +241,7 @@ def _write_movement(
     cursor.execute(
         """
         INSERT INTO movements (
-            last_event_id,
+            event_id,
             timestamp_utc,
             handling_unit,
             movement_type,
