@@ -3,27 +3,399 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Review Loading</title>
+  <meta name="theme-color" content="#1565C0">
+  <title>Loading Review — Indus Warehouse</title>
+
   <link rel="stylesheet" href="/static/css/worker.css">
+
+  <style>
+    /* This page is self-contained so normal scanner styles cannot distort it. */
+    body.loading-review-page {
+      min-height: 100vh;
+      margin: 0;
+      background: #f4f6f8;
+      color: #1f2937;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .loading-review-page * {
+      box-sizing: border-box;
+    }
+
+    .loading-review-page .loading-review-shell {
+      width: min(100% - 32px, 980px);
+      margin: 0 auto;
+      padding: 24px 0 40px;
+    }
+
+    .loading-review-page .loading-review-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .loading-review-page .loading-review-title {
+      margin: 0;
+      color: #1f2937;
+      font-size: clamp(1.6rem, 4vw, 2rem);
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .loading-review-page .loading-back-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #1565c0;
+      font-size: 0.9rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .loading-review-page .loading-back-link:hover {
+      background: #eef6ff;
+    }
+
+    .loading-review-page .loading-review-card {
+      padding: 22px;
+      border: 1px solid #d9e0e7;
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    .loading-review-page #reviewStatus {
+      display: block;
+      min-height: 22px;
+      margin: 0 0 20px;
+      padding: 13px 15px;
+      border: 1px solid #dce3e8;
+      border-radius: 9px;
+      background: #f8fafc;
+      color: #374151;
+      font-size: 0.95rem;
+      line-height: 1.4;
+    }
+
+    .loading-review-page #reviewStatus.success {
+      border-color: #b9dfc0;
+      background: #eaf8ed;
+      color: #166534;
+    }
+
+    .loading-review-page #reviewStatus.warning {
+      border-color: #f0cf73;
+      background: #fff8dd;
+      color: #805b00;
+    }
+
+    .loading-review-page #reviewStatus.error {
+      border-color: #efb8b8;
+      background: #fff0f0;
+      color: #a61b1b;
+    }
+
+    .loading-review-page .loading-review-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .loading-review-page .loading-review-meta > div {
+      min-width: 0;
+      padding: 13px 15px;
+      border: 1px solid #dce3e8;
+      border-radius: 10px;
+      background: #f8fafc;
+    }
+
+    .loading-review-page .loading-review-meta span {
+      display: block;
+      margin-bottom: 5px;
+      color: #64748b;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .loading-review-page .loading-review-meta strong {
+      display: block;
+      overflow: hidden;
+      color: #1f2937;
+      font-size: 1rem;
+      font-weight: 800;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .loading-review-page .loading-review-table-wrap {
+      overflow-x: auto;
+      margin-bottom: 20px;
+      border: 1px solid #dce3e8;
+      border-radius: 10px;
+    }
+
+    .loading-review-page .loading-review-table {
+      width: 100%;
+      min-width: 680px;
+      border-collapse: collapse;
+      background: #ffffff;
+    }
+
+    .loading-review-page .loading-review-table th {
+      padding: 12px 14px;
+      border-bottom: 1px solid #dce3e8;
+      background: #f1f5f9;
+      color: #475569;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-align: left;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .loading-review-page .loading-review-table td {
+      padding: 13px 14px;
+      border-bottom: 1px solid #edf1f5;
+      color: #293241;
+      font-size: 0.92rem;
+      line-height: 1.4;
+      vertical-align: top;
+    }
+
+    .loading-review-page .loading-review-table tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .loading-review-page .loading-review-table th:nth-child(1),
+    .loading-review-page .loading-review-table td:nth-child(1),
+    .loading-review-page .loading-review-table th:nth-child(4),
+    .loading-review-page .loading-review-table td:nth-child(4) {
+      text-align: center;
+    }
+
+    .loading-review-page .loading-review-table td:nth-child(2) {
+      font-family: Consolas, Monaco, "Courier New", monospace;
+      font-size: 0.84rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .loading-review-page .review-ok {
+      color: #166534 !important;
+      font-weight: 700;
+    }
+
+    .loading-review-page .review-error {
+      color: #b42318 !important;
+      font-weight: 700;
+    }
+
+    .loading-review-page .override-panel {
+      margin: 0 0 20px;
+      padding: 18px;
+      border: 1px solid #f0cf73;
+      border-radius: 10px;
+      background: #fff9e7;
+    }
+
+    .loading-review-page .override-panel h2 {
+      margin: 0 0 8px;
+      color: #805b00;
+      font-size: 1.05rem;
+    }
+
+    .loading-review-page .override-panel p {
+      margin: 0 0 16px;
+      color: #5f500f;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    .loading-review-page .override-panel label {
+      display: block;
+      margin-top: 12px;
+      color: #4b5563;
+      font-size: 0.84rem;
+      font-weight: 800;
+    }
+
+    .loading-review-page .override-panel input,
+    .loading-review-page .override-panel textarea {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      margin-top: 6px;
+      padding: 10px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #1f2937;
+      font: inherit;
+    }
+
+    .loading-review-page .override-panel textarea {
+      min-height: 82px;
+      resize: vertical;
+    }
+
+    .loading-review-page .override-panel input:focus,
+    .loading-review-page .override-panel textarea:focus {
+      border-color: #c99d00;
+      outline: 3px solid rgba(201, 157, 0, 0.18);
+    }
+
+    .loading-review-page .loading-review-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    .loading-review-page .loading-review-actions .btn {
+      display: inline-flex;
+      min-height: 46px;
+      padding: 11px 18px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-decoration: none;
+    }
+
+    .loading-review-page .loading-review-actions .btn-secondary {
+      border-color: #cbd5e1;
+      background: #ffffff;
+      color: #334155;
+    }
+
+    .loading-review-page .loading-review-actions .btn-secondary:hover {
+      background: #f1f5f9;
+    }
+
+    .loading-review-page .loading-review-actions .btn-warning {
+      border-color: #bc9300;
+      background: #d8ad00;
+      color: #1f2937;
+    }
+
+    .loading-review-page .loading-review-actions .btn-warning:hover {
+      background: #c89f00;
+    }
+
+    .loading-review-page .loading-review-actions .btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    .loading-review-page .confirm-dialog {
+      width: min(100% - 32px, 470px);
+      padding: 0;
+      border: 0;
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: 0 18px 55px rgba(15, 23, 42, 0.28);
+    }
+
+    .loading-review-page .confirm-dialog::backdrop {
+      background: rgba(15, 23, 42, 0.55);
+    }
+
+    .loading-review-page .confirm-dialog form {
+      padding: 22px;
+    }
+
+    .loading-review-page .confirm-dialog h2 {
+      margin: 0 0 10px;
+      color: #1f2937;
+      font-size: 1.25rem;
+    }
+
+    .loading-review-page .confirm-dialog p {
+      margin: 0;
+      color: #475569;
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }
+
+    .loading-review-page .confirm-dialog .loading-review-actions {
+      margin-top: 20px;
+    }
+
+    @media (max-width: 640px) {
+      .loading-review-page .loading-review-shell {
+        width: min(100% - 20px, 980px);
+        padding-top: 14px;
+      }
+
+      .loading-review-page .loading-review-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .loading-review-page .loading-review-card {
+        padding: 15px;
+      }
+
+      .loading-review-page .loading-review-meta {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+
+      .loading-review-page .loading-review-actions {
+        flex-direction: column;
+      }
+
+      .loading-review-page .loading-review-actions .btn {
+        width: 100%;
+      }
+    }
+  </style>
 </head>
+
 <body class="loading-review-page">
-  <main class="worker-shell">
-    <header class="worker-header">
-      <a class="back-link" href="/">← Back to scanner</a>
-      <h1>Loading Review</h1>
+  <main class="loading-review-shell">
+    <header class="loading-review-header">
+      <h1 class="loading-review-title">Loading Review</h1>
+      <a class="loading-back-link" href="/">← Back to scanner</a>
     </header>
 
-    <section class="card">
-      <div id="reviewStatus" class="status-message">Loading draft…</div>
+    <section class="loading-review-card">
+      <div id="reviewStatus">Loading draft…</div>
 
       <div class="loading-review-meta">
-        <div><span>Source</span><strong id="reviewSource">—</strong></div>
-        <div><span>Destination</span><strong>LOADING</strong></div>
-        <div><span>HUs</span><strong id="reviewCount">0</strong></div>
+        <div>
+          <span>Source</span>
+          <strong id="reviewSource">—</strong>
+        </div>
+        <div>
+          <span>Destination</span>
+          <strong>LOADING</strong>
+        </div>
+        <div>
+          <span>HUs</span>
+          <strong id="reviewCount">0</strong>
+        </div>
       </div>
 
-      <div class="table-wrap">
-        <table>
+      <div class="loading-review-table-wrap">
+        <table class="loading-review-table">
           <thead>
             <tr>
               <th>#</th>
@@ -40,28 +412,42 @@
       <div id="overridePanel" class="override-panel" hidden>
         <h2>Supervisor approval required</h2>
         <p>
-          One or more HUs are missing from warehouse records. The server will
+          One or more HUs are missing from warehouse records. The system will
           create a traceable STOCK IN followed by STOCK OUT for those HUs only.
         </p>
 
-        <label>
+        <label for="supervisorPin">
           Supervisor PIN
-          <input id="supervisorPin" type="password" inputmode="numeric" autocomplete="off">
+          <input
+            id="supervisorPin"
+            type="password"
+            inputmode="numeric"
+            autocomplete="off"
+          >
         </label>
 
-        <label>
+        <label for="overrideReason">
           Reason
-          <textarea id="overrideReason" rows="3" maxlength="500"
-            placeholder="Why are these HUs missing from warehouse records?"></textarea>
+          <textarea
+            id="overrideReason"
+            rows="3"
+            maxlength="500"
+            placeholder="Why are these HUs missing from warehouse records?"
+          ></textarea>
         </label>
       </div>
 
-      <div class="review-actions">
+      <div class="loading-review-actions">
         <a class="btn btn-secondary" href="/">Back and edit</a>
         <button id="reviewAgainButton" class="btn btn-secondary" type="button">
           Review again
         </button>
-        <button id="confirmLoadingButton" class="btn btn-warning" type="button" disabled>
+        <button
+          id="confirmLoadingButton"
+          class="btn btn-warning"
+          type="button"
+          disabled
+        >
           Confirm and post loading
         </button>
       </div>
@@ -74,9 +460,14 @@
       <p id="confirmDialogText">
         This will post the reviewed handling units to LOADING.
       </p>
-      <div class="review-actions">
+
+      <div class="loading-review-actions">
         <button class="btn btn-secondary" value="cancel">Cancel</button>
-        <button id="finalPostButton" class="btn btn-warning" value="default">
+        <button
+          id="finalPostButton"
+          class="btn btn-warning"
+          value="default"
+        >
           Post loading
         </button>
       </div>
