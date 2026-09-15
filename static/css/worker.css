@@ -345,3 +345,64 @@ input,textarea,select{font-size:16px}
   font-size: 1rem;
   font-weight: 700;
 }
+
+.loading-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.loading-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-switch-track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 48px;
+  height: 28px;
+  padding: 3px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #9e9e9e;
+  transition: background 0.18s ease;
+}
+
+.loading-switch-thumb {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  transform: translateX(0);
+  transition: transform 0.18s ease;
+}
+
+.loading-switch input:checked + .loading-switch-track {
+  background: #d4aa00;
+}
+
+.loading-switch input:checked + .loading-switch-track .loading-switch-thumb {
+  transform: translateX(20px);
+}
+
+.loading-switch input:focus-visible + .loading-switch-track {
+  outline: 3px solid rgba(21, 101, 192, 0.35);
+  outline-offset: 3px;
+}
+
+.loading-switch-label {
+  min-width: 28px;
+  color: #3a3a3a;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
