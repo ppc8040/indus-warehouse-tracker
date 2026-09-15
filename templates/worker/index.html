@@ -759,9 +759,12 @@
       <p>Queue HUs for one confirmed outbound loading batch.</p>
     </div>
 
-    <label class="loading-switch">
+    <label class="loading-switch" for="loadingModeToggle">
       <input id="loadingModeToggle" type="checkbox">
-      <span>OFF</span>
+      <span class="loading-switch-track" aria-hidden="true">
+        <span class="loading-switch-thumb"></span>
+      </span>
+      <span class="loading-switch-label" id="loadingModeLabel">OFF</span>
     </label>
   </div>
 
