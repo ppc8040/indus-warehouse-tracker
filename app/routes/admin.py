@@ -19,8 +19,10 @@ import logging
 from datetime import datetime, timezone
 from functools import wraps
 import csv
-import io
-
+from io import BytesIO
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from flask import Response
 from app.services.db_client import get_recent_loadings, get_loading_items
 
@@ -59,26 +61,31 @@ def _auth_required(f):
 # ---------------------------------------------------------------------------
 
 @admin_bp.route("/api/loadings/export", methods=["GET"])
-@_auth_required
-def export_loadings_csv():
-    status = request.args.get("status", "").strip().upper()
+def export_loadings():
+    """
+    Download the currently filtered loading audit data as a formatted XLSX file.
 
-    allowed_statuses = {"", "POSTING", "COMPLETED", "FAILED"}
-    if status not in allowed_statuses:
+    Handling units are deliberately written as Excel text so Excel never
+    converts long HU numbers into scientific notation or rounds them.
+    """
+    status = (request.args.get("status") or "").strip().upper()
+
+    try:
+        loadings = get_recent_loadings(limit=500, status=status)
+    except Exception as exc:
+        logger.exception("Could not export loadings")
         return jsonify({
             "success": False,
-            "message": "Invalid loading status filter."
-        }), 400
+            "message": f"Could not prepare loading export: {exc}",
+        }), 500
 
-    loadings = get_recent_loadings(limit=5000, status=status)
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Loadings"
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-
-    writer.writerow([
+    headers = [
         "Loading ID",
-        "Idempotency Key",
-        "Loading Status",
+        "Status",
         "Created At",
         "Completed At",
         "Source Location",
@@ -95,51 +102,51 @@ def export_loadings_csv():
         "Customer Part",
         "Pallet Quantity",
         "Resolution",
-        "Fallback Stock IN Event ID",
-        "Stock OUT Event ID",
-        "Item Posted At",
-        "Item Source",
-        "Item Destination",
-    ])
+        "Fallback STOCK_IN Event",
+        "STOCK_OUT Event",
+    ]
+
+    worksheet.append(headers)
+
+    header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
+    )
+
+    thin_border = Border(
+        left=Side(style="thin", color="D9E2F3"),
+        right=Side(style="thin", color="D9E2F3"),
+        top=Side(style="thin", color="D9E2F3"),
+        bottom=Side(style="thin", color="D9E2F3"),
+    )
+
+    alternate_fill = PatternFill(fill_type="solid", fgColor="F7FBFF")
+    override_fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
+
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    row_number = 2
 
     for loading in loadings:
-        loading_id = str(loading["loading_id"])
+        loading_id = loading.get("loading_id", "")
         items = get_loading_items(loading_id)
 
         if not items:
-            writer.writerow([
-                loading_id,
-                loading.get("idempotency_key", ""),
-                loading.get("status", ""),
-                loading.get("created_at", ""),
-                loading.get("completed_at", ""),
-                loading.get("source_location", ""),
-                loading.get("destination", ""),
-                loading.get("shipment_reference", ""),
-                loading.get("operator_id", ""),
-                loading.get("device_id", ""),
-                "YES" if loading.get("supervisor_override") else "NO",
-                loading.get("override_reason", ""),
-                loading.get("item_count", ""),
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-            ])
-            continue
+            items = [{}]
 
         for item in items:
-            writer.writerow([
-                loading_id,
-                loading.get("idempotency_key", ""),
-                loading.get("status", ""),
+            handling_unit = str(item.get("handling_unit") or "")
+
+            row = [
+                str(loading_id or ""),
+                str(loading.get("status") or ""),
                 loading.get("created_at", ""),
                 loading.get("completed_at", ""),
                 loading.get("source_location", ""),
@@ -151,26 +158,90 @@ def export_loadings_csv():
                 loading.get("override_reason", ""),
                 loading.get("item_count", ""),
                 item.get("sequence_no", ""),
-                item.get("handling_unit", ""),
+                handling_unit,
                 item.get("indus_part", ""),
                 item.get("customer_part", ""),
                 item.get("pallet_qty", ""),
                 item.get("resolution", ""),
                 item.get("stock_in_event_id", ""),
                 item.get("stock_out_event_id", ""),
-                item.get("stock_out_timestamp", ""),
-                item.get("source_location", ""),
-                item.get("destination", ""),
-            ])
+            ]
 
-    filename = "indus_loading_audit.csv"
+            worksheet.append(row)
 
-    return Response(
-        "\ufeff" + output.getvalue(),
-        mimetype="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        },
+            for cell in worksheet[row_number]:
+                cell.border = thin_border
+                cell.alignment = Alignment(
+                    vertical="center",
+                    wrap_text=True,
+                )
+
+            if row_number % 2 == 0:
+                for cell in worksheet[row_number]:
+                    cell.fill = alternate_fill
+
+            if loading.get("supervisor_override"):
+                worksheet.cell(row=row_number, column=10).fill = override_fill
+                worksheet.cell(row=row_number, column=11).fill = override_fill
+
+            hu_cell = worksheet.cell(row=row_number, column=14)
+            hu_cell.value = handling_unit
+            hu_cell.number_format = "@"
+            hu_cell.alignment = Alignment(
+                horizontal="left",
+                vertical="center",
+            )
+
+            row_number += 1
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    worksheet.sheet_view.showGridLines = False
+
+    column_widths = {
+        1: 38,
+        2: 14,
+        3: 21,
+        4: 21,
+        5: 16,
+        6: 16,
+        7: 30,
+        8: 16,
+        9: 20,
+        10: 20,
+        11: 42,
+        12: 18,
+        13: 15,
+        14: 24,
+        15: 16,
+        16: 22,
+        17: 16,
+        18: 25,
+        19: 24,
+        20: 20,
+    }
+
+    for column_index, width in column_widths.items():
+        worksheet.column_dimensions[
+            get_column_letter(column_index)
+        ].width = width
+
+    worksheet.row_dimensions[1].height = 34
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    filename = "indus_loading_audit.xlsx"
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype=(
+            "application/"
+            "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
     )
 
 @admin_bp.route('/login', methods=['GET', 'POST'])
