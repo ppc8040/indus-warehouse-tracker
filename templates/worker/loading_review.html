@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Review Loading</title>
+  <link rel="stylesheet" href="/static/css/worker.css">
+</head>
+<body class="loading-review-page">
+  <main class="worker-shell">
+    <header class="worker-header">
+      <a class="back-link" href="/">← Back to scanner</a>
+      <h1>Loading Review</h1>
+    </header>
+
+    <section class="card">
+      <div id="reviewStatus" class="status-message">Loading draft…</div>
+
+      <div class="loading-review-meta">
+        <div><span>Source</span><strong id="reviewSource">—</strong></div>
+        <div><span>Destination</span><strong>LOADING</strong></div>
+        <div><span>HUs</span><strong id="reviewCount">0</strong></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Handling Unit</th>
+              <th>Part</th>
+              <th>Qty</th>
+              <th>Server review</th>
+            </tr>
+          </thead>
+          <tbody id="reviewItems"></tbody>
+        </table>
+      </div>
+
+      <div id="overridePanel" class="override-panel" hidden>
+        <h2>Supervisor approval required</h2>
+        <p>
+          One or more HUs are missing from warehouse records. The server will
+          create a traceable STOCK IN followed by STOCK OUT for those HUs only.
+        </p>
+
+        <label>
+          Supervisor PIN
+          <input id="supervisorPin" type="password" inputmode="numeric" autocomplete="off">
+        </label>
+
+        <label>
+          Reason
+          <textarea id="overrideReason" rows="3" maxlength="500"
+            placeholder="Why are these HUs missing from warehouse records?"></textarea>
+        </label>
+      </div>
+
+      <div class="review-actions">
+        <a class="btn btn-secondary" href="/">Back and edit</a>
+        <button id="reviewAgainButton" class="btn btn-secondary" type="button">
+          Review again
+        </button>
+        <button id="confirmLoadingButton" class="btn btn-warning" type="button" disabled>
+          Confirm and post loading
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog">
+      <h2>Confirm final loading</h2>
+      <p id="confirmDialogText">
+        This will post the reviewed handling units to LOADING.
+      </p>
+      <div class="review-actions">
+        <button class="btn btn-secondary" value="cancel">Cancel</button>
+        <button id="finalPostButton" class="btn btn-warning" value="default">
+          Post loading
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/js/loading_review.js"></script>
+</body>
+</html>
