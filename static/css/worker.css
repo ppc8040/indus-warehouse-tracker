@@ -755,3 +755,7 @@ input,textarea,select{font-size:16px}
     justify-content: center;
   }
 }
+
+#normalMovementActions[hidden] {
+  display: none !important;
+}
