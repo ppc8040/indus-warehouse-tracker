@@ -317,7 +317,7 @@ async function _doSAPLookup(hu) {
      scanned.handling_unit = data.handling_unit;
      scanned.indus_part    = data.indus_part;
      scanned.pallet_qty    = data.pallet_qty;
-     scanned.customer_part = data.customer_part || '';
+     scanned.customer_part = String(data.customer_part || '').trim();
      scanned.hu_batch         = data.hu_batch         || '';
      scanned.hu_creation_date = data.hu_creation_date || '';
      _isNotFoundOverride   = false;
