@@ -730,3 +730,46 @@ def db_transaction():
     """Use one pooled connection for an atomic transaction."""
     with _get_conn() as connection:
         yield connection
+
+def get_customer_part_by_indus_part(indus_part: str) -> str:
+    """
+    Return the customer-part / customer-code mapping for an Indus material.
+
+    The material_master table is the authoritative local mapping source.
+    An empty string is returned when there is no matching material or when
+    the mapping is intentionally blank.
+    """
+    material = str(indus_part or "").strip().upper()
+
+    if not material:
+        return ""
+
+    try:
+        with db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT customer_part
+                    FROM material_master
+                    WHERE UPPER(TRIM(indus_part)) = %s
+                    LIMIT 1
+                    """,
+                    (material,),
+                )
+
+                row = cursor.fetchone()
+
+                if not row:
+                    return ""
+
+                if isinstance(row, dict):
+                    return str(row.get("customer_part") or "").strip()
+
+                return str(row[0] or "").strip()
+
+    except Exception:
+        logger.exception(
+            "Could not look up customer part for Indus part %s",
+            material,
+        )
+        return ""
