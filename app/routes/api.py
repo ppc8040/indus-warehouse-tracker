@@ -370,7 +370,10 @@ def lookup_hu():
 
     # ── Check pallet_status in Postgres first ──
     try:
-        from app.services.db_client import get_pallet_status
+        from app.services.db_client import (
+            get_customer_part_by_indus_part,
+            get_pallet_status,
+        )
         existing = get_pallet_status(hu)
         if existing:
             stored_part = str(existing.get('indus_part', '') or '').strip().upper()
@@ -383,10 +386,13 @@ def lookup_hu():
                     "using stored values (part=%s qty=%s)",
                     hu, stored_part, stored_qty,
                 )
+                customer_part = get_customer_part_by_indus_part(stored_part)
+                
                 return jsonify({
                     "success": True,
                     "handling_unit": hu,
                     "indus_part": stored_part,
+                    "customer_part": customer_part,
                     "pallet_qty": stored_qty,
                     "current_status": existing.get('current_status', ''),
                     "last_location": existing.get('last_location', ''),
@@ -404,18 +410,25 @@ def lookup_hu():
 
     # ── SAP lookup (fallback when HU not yet in pallet_status) ──
     try:
+        from app.services.db_client import get_customer_part_by_indus_part
         from app.services.sap_client import lookup_hu as sap_lookup
+    
         result = sap_lookup(hu)
+    
+        indus_part = str(result.get("indus_part") or "").strip().upper()
+        customer_part = get_customer_part_by_indus_part(indus_part)
+    
         return jsonify({
             "success": True,
             "handling_unit": result["handling_unit"],
-            "indus_part": result["indus_part"],
+            "indus_part": indus_part,
+            "customer_part": customer_part,
             "pallet_qty": result["pallet_qty"],
             "current_status": "",
             "last_location": "",
             "last_movement_type": "",
             "hu_batch": result.get("hu_batch") or "",
-            "hu_creation_date": result.get("hu_creation_date") or "",  # ← was hardcoded ""
+            "hu_creation_date": result.get("hu_creation_date") or "",
             "source": "sap",
         }), 200
     except Exception as exc:
