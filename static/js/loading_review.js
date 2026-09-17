@@ -72,17 +72,18 @@
   function renderDraft() {
     sourceEl.textContent = draft?.source_location || '—';
     countEl.textContent = String(draft?.items?.length || 0);
-
+  
     if (!draft || !Array.isArray(draft.items) || draft.items.length === 0) {
-      itemsEl.innerHTML = '<tr><td colspan="5">No loading draft found.</td></tr>';
+      itemsEl.innerHTML = '<tr><td colspan="6">No loading draft found.</td></tr>';
       confirmButton.disabled = true;
       return;
     }
-
+  
     itemsEl.innerHTML = draft.items.map((item, index) => `
       <tr>
         <td>${index + 1}</td>
         <td>${escapeHtml(item.handling_unit)}</td>
+        <td>${escapeHtml(item.customer_part || '—')}</td>
         <td>${escapeHtml(item.indus_part)}</td>
         <td>${escapeHtml(item.pallet_qty)}</td>
         <td id="review-row-${index}">Not reviewed</td>
