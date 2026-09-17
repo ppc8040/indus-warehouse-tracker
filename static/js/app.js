@@ -313,26 +313,36 @@ async function _doSAPLookup(hu) {
 
     const data = await resp.json();
 
-    if (data.success) {
-      scanned.handling_unit = data.handling_unit;
-      scanned.indus_part    = data.indus_part;
-      scanned.pallet_qty    = data.pallet_qty;
-      scanned.customer_part = '';
-      scanned.hu_batch         = data.hu_batch         || '';
-      scanned.hu_creation_date = data.hu_creation_date || '';
-      _isNotFoundOverride   = false;
-      _nfoSupervisorPin     = '';
-
-      _lookupLastLocation  = data.last_location    || '';
-      _lookupCurrentStatus = data.current_status   || '';
-
-      updateScanDisplay();
-
-      const sourceLabel = data.source === 'pallet_status' ? 'Warehouse record' : 'SAP';
-      toast(`Found (${sourceLabel}): ${data.indus_part} \u00d7 ${data.pallet_qty}`, 'ok', 3000);
-
-      const proceedBtn = document.getElementById('btnProceed');
-      if (proceedBtn) proceedBtn.disabled = false;
+   if (data.success) {
+     scanned.handling_unit = data.handling_unit;
+     scanned.indus_part    = data.indus_part;
+     scanned.pallet_qty    = data.pallet_qty;
+     scanned.customer_part = data.customer_part || '';
+     scanned.hu_batch         = data.hu_batch         || '';
+     scanned.hu_creation_date = data.hu_creation_date || '';
+     _isNotFoundOverride   = false;
+     _nfoSupervisorPin     = '';
+   
+     _lookupLastLocation  = data.last_location    || '';
+     _lookupCurrentStatus = data.current_status   || '';
+   
+     updateScanDisplay();
+   
+     const sourceLabel = data.source === 'pallet_status' ? 'Warehouse record' : 'SAP';
+     toast(`Found (${sourceLabel}): ${data.indus_part} × ${data.pallet_qty}`, 'ok', 3000);
+   
+     /*
+      * In Loading Mode, a successfully resolved HU is queued immediately.
+      * addCurrentScanToLoadingDraft() retains the existing protections:
+      * source validation, duplicate prevention, source locking, and reset/focus.
+      */
+     if (loadingModeEnabled()) {
+       addCurrentScanToLoadingDraft();
+       return;
+     }
+   
+     const proceedBtn = document.getElementById('btnProceed');
+     if (proceedBtn) proceedBtn.disabled = false;
 
     } else if (data.error_code === 'HU_NOT_FOUND') {
       _lookupLastLocation  = '';
