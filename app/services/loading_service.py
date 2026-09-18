@@ -21,7 +21,6 @@ from flask import current_app
 from app.services.db_client import DbError, db_transaction
 from app.utils.validators import (
     sanitize_text,
-    validate_customer_part,
     validate_handling_unit,
     validate_indus_part,
     validate_pallet_qty,
@@ -98,13 +97,10 @@ def _normalise_items(raw_items) -> tuple[list, list]:
             errors.append(f"Item {index} / HU {hu}: {part_or_message}")
             continue
 
-        ok_customer, customer_or_message = validate_customer_part(
+        customer_part = _text(
             raw.get("customer_part", ""),
-            part_or_message,
+            max_len=500,
         )
-        if not ok_customer:
-            errors.append(f"Item {index} / HU {hu}: {customer_or_message}")
-            continue
 
         ok_qty, qty_or_message = validate_pallet_qty(raw.get("pallet_qty", ""))
         if not ok_qty:
@@ -120,7 +116,7 @@ def _normalise_items(raw_items) -> tuple[list, list]:
                 "sequence_no": index,
                 "handling_unit": hu,
                 "indus_part": part_or_message,
-                "customer_part": customer_or_message,
+                "customer_part": customer_part,
                 "pallet_qty": int(qty_or_message),
             }
         )
