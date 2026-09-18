@@ -733,45 +733,25 @@ def db_transaction():
 
 def get_customer_part_by_indus_part(indus_part: str) -> str:
     """
-    Return the customer code mapped to an Indus part.
+    Return the customer code for an Indus part using the same Open Order Report
+    mapping used by the admin dashboard.
 
-    Primary source: the customer_part already stored in the movements
-    table (identical to what the admin dashboard 'Customer' column shows).
-    Fallback: the Open Order Report workbook via admin._get_oor_codes_safe().
-    Returns "" when neither source has a value — callers must treat the
-    customer code as optional and never block a movement on it.
+    This is display-only. It always returns an empty string on a lookup failure
+    and must never prevent scanning, loading review, or posting.
     """
     part = (indus_part or "").strip().upper()
     if not part:
         return ""
 
-    # 1) Primary — read the value stored on prior movements for this part.
     try:
-        sql = """
-            SELECT customer_part
-            FROM movements
-            WHERE UPPER(indus_part) = %(part)s
-              AND COALESCE(customer_part, '') <> ''
-            ORDER BY timestamp_utc DESC, id DESC
-            LIMIT 1
-        """
-        with _get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, {"part": part})
-                row = cur.fetchone()
-        if row:
-            value = str(row.get("customer_part", "") or "").strip()
-            if value:
-                return value
-    except Exception as exc:
-        logger.warning("customer-code DB lookup failed for %s: %s", part, exc)
+        from app.routes.admin import get_oor_customer_codes_safe
 
-    # 2) Fallback — Open Order Report workbook (5-min cached).
-    try:
-        from app.routes.admin import _get_oor_codes_safe
-        mapping = _get_oor_codes_safe() or {}
+        customer_codes = get_oor_customer_codes_safe()
+        return str(customer_codes.get(part, "") or "").strip()
     except Exception as exc:
-        logger.warning("customer-code OOR lookup unavailable: %s", exc)
+        logger.warning(
+            "Customer-code lookup failed for indus_part=%s: %s",
+            part,
+            exc,
+        )
         return ""
-
-    return str(mapping.get(part, "")).strip()
