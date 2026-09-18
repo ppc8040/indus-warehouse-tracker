@@ -48,6 +48,20 @@
     statusEl.className = `status-message ${type}`.trim();
   }
 
+  function getServerError(result, fallback) {
+    const errors = Array.isArray(result?.data?.errors)
+      ? result.data.errors.filter(
+          message =>
+            typeof message === 'string' &&
+            message.trim()
+        )
+      : [];
+
+    return errors.length
+      ? errors.join(' • ')
+      : (result?.message || fallback);
+  }
+  
   function buildPayload(includeSupervisor) {
     return {
       idempotency_key: draft.idempotency_key,
@@ -144,7 +158,10 @@
       const result = await response.json();
 
       if (!response.ok && !result.data?.items) {
-        setStatus(result.message || 'Loading review failed.', 'error');
+        setStatus(
+          getServerError(result, 'Loading review failed.'),
+          'error'
+        );
         return;
       }
 
@@ -192,7 +209,13 @@
       const result = await response.json();
 
       if (!response.ok || !result.success) {
-        setStatus(result.message || 'Could not post loading. The draft was kept.', 'error');
+        setStatus(
+          getServerError(
+            result,
+            'Could not post loading. The draft was kept.'
+          ),
+          'error'
+        );
         return;
       }
 
