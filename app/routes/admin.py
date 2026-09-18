@@ -480,6 +480,32 @@ def _fetch_oor_customer_codes():
 
     return {k: ', '.join(sorted(v)) for k, v in result.items()}
 
+def get_oor_customer_codes_safe() -> dict:
+    """
+    Return the cached Indus Part -> Customer Code mapping from the Open Order
+    Report. A lookup failure returns the most recent cache, or {} if no cache
+    exists. This must never interrupt warehouse scanning or loading.
+    """
+    now = time.time()
+
+    if (
+        _oor_cache["data"] is not None
+        and (now - _oor_cache["ts"]) < _OOR_CACHE_TTL
+    ):
+        return _oor_cache["data"]
+
+    try:
+        codes = _fetch_oor_customer_codes()
+        _oor_cache["data"] = codes
+        _oor_cache["ts"] = now
+        return codes
+    except Exception as exc:
+        logger.warning(
+            "OOR customer-code lookup failed; using cached values: %s",
+            exc,
+        )
+        return _oor_cache["data"] or {}
+
 @admin_bp.route('/api/oor-customer-codes')
 @_auth_required
 def api_oor_customer_codes():
