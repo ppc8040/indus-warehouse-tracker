@@ -46,6 +46,10 @@ Security:
 import re
 import logging
 from datetime import datetime, timezone
+from app.services.sap_client import (
+    get_customer_part,
+    lookup_hu as sap_lookup,
+)
 
 from flask import Blueprint, request, jsonify, current_app
 from app.services.loading_service import post_loading, review_loading
@@ -377,28 +381,36 @@ def lookup_hu():
         existing = get_pallet_status(hu)
         if existing:
             stored_part = str(existing.get('indus_part', '') or '').strip().upper()
-            stored_qty  = str(existing.get('pallet_qty', '') or '').strip()
+            stored_qty = str(existing.get('pallet_qty', '') or '').strip()
+        
             if stored_qty.endswith('.0') and stored_qty[:-2].isdigit():
                 stored_qty = stored_qty[:-2]
+        
             if stored_part and stored_qty and stored_qty != '0':
+                customer_part = get_customer_part(stored_part)
+        
                 logger.info(
                     "HU %s found in pallet_status (Postgres) — "
-                    "using stored values (part=%s qty=%s)",
-                    hu, stored_part, stored_qty,
+                    "using stored values (part=%s, customer_part=%s, qty=%s)",
+                    hu,
+                    stored_part,
+                    customer_part or "",
+                    stored_qty,
                 )
-                customer_part = get_customer_part_by_indus_part(stored_part)
-                
+        
                 return jsonify({
                     "success": True,
                     "handling_unit": hu,
                     "indus_part": stored_part,
-                    "customer_part": customer_part,
+                    "customer_part": customer_part or "",
                     "pallet_qty": stored_qty,
                     "current_status": existing.get('current_status', ''),
                     "last_location": existing.get('last_location', ''),
                     "last_movement_type": existing.get('last_movement_type', ''),
                     "hu_batch": existing.get('hu_batch') or '',
-                    "hu_creation_date": str(existing.get('hu_creation_date_dubai') or ''),
+                    "hu_creation_date": str(
+                        existing.get('hu_creation_date_dubai') or ''
+                    ),
                     "source": "pallet_status",
                 }), 200
     except Exception as ps_exc:
@@ -410,19 +422,16 @@ def lookup_hu():
 
     # ── SAP lookup (fallback when HU not yet in pallet_status) ──
     try:
-        from app.services.db_client import get_customer_part_by_indus_part
-        from app.services.sap_client import lookup_hu as sap_lookup
-    
         result = sap_lookup(hu)
     
         indus_part = str(result.get("indus_part") or "").strip().upper()
-        customer_part = get_customer_part_by_indus_part(indus_part)
+        customer_part = get_customer_part(indus_part)
     
         return jsonify({
             "success": True,
             "handling_unit": result["handling_unit"],
             "indus_part": indus_part,
-            "customer_part": customer_part,
+            "customer_part": customer_part or "",
             "pallet_qty": result["pallet_qty"],
             "current_status": "",
             "last_location": "",
