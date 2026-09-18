@@ -1039,6 +1039,8 @@ async function loadLoadings() {
         statusText === 'FAILED' ? tag('FAILED', 'terr') :
         tag(statusText || 'UNKNOWN', 'twarn');
 
+      const safeId = esc(row.loading_id);
+
       html += `
         <tr>
           <td>${fmtTime(row.created_at)}</td>
@@ -1051,9 +1053,14 @@ async function loadLoadings() {
           <td>${fmtTime(row.completed_at)}</td>
           <td>
             <button class="btn btn-primary"
-              onclick="loadLoadingDetail('${row.loading_id}')">
+              onclick="loadLoadingDetail('${safeId}')">
               View
             </button>
+          </td>
+        </tr>
+        <tr id="detail-row-${safeId}" style="display:none">
+          <td colspan="9" style="padding:0;background:var(--bg)">
+            <div id="detail-cell-${safeId}"></div>
           </td>
         </tr>
       `;
@@ -1085,7 +1092,23 @@ function exportLoadings() {
 }
 
 async function loadLoadingDetail(loadingId) {
-  const el = document.getElementById('loading-detail-panel');
+  const safeId   = esc(loadingId);
+  const detailRow = document.getElementById('detail-row-' + safeId);
+  const el        = document.getElementById('detail-cell-' + safeId);
+  if (!detailRow || !el) return;
+
+  // Toggle: clicking View again on the same open row collapses it
+  if (detailRow.style.display !== 'none' && el.dataset.loaded === '1') {
+    detailRow.style.display = 'none';
+    return;
+  }
+
+  // Collapse any other open detail rows first
+  document.querySelectorAll('[id^="detail-row-"]').forEach(r => {
+    if (r !== detailRow) r.style.display = 'none';
+  });
+
+  detailRow.style.display = '';
   el.innerHTML = '<div class="empty">Loading audit detail…</div>';
 
   try {
@@ -1097,15 +1120,16 @@ async function loadLoadingDetail(loadingId) {
     const items = data.items || [];
 
     let html = `
-      <div class="chart-card">
+      <div class="chart-card" style="margin:8px">
         <h3>Loading Detail</h3>
         <div class="recon-meta">
-          <span>Load ID: <strong>${header.loading_id || '—'}</strong></span>
-          <span>Source: <strong>${header.source_location || '—'}</strong></span>
-          <span>Destination: <strong>${header.destination || '—'}</strong></span>
-          <span>Operator: <strong>${header.operator_id || '—'}</strong></span>
+          <span>Load ID: <strong>${esc(header.loading_id) || '—'}</strong></span>
+          <span>Source: <strong>${esc(header.source_location) || '—'}</strong></span>
+          <span>Destination: <strong>${esc(header.destination) || '—'}</strong></span>
+          <span>Reference ID: <strong>${esc(header.shipment_reference) || '—'}</strong></span>
+          <span>Operator: <strong>${esc(header.operator_id) || '—'}</strong></span>
           <span>Override: <strong>${header.supervisor_override ? 'YES' : 'NO'}</strong></span>
-          <span>Reason: <strong>${header.override_reason || '—'}</strong></span>
+          <span>Reason: <strong>${esc(header.override_reason) || '—'}</strong></span>
         </div>
 
         <div class="tbl-wrap">
@@ -1115,6 +1139,7 @@ async function loadLoadingDetail(loadingId) {
                 <th>#</th>
                 <th>HU</th>
                 <th>Part</th>
+                <th>Customer Code</th>
                 <th>Qty</th>
                 <th>Resolution</th>
                 <th>Fallback IN Event</th>
@@ -1137,14 +1162,15 @@ async function loadLoadingDetail(loadingId) {
       html += `
         <tr>
           <td>${item.sequence_no || '—'}</td>
-          <td><strong>${item.handling_unit || '—'}</strong></td>
-          <td>${item.indus_part || '—'}</td>
+          <td><strong>${esc(item.handling_unit) || '—'}</strong></td>
+          <td>${esc(item.indus_part) || '—'}</td>
+          <td style="color:var(--muted)">${esc(item.customer_part) || '—'}</td>
           <td>${item.pallet_qty || '—'}</td>
           <td>${resolutionTag}</td>
-          <td>${item.stock_in_event_id || '—'}</td>
-          <td>${item.stock_out_event_id || '—'}</td>
-          <td>${item.source_location || '—'}</td>
-          <td>${item.destination || 'LOADING'}</td>
+          <td>${esc(item.stock_in_event_id) || '—'}</td>
+          <td>${esc(item.stock_out_event_id) || '—'}</td>
+          <td>${esc(item.source_location) || '—'}</td>
+          <td>${esc(item.destination) || 'LOADING'}</td>
           <td>${fmtTime(item.stock_out_timestamp)}</td>
         </tr>
       `;
@@ -1158,9 +1184,11 @@ async function loadLoadingDetail(loadingId) {
     `;
 
     el.innerHTML = html;
+    el.dataset.loaded = '1';
     _makeTableSelectable(el);
   } catch (error) {
     console.error('loadLoadingDetail', error);
+    el.dataset.loaded = '';
     el.innerHTML = '<div class="empty">Failed to load the selected loading audit record.</div>';
   }
 }
