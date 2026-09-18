@@ -46,10 +46,8 @@ Security:
 import re
 import logging
 from datetime import datetime, timezone
-from app.services.sap_client import (
-    get_customer_part,
-    lookup_hu as sap_lookup,
-)
+from app.services.sap_client import lookup_hu as sap_lookup
+from app.services.db_client import get_customer_part_by_indus_part
 
 from flask import Blueprint, request, jsonify, current_app
 from app.services.loading_service import post_loading, review_loading
@@ -387,7 +385,7 @@ def lookup_hu():
                 stored_qty = stored_qty[:-2]
         
             if stored_part and stored_qty and stored_qty != '0':
-                customer_part = get_customer_part(stored_part)
+                customer_part = get_customer_part_by_indus_part(stored_part)
         
                 logger.info(
                     "HU %s found in pallet_status (Postgres) — "
@@ -425,7 +423,7 @@ def lookup_hu():
         result = sap_lookup(hu)
     
         indus_part = str(result.get("indus_part") or "").strip().upper()
-        customer_part = get_customer_part(indus_part)
+        customer_part = get_customer_part_by_indus_part(indus_part)
     
         return jsonify({
             "success": True,
