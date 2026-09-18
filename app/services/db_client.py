@@ -733,42 +733,23 @@ def db_transaction():
 
 def get_customer_part_by_indus_part(indus_part: str) -> str:
     """
-    Return the customer-part code mapped to an Indus material number.
+    Return the customer code(s) mapped to an Indus part.
 
-    material_master.material_number is the Indus part key.
-    material_master.customer_part is the customer code to show in Loading Review.
+    Source of truth: the Open Order Report workbook (col H = Indus Part,
+    col R = Customer Code), exposed via admin._get_oor_codes_safe(), which
+    is cached in-memory for 5 minutes. Returns "" when there is no match
+    or when the lookup source is unavailable — callers must treat customer
+    code as optional and never block a movement on it.
     """
-    material_number = str(indus_part or "").strip().upper()
-
-    if not material_number:
+    part = (indus_part or "").strip().upper()
+    if not part:
         return ""
 
     try:
-        with db_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT customer_part
-                    FROM material_master
-                    WHERE UPPER(TRIM(material_number)) = %s
-                    LIMIT 1
-                    """,
-                    (material_number,),
-                )
-
-                row = cursor.fetchone()
-
-                if not row:
-                    return ""
-
-                if isinstance(row, dict):
-                    return str(row.get("customer_part") or "").strip()
-
-                return str(row[0] or "").strip()
-
-    except Exception:
-        logger.exception(
-            "Could not look up customer part for material number %s",
-            material_number,
-        )
+        from app.routes.admin import _get_oor_codes_safe
+        mapping = _get_oor_codes_safe() or {}
+    except Exception as exc:
+        logger.warning("customer-code lookup unavailable: %s", exc)
         return ""
+
+    return str(mapping.get(part, "")).strip()
