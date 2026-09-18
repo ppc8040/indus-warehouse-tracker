@@ -733,15 +733,14 @@ def db_transaction():
 
 def get_customer_part_by_indus_part(indus_part: str) -> str:
     """
-    Return the customer-part / customer-code mapping for an Indus material.
+    Return the customer-part code mapped to an Indus material number.
 
-    The material_master table is the authoritative local mapping source.
-    An empty string is returned when there is no matching material or when
-    the mapping is intentionally blank.
+    material_master.material_number is the Indus part key.
+    material_master.customer_part is the customer code to show in Loading Review.
     """
-    material = str(indus_part or "").strip().upper()
+    material_number = str(indus_part or "").strip().upper()
 
-    if not material:
+    if not material_number:
         return ""
 
     try:
@@ -751,10 +750,10 @@ def get_customer_part_by_indus_part(indus_part: str) -> str:
                     """
                     SELECT customer_part
                     FROM material_master
-                    WHERE UPPER(TRIM(indus_part)) = %s
+                    WHERE UPPER(TRIM(material_number)) = %s
                     LIMIT 1
                     """,
-                    (material,),
+                    (material_number,),
                 )
 
                 row = cursor.fetchone()
@@ -769,7 +768,7 @@ def get_customer_part_by_indus_part(indus_part: str) -> str:
 
     except Exception:
         logger.exception(
-            "Could not look up customer part for Indus part %s",
-            material,
+            "Could not look up customer part for material number %s",
+            material_number,
         )
         return ""
