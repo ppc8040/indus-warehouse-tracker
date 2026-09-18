@@ -254,3 +254,30 @@ def lookup_hu_creation_date(handling_unit: str, warehouse: str = "1001") -> str 
     except Exception as exc:
         logger.warning("lookup_hu_creation_date failed for HU %s: %s", handling_unit, exc)
         return None
+
+def get_customer_part(customer_part_number, customer_number=None):
+    """
+    Retrieve a customer-part record from SAP.
+
+    Replace the entity set and filter field names below with the fields
+    exposed by your SAP OData service.
+    """
+    filters = [
+        f"CustomerPartNumber eq '{customer_part_number}'"
+    ]
+
+    if customer_number:
+        filters.append(f"Customer eq '{customer_number}'")
+
+    params = {
+        "$filter": " and ".join(filters),
+        "$top": 1,
+    }
+
+    response = sap_get(
+        "/YourCustomerPartEntitySet",
+        params=params,
+    )
+
+    results = response.get("value", [])
+    return results[0] if results else None
