@@ -33,6 +33,12 @@ from app.services.db_client import (
     _get_conn,
     _row_to_dict,
 )
+from flask import abort, current_app, send_file
+
+from app.services.shipment_export import (
+    ShipmentExportError,
+    build_shipment_export,
+)
 from app.services.db_client import (
     get_loading_header,
     get_loading_items,
@@ -1891,3 +1897,45 @@ def admin_loading_detail(loading_id):
         "header": header,
         "items": items,
     })
+
+@admin_bp.get(
+    "/loadings/<loading_id>/shipment-export"
+)
+@admin_required
+def export_loading_shipment(loading_id):
+    loading = get_loading_detail_for_admin(loading_id)
+
+    if not loading:
+        abort(404)
+
+    try:
+        workbook, filename = build_shipment_export(
+            loading
+        )
+    except ShipmentExportError as exc:
+        current_app.logger.warning(
+            "Shipment export rejected for loading %s: %s",
+            loading_id,
+            exc,
+        )
+        abort(422, description=str(exc))
+    except Exception:
+        current_app.logger.exception(
+            "Shipment export failed for loading %s",
+            loading_id,
+        )
+        abort(
+            500,
+            description="Could not create shipment export.",
+        )
+
+    return send_file(
+        workbook,
+        as_attachment=True,
+        download_name=filename,
+        mimetype=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        max_age=0,
+    )
