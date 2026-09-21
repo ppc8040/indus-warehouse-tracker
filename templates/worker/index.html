@@ -1049,6 +1049,67 @@
   </div>
 </div>
 
+<!-- ═══ Loading Queue Supervisor PIN Modal ═══ -->
+<div
+  class="modal-bg"
+  id="loadingQueuePinModal"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="loadingQueuePinTitle"
+>
+  <div class="modal">
+    <h2 id="loadingQueuePinTitle">
+      &#128273; Supervisor Approval Required
+    </h2>
+
+    <p
+      id="loadingQueuePinMessage"
+      style="font-size:.85rem;color:#C62828;margin-bottom:14px"
+    >
+      Enter the supervisor PIN to modify the loading queue.
+    </p>
+
+    <div class="fg">
+      abel for="loadingQueuePinInput">Supervisor PIN</label>
+      <input
+        type="password"
+        id="loadingQueuePinInput"
+        maxlength="10"
+        inputmode="numeric"
+        autocomplete="off"
+        placeholder="&bull;&bull;&bull;&bull;"
+        onkeydown="if(event.key === 'Enter'){confirmLoadingQueuePin();}"
+      >
+    </div>
+
+    <p
+      class="nfo-pin-error"
+      id="loadingQueuePinError"
+      aria-live="polite"
+    ></p>
+
+    <div class="modal-btns">
+      <button
+        type="button"
+        class="btn btn-outline"
+        id="btnCancelLoadingQueuePin"
+        onclick="cancelLoadingQueuePin()"
+      >
+        Cancel
+      </button>
+
+      <button
+        type="button"
+        class="btn btn-err"
+        id="btnConfirmLoadingQueuePin"
+        onclick="confirmLoadingQueuePin()"
+      >
+        VERIFY AND PROCEED
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ Movement-Rejection Override Modal ═══ -->
 <div class="modal-bg" id="overrideModal">
   <div class="modal">
