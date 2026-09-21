@@ -996,6 +996,8 @@ async function syncPendingEvents() {
 const LOADING_DRAFT_KEY = 'indus.loadingDraft.v1';
 
 let loadingDraft = loadLoadingDraft();
+let _pendingLoadingQueueAction = null;
+let _loadingQueuePinCheckInFlight = false;
 
 function newLoadingDraft() {
   return {
@@ -1146,19 +1148,24 @@ function renderLoadingDraft() {
     button.addEventListener('click', () => {
       const index = Number(button.dataset.loadingRemoveIndex);
 
-      if (!Number.isInteger(index)) {
+      if (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= loadingDraft.items.length
+      ) {
+        showLoadingMessage(
+          'That loading queue item is no longer available.',
+          'warning'
+        );
         return;
       }
 
-      loadingDraft.items.splice(index, 1);
+      const item = loadingDraft.items[index];
 
-      /*
-       * If the last item was removed, allow selecting the source again.
-       * The existing source remains displayed until the worker changes it
-       * or uses Clear Queue.
-       */
-      saveLoadingDraft();
-      renderLoadingDraft();
+      openLoadingQueuePinModal({
+        type: 'remove',
+        handling_unit: item.handling_unit
+      });
     });
   });
 
@@ -1270,18 +1277,292 @@ function addCurrentScanToLoadingDraft() {
    }
 }
 
-function clearLoadingDraft() {
-  if (!loadingDraft.items.length) return;
+function openLoadingQueuePinModal(action) {
+  if (_loadingQueuePinCheckInFlight) {
+    return;
+  }
 
-  const accepted = window.confirm(
-    'Clear this loading queue? This cannot be undone, but nothing has been posted.'
+  if (!action || !action.type) {
+    showLoadingMessage(
+      'Could not determine the requested queue action.',
+      'error'
+    );
+    return;
+  }
+
+  let message = '';
+
+  if (action.type === 'clear') {
+    if (!loadingDraft.items.length) {
+      showLoadingMessage('The loading queue is already empty.', 'info');
+      return;
+    }
+
+    message =
+      `Enter the supervisor PIN to clear all ` +
+      `${loadingDraft.items.length} HU(s) from the loading queue.`;
+  } else if (action.type === 'remove') {
+    const exists = loadingDraft.items.some(
+      item => item.handling_unit === action.handling_unit
+    );
+
+    if (!exists) {
+      showLoadingMessage(
+        `HU ${action.handling_unit || ''} is no longer in the queue.`,
+        'warning'
+      );
+      return;
+    }
+
+    message =
+      `Enter the supervisor PIN to remove HU ` +
+      `${action.handling_unit} from the loading queue.`;
+  } else {
+    showLoadingMessage('Unsupported loading queue action.', 'error');
+    return;
+  }
+
+  _pendingLoadingQueueAction = { ...action };
+
+  const modal = document.getElementById('loadingQueuePinModal');
+  const messageEl = document.getElementById('loadingQueuePinMessage');
+  const pinInput = document.getElementById('loadingQueuePinInput');
+  const errorEl = document.getElementById('loadingQueuePinError');
+  const confirmButton = document.getElementById(
+    'btnConfirmLoadingQueuePin'
+  );
+  const cancelButton = document.getElementById(
+    'btnCancelLoadingQueuePin'
   );
 
-  if (!accepted) return;
+  if (!modal || !pinInput) {
+    _pendingLoadingQueueAction = null;
+    showLoadingMessage(
+      'Supervisor approval window is unavailable. Reload the page.',
+      'error'
+    );
+    return;
+  }
 
-  loadingDraft = newLoadingDraft();
-  saveLoadingDraft();
-  renderLoadingDraft();
+  if (messageEl) {
+    messageEl.textContent = message;
+  }
+
+  pinInput.value = '';
+  pinInput.disabled = false;
+
+  if (errorEl) {
+    errorEl.textContent = '';
+  }
+
+  if (confirmButton) {
+    confirmButton.disabled = false;
+  }
+
+  if (cancelButton) {
+    cancelButton.disabled = false;
+  }
+
+  modal.classList.add('on');
+
+  setTimeout(() => {
+    pinInput.focus();
+  }, 80);
+}
+
+function closeLoadingQueuePinModal() {
+  const modal = document.getElementById('loadingQueuePinModal');
+  const pinInput = document.getElementById('loadingQueuePinInput');
+  const errorEl = document.getElementById('loadingQueuePinError');
+
+  if (modal) {
+    modal.classList.remove('on');
+  }
+
+  if (pinInput) {
+    pinInput.value = '';
+    pinInput.disabled = false;
+  }
+
+  if (errorEl) {
+    errorEl.textContent = '';
+  }
+}
+
+function cancelLoadingQueuePin() {
+  if (_loadingQueuePinCheckInFlight) {
+    return;
+  }
+
+  _pendingLoadingQueueAction = null;
+  closeLoadingQueuePinModal();
+}
+
+function applyVerifiedLoadingQueueAction(action) {
+  if (!action) {
+    return;
+  }
+
+  if (action.type === 'clear') {
+    const removedCount = loadingDraft.items.length;
+
+    loadingDraft = newLoadingDraft();
+    saveLoadingDraft();
+    renderLoadingDraft();
+
+    showLoadingMessage(
+      `Loading queue cleared: ${removedCount} HU(s) removed.`,
+      'success'
+    );
+    return;
+  }
+
+  if (action.type === 'remove') {
+    const index = loadingDraft.items.findIndex(
+      item => item.handling_unit === action.handling_unit
+    );
+
+    if (index === -1) {
+      showLoadingMessage(
+        `HU ${action.handling_unit} is no longer in the queue.`,
+        'warning'
+      );
+      return;
+    }
+
+    loadingDraft.items.splice(index, 1);
+    saveLoadingDraft();
+    renderLoadingDraft();
+
+    showLoadingMessage(
+      `HU ${action.handling_unit} removed from the loading queue.`,
+      'success'
+    );
+  }
+}
+
+async function confirmLoadingQueuePin() {
+  if (_loadingQueuePinCheckInFlight) {
+    return;
+  }
+
+  const action = _pendingLoadingQueueAction;
+  const modal = document.getElementById('loadingQueuePinModal');
+  const pinInput = document.getElementById('loadingQueuePinInput');
+  const errorEl = document.getElementById('loadingQueuePinError');
+  const confirmButton = document.getElementById(
+    'btnConfirmLoadingQueuePin'
+  );
+  const cancelButton = document.getElementById(
+    'btnCancelLoadingQueuePin'
+  );
+
+  if (!action) {
+    if (errorEl) {
+      errorEl.textContent =
+        'No queue action is waiting for supervisor approval.';
+    }
+    return;
+  }
+
+  const pin = pinInput ? pinInput.value.trim() : '';
+
+  if (!pin) {
+    if (errorEl) {
+      errorEl.textContent = 'Enter the supervisor PIN.';
+    }
+
+    pinInput?.focus();
+    return;
+  }
+
+  _loadingQueuePinCheckInFlight = true;
+
+  if (pinInput) {
+    pinInput.disabled = true;
+  }
+
+  if (confirmButton) {
+    confirmButton.disabled = true;
+  }
+
+  if (cancelButton) {
+    cancelButton.disabled = true;
+  }
+
+  if (errorEl) {
+    errorEl.textContent = '';
+  }
+
+  try {
+    const response = await fetch('/api/validate-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    let result = {};
+
+    if (contentType.includes('application/json')) {
+      result = await response.json();
+    }
+
+    if (!response.ok || result.valid !== true) {
+      if (errorEl) {
+        errorEl.textContent =
+          result.message || 'Incorrect supervisor PIN.';
+      }
+
+      if (pinInput) {
+        pinInput.value = '';
+        pinInput.disabled = false;
+        pinInput.focus();
+      }
+
+      return;
+    }
+
+    const verifiedAction = { ...action };
+
+    _pendingLoadingQueueAction = null;
+    closeLoadingQueuePinModal();
+    applyVerifiedLoadingQueueAction(verifiedAction);
+  } catch (error) {
+    console.error('Loading queue PIN validation failed:', error);
+
+    if (errorEl) {
+      errorEl.textContent =
+        'Could not verify the PIN. Check the connection and try again.';
+    }
+
+    if (pinInput) {
+      pinInput.disabled = false;
+      pinInput.focus();
+    }
+  } finally {
+    _loadingQueuePinCheckInFlight = false;
+
+    if (modal?.classList.contains('on')) {
+      if (confirmButton) {
+        confirmButton.disabled = false;
+      }
+
+      if (cancelButton) {
+        cancelButton.disabled = false;
+      }
+
+      if (pinInput) {
+        pinInput.disabled = false;
+      }
+    }
+  }
+}
+
+function clearLoadingDraft() {
+  openLoadingQueuePinModal({
+    type: 'clear'
+  });
 }
 
 function updateLoadingModeLayout() {
