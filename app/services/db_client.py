@@ -637,8 +637,8 @@ def get_loading_by_idempotency_key(idempotency_key: str) -> dict | None:
             supervisor_override,
             override_reason,
             item_count,
-            created_at,
-            completed_at
+            created_at AT TIME ZONE 'Asia/Dubai' AS created_at,
+            completed_at AT TIME ZONE 'Asia/Dubai' AS completed_at
         FROM loading_headers
         WHERE idempotency_key = %s
         LIMIT 1
@@ -659,8 +659,8 @@ def get_loading_header(loading_id: str) -> dict | None:
             supervisor_override,
             override_reason,
             item_count,
-            created_at,
-            completed_at
+            created_at AT TIME ZONE 'Asia/Dubai' AS created_at,
+            completed_at AT TIME ZONE 'Asia/Dubai' AS completed_at
         FROM loading_headers
         WHERE loading_id = %s
         LIMIT 1
@@ -680,7 +680,7 @@ def get_loading_items(loading_id: str) -> list:
             li.indus_part,
             li.customer_part,
             li.pallet_qty,
-            li.created_at,
+            li.created_at AT TIME ZONE 'Asia/Dubai' AS created_at,
             stock_out.timestamp_utc AS stock_out_timestamp,
             stock_out.location AS source_location,
             stock_out.to_location AS destination
@@ -715,8 +715,8 @@ def get_recent_loadings(limit: int = 100, status: str = "") -> list:
             supervisor_override,
             override_reason,
             item_count,
-            created_at,
-            completed_at
+            created_at AT TIME ZONE 'Asia/Dubai' AS created_at,
+            completed_at AT TIME ZONE 'Asia/Dubai' AS completed_at
         FROM loading_headers
         {where}
         ORDER BY created_at DESC
