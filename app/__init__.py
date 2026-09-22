@@ -8,17 +8,40 @@ import logging
 import threading
 from flask import Flask
 from werkzeug.middleware.proxy_fix import ProxyFix
+import hashlib
+from pathlib import Path
 
+def _build_deploy_id(project_root: Path) -> str:
+    release_id = (
+        os.environ.get('HEROKU_SLUG_COMMIT')
+        or os.environ.get('SOURCE_VERSION')
+    )
+
+    if release_id:
+        return release_id[:12]
+
+    digest = hashlib.sha256()
+
+    for directory_name in ('static', 'templates'):
+        directory = project_root / directory_name
+
+        for path in sorted(
+            item for item in directory.rglob('*') if item.is_file()
+        ):
+            digest.update(
+                str(path.relative_to(project_root)).encode('utf-8')
+            )
+            digest.update(path.read_bytes())
+
+    return digest.hexdigest()[:12]
 
 def create_app():
+    project_root = Path(__file__).resolve().parent.parent
+
     app = Flask(
         __name__,
-        static_folder=os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static'
-        ),
-        template_folder=os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates'
-        ),
+        static_folder=str(project_root / 'static'),
+        template_folder=str(project_root / 'templates'),
     )
 
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -26,8 +49,7 @@ def create_app():
 
     # Unique ID per deploy: version + startup epoch.
     # Changes every redeploy → service worker installs a fresh cache.
-    version = app.config.get('APP_VERSION', '2')
-    deploy_id = f"{version}-{int(time.time())}"
+    deploy_id = _build_deploy_id(project_root)
     app.config['DEPLOY_ID'] = deploy_id
 
     _setup_logging(app)
