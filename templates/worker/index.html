@@ -1788,9 +1788,22 @@ function _bdrToast(msg, type, duration) {
 
 <script>
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js', {scope: '/'})
-      .then(r => console.log('SW registered:', r.scope))
-      .catch(e => console.warn('SW failed:', e));
+    window.addEventListener('load', async () => {
+      try {
+        const registration = await navigator.serviceWorker.register(
+          '/sw.js',
+          {
+            scope: '/',
+            updateViaCache: 'none'
+          }
+        );
+
+        await registration.update();
+        console.log('Service worker current:', registration.scope);
+      } catch (error) {
+        console.warn('Service worker registration failed:', error);
+      }
+    });
   }
 </script>
 </body>
