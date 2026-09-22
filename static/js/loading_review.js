@@ -171,6 +171,27 @@
     }
   }
 
+  function getDraftTotals() {
+    const items = Array.isArray(draft?.items) ? draft.items : [];
+    const quantities = items.map(item => Number(item.pallet_qty));
+  
+    if (
+      quantities.some(quantity =>
+        !Number.isFinite(quantity) || quantity < 0
+      )
+    ) {
+      return null;
+    }
+  
+    return {
+      huCount: items.length,
+      totalQty: quantities.reduce(
+        (total, quantity) => total + quantity,
+        0
+      )
+    };
+  }
+  
   function validateSupervisorFields() {
     if (!lastReview?.data?.requires_supervisor_approval) {
       return true;
@@ -248,9 +269,20 @@
 
     if (!validateSupervisorFields()) return;
 
-    const count = draft.items.length;
+    const totals = getDraftTotals();
+    
+    if (!totals) {
+      setStatus(
+        'One or more HUs contain an invalid quantity. Return to the scanner and correct the loading draft.',
+        'error'
+      );
+      return;
+    }
+    
     confirmDialogText.textContent =
-      `This will post ${count} HU(s) from ${draft.source_location} to LOADING. ` +
+      `This will post ${totals.huCount} HU(s) ` +
+      `with a total quantity of ${totals.totalQty} ` +
+      `from ${draft.source_location} to LOADING. ` +
       'This action creates inventory movements and cannot be undone automatically.';
     
     dialog.showModal();
