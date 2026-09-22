@@ -484,8 +484,14 @@
     <form method="dialog">
       <h2>Confirm final loading</h2>
   
+      {% set total_hus = reviewed | length %}
+      {% set total_qty = reviewed | sum(attribute='qty') %}
+      
       <p id="confirmDialogText">
-        This will post the reviewed handling units to LOADING.
+        This will post <strong>{{ total_hus }}</strong> HU(s)
+        with a total quantity of <strong>{{ total_qty }}</strong>
+        from <strong>{{ source_sloc }}</strong> to <strong>LOADING</strong>.
+        This action creates inventory movements and cannot be undone automatically.
       </p>
   
       <label class="loading-shipment-reference-label" for="shipmentReference">
