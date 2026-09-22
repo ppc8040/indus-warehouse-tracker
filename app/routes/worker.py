@@ -1,10 +1,26 @@
 """
 Worker-facing routes — serves the PWA pages.
 """
-from flask import Blueprint, render_template, make_response, current_app
+from flask import (
+    Blueprint,
+    render_template,
+    make_response,
+    current_app,
+    request,
+)
 
 worker_bp = Blueprint('worker', __name__)
 
+@worker_bp.after_request
+def disable_worker_document_cache(response):
+    if request.path in {'/', '/loading-review', '/sw.js'}:
+        response.headers['Cache-Control'] = (
+            'no-store, no-cache, must-revalidate, max-age=0'
+        )
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+
+    return response
 
 @worker_bp.route('/')
 def index():
