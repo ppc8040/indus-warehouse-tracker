@@ -12,25 +12,19 @@ import hashlib
 from pathlib import Path
 
 def _build_deploy_id(project_root: Path) -> str:
-    release_id = (
-        os.environ.get('HEROKU_SLUG_COMMIT')
-        or os.environ.get('SOURCE_VERSION')
-    )
-
-    if release_id:
-        return release_id[:12]
-
+    """Create a stable cache version from deployed frontend files."""
     digest = hashlib.sha256()
 
     for directory_name in ('static', 'templates'):
         directory = project_root / directory_name
 
         for path in sorted(
-            item for item in directory.rglob('*') if item.is_file()
+            item for item in directory.rglob('*')
+            if item.is_file()
         ):
-            digest.update(
-                str(path.relative_to(project_root)).encode('utf-8')
-            )
+            relative_path = path.relative_to(project_root)
+
+            digest.update(str(relative_path).encode('utf-8'))
             digest.update(path.read_bytes())
 
     return digest.hexdigest()[:12]
